@@ -2172,18 +2172,18 @@ mod posix_impl {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     mod linux_statx {
         // glibc: libc 0.2.x exposes the full surface directly.
-        #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+        #[cfg(all(target_os = "linux", not(any(target_env = "musl", target_env = "ohos"))))]
         pub(super) use libc::{
             STATX_ATIME, STATX_BLOCKS, STATX_BTIME, STATX_CTIME, STATX_GID, STATX_INO, STATX_MODE,
             STATX_MTIME, STATX_NLINK, STATX_SIZE, STATX_TYPE, STATX_UID, statx,
         };
 
-        // musl/Android: `libc` gates `statx`/`STATX_*` behind a build-script
+        // musl/Android/OHOS: `libc` gates `statx`/`STATX_*` behind a build-script
         // `musl_v1_2_3` cfg that cross-compiles can't trigger, and bionic's
         // `statx()` wrapper requires API 30. Define the kernel-ABI struct +
-        // bits ourselves and dispatch via raw `syscall` — works on every
-        // Linux ABI.
-        #[cfg(any(target_env = "musl", target_os = "android"))]
+        // bits ourselves and dispatch via raw `syscall`, matching what Zig's
+        // `std.os.linux.statx` does on every Linux ABI.
+        #[cfg(any(target_env = "musl", target_env = "ohos", target_os = "android"))]
         mod raw {
             #![allow(non_camel_case_types)]
             use core::ffi::{c_char, c_int, c_uint};
@@ -2259,7 +2259,7 @@ mod posix_impl {
                 unsafe { libc::syscall(libc::SYS_statx, dirfd, path, flags, mask, buf) as c_int }
             }
         }
-        #[cfg(any(target_env = "musl", target_os = "android"))]
+        #[cfg(any(target_env = "musl", target_env = "ohos", target_os = "android"))]
         pub(super) use raw::*;
     }
     #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -2660,13 +2660,25 @@ mod posix_impl {
         // `buf.len()` bytes (including the NUL).
         let p = unsafe { libc::getcwd(buf.as_mut_ptr().cast(), buf.len()) };
         if p.is_null() {
-            return Err(err_with(Tag::getcwd));
+            return Err(Error::from_code_int(last_errno(), Tag::getcwd));
         }
         // SAFETY: on success `getcwd` returns `buf`'s pointer NUL-terminated.
-        Ok(unsafe { libc::strlen(p) })
+        let len = unsafe { libc::strlen(p) };
+        // OHOS (hmdfs/tmpfs): the kernel returns the cached path even after
+        // the cwd directory has been deleted via rmdir — getcwd never fails.
+        // A stat(".") probe surfaces ENOENT so callers detect deleted-cwd.
+        #[cfg(target_env = "ohos")]
+        {
+            let mut st: libc::stat = unsafe { core::mem::zeroed() };
+            // SAFETY: "." is a valid NUL-terminated path literal.
+            if unsafe { libc::stat(b".\0".as_ptr().cast(), &mut st) } < 0 {
+                return Err(Error::from_code(E::ENOENT, Tag::getcwd));
+            }
+        }
+        Ok(len)
     }
 
-    // ── link/perm/time/access group ──
+    // ── link/perm/time/access group (sys.zig:406-3973 posix arms) ──
     pub fn link(src: &ZStr, dest: &ZStr) -> Maybe<()> {
         check_p!(
             // SAFETY: both `ZStr`s are valid NUL-terminated C strings.
@@ -2838,7 +2850,10 @@ mod posix_impl {
             );
             Ok(())
         }
-        #[cfg(not(any(target_os = "macos", target_os = "freebsd")))]
+        #[cfg(all(
+            not(any(target_os = "macos", target_os = "freebsd")),
+            not(target_env = "ohos")
+        ))]
         {
             const SYS_FCHMODAT2: libc::c_long = 452;
             loop {
@@ -2864,6 +2879,15 @@ mod posix_impl {
                 }
                 return Ok(());
             }
+        }
+        #[cfg(all(
+            not(any(target_os = "macos", target_os = "freebsd")),
+            target_env = "ohos"
+        ))]
+        {
+            // OHOS: fchmodat2 (#452) is blocked by seccomp → triggers SIGSYS.
+            // Skip the syscall and go directly to the fchmodat fallback.
+            return fchmodat(Fd::cwd(), path, mode, libc::AT_SYMLINK_NOFOLLOW);
         }
     }
     pub fn chown(path: &ZStr, uid: u32, gid: u32) -> Maybe<()> {
@@ -3432,6 +3456,7 @@ mod posix_impl {
     }
     #[cfg(any(target_os = "linux", target_os = "android"))]
     impl MemfdFlags {
+        #[allow(dead_code)]
         #[inline]
         fn older_kernel_flag(self) -> u32 {
             match self {
@@ -3448,18 +3473,12 @@ mod posix_impl {
     static MEMFD_ENOSYS: core::sync::atomic::AtomicBool =
         core::sync::atomic::AtomicBool::new(false);
 
-    /// `bun.sys.canUseMemfd()` — false on non-Linux; on Linux, false when
-    /// `BUN_FEATURE_FLAG_DISABLE_MEMFD` is set or once `memfd_create` has
-    /// returned ENOSYS/EPERM/EACCES.
+    /// `bun.sys.canUseMemfd()` — false on non-Linux; on Linux, false once
+    /// `memfd_create` has returned ENOSYS/EPERM/EACCES.
+    /// OHOS: memfd_create verified available on 2026-06-07, no guard needed.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[inline]
     pub fn can_use_memfd() -> bool {
-        if bun_core::env_var::feature_flag::BUN_FEATURE_FLAG_DISABLE_MEMFD
-            .get()
-            .unwrap_or(false)
-        {
-            return false;
-        }
         !MEMFD_ENOSYS.load(core::sync::atomic::Ordering::Relaxed)
     }
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
@@ -3474,39 +3493,43 @@ mod posix_impl {
     /// [`can_use_memfd`] to false.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     pub fn memfd_create(name: &core::ffi::CStr, flags_: MemfdFlags) -> Maybe<Fd> {
-        let mut flags: u32 = flags_ as u32;
-        loop {
-            // bionic only added the `memfd_create()` libc wrapper at API 30; we
-            // link against API 28. Raw-syscall it (kernel has had it since 3.17).
-            // SAFETY: `name` is a valid NUL-terminated C string.
-            #[cfg(target_os = "android")]
-            let rc = unsafe {
-                libc::syscall(libc::SYS_memfd_create, name.as_ptr(), flags) as core::ffi::c_int
-            };
-            // SAFETY: `name` is a valid NUL-terminated C string.
-            #[cfg(target_os = "linux")]
-            let rc = unsafe { libc::memfd_create(name.as_ptr(), flags) };
-            if rc < 0 {
-                let e = last_errno();
-                if e == libc::EINTR {
-                    continue;
+        // OHOS: memfd_create verified available (returned fd=4 on 2026-06-07).
+        {
+            let mut flags: u32 = flags_ as u32;
+            loop {
+                // Android/OHOS: libc may not have memfd_create wrapper.
+                // Raw-syscall it (kernel has had it since 3.17).
+                // SAFETY: `name` is a valid NUL-terminated C string.
+                #[cfg(any(target_os = "android", target_env = "ohos"))]
+                let rc = unsafe {
+                    libc::syscall(libc::SYS_memfd_create, name.as_ptr(), flags) as core::ffi::c_int
+                };
+                // SAFETY: `name` is a valid NUL-terminated C string.
+                #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+                let rc = unsafe { libc::memfd_create(name.as_ptr(), flags) };
+                if rc < 0 {
+                    let e = last_errno();
+                    if e == libc::EINTR {
+                        continue;
+                    }
+                    if e == libc::EINVAL && flags == flags_ as u32 {
+                        // MFD_EXEC / MFD_NOEXEC_SEAL require Linux 6.3.
+                        flags = flags_.older_kernel_flag();
+                        continue;
+                    }
+                    if e == libc::ENOSYS || e == libc::EPERM || e == libc::EACCES {
+                        MEMFD_ENOSYS.store(true, core::sync::atomic::Ordering::Relaxed);
+                    }
+                    return Err(Error::from_code_int(e, Tag::memfd_create));
                 }
-                if e == libc::EINVAL && flags == flags_ as u32 {
-                    // MFD_EXEC / MFD_NOEXEC_SEAL require Linux 6.3.
-                    flags = flags_.older_kernel_flag();
-                    continue;
-                }
-                if e == libc::ENOSYS || e == libc::EPERM || e == libc::EACCES {
-                    MEMFD_ENOSYS.store(true, core::sync::atomic::Ordering::Relaxed);
-                }
-                return Err(Error::from_code_int(e, Tag::memfd_create));
+                return Ok(Fd::from_native(rc));
             }
-            return Ok(Fd::from_native(rc));
         }
     }
 
-    /// `sendfile(src, dest, len)`. Clamps `len` (avoid EINVAL on
-    /// >2GB), EINTR-retries, and attaches the *source* fd to the error.
+    /// sys.zig:504 — `sendfile(src, dest, len)`. Clamps `len` (avoid EINVAL on
+    /// >2GB), EINTR-retries, and attaches the *source* fd to the error
+    /// (sys.zig:513 `errnoSysFd(rc, .sendfile, src)`).
     #[cfg(any(target_os = "linux", target_os = "android"))]
     pub fn sendfile(src: Fd, dest: Fd, len: usize) -> Maybe<usize> {
         let len = len.min(i32::MAX as usize - 1);
@@ -3641,12 +3664,12 @@ mod windows_impl {
         }
     }
     pub fn write(fd: Fd, buf: &[u8]) -> Maybe<usize> {
-        // kernel32 `WriteFile` directly
+        // sys.zig:1876-1909 — `.windows => { kernel32.WriteFile(fd.cast(), …) }`
         // (NOT via libuv — sys_uv::write → fd.uv() panics for HANDLE-backed
-        // Fds). Also remaps `ERROR_ACCESS_DENIED → EBADF` (a write to a
+        // Fds). Spec also remaps `ERROR_ACCESS_DENIED → EBADF` (a write to a
         // read-only-opened HANDLE yields ACCESS_DENIED, which POSIX surfaces
         // as EBADF "fd not open for writing").
-        debug_assert!(!buf.is_empty());
+        debug_assert!(!buf.is_empty()); // Zig: `bun.assert(bytes.len > 0)`
         let adjusted_len = buf.len().min(MAX_COUNT) as w::DWORD;
         let mut bytes_written: w::DWORD = 0;
         // SAFETY: FFI; `fd.cast()` is a valid HANDLE, buf valid for `adjusted_len`.
@@ -5444,12 +5467,12 @@ pub mod linux {
     // `time_t == c_long == i64` on every libc, so spell it `i64` on musl to
     // sidestep the deprecation without changing layout. The `const _` below
     // guards the layout-identical-to-`libc::timespec` invariant.
-    #[cfg(target_env = "musl")]
+    #[cfg(any(target_env = "musl", target_env = "ohos"))]
     type time_t = i64;
-    #[cfg(not(target_env = "musl"))]
+    #[cfg(not(any(target_env = "musl", target_env = "ohos")))]
     type time_t = libc::time_t;
 
-    /// kernel-shaped timespec (`sec`/`nsec`, no `tv_` prefix).
+    /// `std.os.linux.timespec` — Zig-shape (`sec`/`nsec`, no `tv_` prefix).
     /// Layout-identical to `libc::timespec` so a `*const timespec` can be
     /// passed straight to `syscall(SYS_futex, ..)`.
     #[repr(C)]
@@ -6272,8 +6295,23 @@ pub mod RTLD {
 
 /// `dlopen(filename, flags)`. Windows → `LoadLibraryExW` (UTF-8 → UTF-16).
 pub fn dlopen(filename: &ZStr, flags: i32) -> Option<*mut c_void> {
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_env = "ohos")))]
     {
+        // SAFETY: filename is NUL-terminated.
+        let p = unsafe { libc::dlopen(filename.as_ptr(), flags) };
+        if p.is_null() { None } else { Some(p) }
+    }
+    #[cfg(target_env = "ohos")]
+    {
+        fn ensure_signed(path: &ZStr) {
+            let path_str = path.as_cstr().to_str().unwrap_or("");
+            let p = std::path::Path::new(path_str);
+            if ohos_sign::has_codesign(&std::fs::read(p).unwrap_or_default()) {
+                return;
+            }
+            let _ = ohos_sign::sign_selfsign_inplace(p);
+        }
+        ensure_signed(filename);
         // SAFETY: filename is NUL-terminated.
         let p = unsafe { libc::dlopen(filename.as_ptr(), flags) };
         if p.is_null() { None } else { Some(p) }
@@ -6307,7 +6345,24 @@ pub fn dlopen(filename: &ZStr, flags: i32) -> Option<*mut c_void> {
         if p.is_null() { None } else { Some(p.cast()) }
     }
 }
-/// `dlsym(handle, name)`.
+/// C-ABI wrapper so `BunProcess.cpp` (process.dlopen) routes through
+/// `sys::dlopen()` instead of calling `libc::dlopen()` directly.
+/// On OHOS this ensures the file is signed before loading.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Bun__dlopen(path: *const core::ffi::c_char, flags: i32) -> *mut c_void {
+    if path.is_null() {
+        return core::ptr::null_mut();
+    }
+    // SAFETY: path is a valid NUL-terminated C string (caller contract).
+    let len = unsafe { libc::strlen(path) };
+    let z = unsafe { ZStr::from_raw(path.cast::<u8>(), len) };
+    match dlopen(z, flags) {
+        Some(h) => h,
+        None => core::ptr::null_mut(),
+    }
+}
+
+/// sys.zig:4565 — `dlsym(handle, name)`.
 pub fn dlsym_impl(handle: Option<*mut c_void>, name: &ZStr) -> Option<*mut c_void> {
     #[cfg(unix)]
     {
@@ -7599,9 +7654,12 @@ pub fn read_nonblocking(fd: Fd, buf: &mut [u8]) -> Maybe<usize> {
         if rc < 0 {
             let e = last_errno();
             match e {
-                libc::EOPNOTSUPP | libc::ENOSYS | libc::EPERM | libc::EACCES => {
+                // ESPIPE: preadv2(RWF_NOWAIT) on pipe/FIFO fd returns
+                // "Illegal seek" — pipes don't support positional I/O.
+                // Disable RWF and fall back to plain read().
+                libc::EOPNOTSUPP | libc::ENOSYS | libc::EPERM | libc::EACCES | libc::ESPIPE => {
                     linux::RWFFlagSupport::disable();
-                    // Only fall through to BLOCKING read if the fd is
+                    // sys.zig:4070 — only fall through to BLOCKING read if the fd is
                     // actually readable now; otherwise return retry (EAGAIN).
                     return match bun_core::is_readable(fd) {
                         bun_core::Pollable::Ready | bun_core::Pollable::Hup => read(fd, buf),
@@ -7629,9 +7687,12 @@ pub fn write_nonblocking(fd: Fd, buf: &[u8]) -> Maybe<usize> {
         if rc < 0 {
             let e = last_errno();
             match e {
-                libc::EOPNOTSUPP | libc::ENOSYS | libc::EPERM | libc::EACCES => {
+                // ESPIPE: pwritev2(RWF_NOWAIT) on pipe/FIFO fd returns
+                // "Illegal seek" — pipes don't support positional I/O.
+                // Disable RWF and fall back to plain write().
+                libc::EOPNOTSUPP | libc::ENOSYS | libc::EPERM | libc::EACCES | libc::ESPIPE => {
                     linux::RWFFlagSupport::disable();
-                    // Poll before issuing a blocking write.
+                    // sys.zig:4123 — poll before issuing a blocking write.
                     return match bun_core::is_writable(fd) {
                         bun_core::Pollable::Ready | bun_core::Pollable::Hup => write(fd, buf),
                         _ => {
@@ -9227,7 +9288,6 @@ pub fn exists(path: &[u8]) -> bool {
 pub fn move_file_z(from_dir: Fd, filename: &ZStr, to_dir: Fd, destination: &ZStr) -> Maybe<()> {
     match renameat_concurrently_without_fallback(from_dir, filename, to_dir, destination) {
         Ok(()) => Ok(()),
-        // allow over-writing an empty directory
         Err(e) if e.get_errno() == E::EISDIR => {
             #[cfg(unix)]
             // SAFETY: destination is NUL-terminated.
@@ -9562,7 +9622,7 @@ fn qw_set_fd(qw: &mut bun_core::output::QuietWriter, fd: Fd) {
 fn fd_write_all_quiet(fd: Fd, mut bytes: &[u8]) -> bool {
     while !bytes.is_empty() {
         match write(fd, bytes) {
-            Ok(0) => return false, // short write → give up
+            Ok(0) => return false, // short write → give up (matches Zig quiet semantics)
             Ok(n) => bytes = &bytes[n..],
             Err(_) => return false,
         }

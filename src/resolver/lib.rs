@@ -282,6 +282,9 @@ pub mod fs {
                 Some(d) => DirnameStore::instance().append_slice(d)?,
                 None => {
                     let mut buf = bun_paths::PathBuffer::default();
+                    // Let getcwd failures (e.g. ENOENT on deleted cwd) propagate so
+                    // callers emit a clean error instead of running JS from an
+                    // indeterminate environment (BUG-01).
                     let n = bun_sys::getcwd(&mut buf[..])?;
                     DirnameStore::instance().append_slice(&buf[..n])?
                 }
@@ -1080,10 +1083,10 @@ pub mod fs {
                 // RLIM_INFINITY; raising soft anywhere near INT_MAX breaks child processes
                 // that read the limit into an int.
                 let target = {
-                    // musl has extremely low defaults, so ensure at least 163840 there.
-                    #[cfg(target_env = "musl")]
+                    // musl/OHOS have extremely low defaults, so ensure at least 163840 there.
+                    #[cfg(any(target_env = "musl", target_env = "ohos"))]
                     let max = lim.max.max(163_840);
-                    #[cfg(not(target_env = "musl"))]
+                    #[cfg(not(any(target_env = "musl", target_env = "ohos")))]
                     let max = lim.max;
                     max.min(1 << 20)
                 };
@@ -1171,7 +1174,14 @@ pub mod fs {
         ) -> crate::CrateResult<&'static mut EntriesOption> {
             if bun_core::FeatureFlags::ENABLE_ENTRY_CACHE {
                 let mut get_or_put_result = self.entries.get_or_put(dir)?;
-                if err == crate::Error::Sys(bun_errno::SystemErrno::ENOENT) {
+                if matches!(
+                    err,
+                    crate::Error::Sys(
+                        bun_errno::SystemErrno::ENOENT
+                            | bun_errno::SystemErrno::EACCES
+                            | bun_errno::SystemErrno::EPERM
+                    )
+                ) {
                     self.entries.mark_not_found(get_or_put_result);
                     return Ok(temp_entries_option_write(EntriesOption::Err(
                         dir_entry::Err {

@@ -107,7 +107,15 @@ void us_internal_poll_set_type(struct us_poll_t *p, int poll_type) {
 #include <signal.h>
 #include <errno.h>
 
+// OHOS seccomp blocks epoll_pwait2 (441) via SECCOMP_RET_TRAP → SIGSYS,
+// which kills the process before this file's ENOSYS/EPERM/EACCES fallback
+// can trigger. Force the fallback path by pretending the probe already
+// failed at startup. Loses nanosecond timeout precision (millisecond only).
+#if defined(__OHOS__)
+static int has_epoll_pwait2 = 0;
+#else
 static int has_epoll_pwait2 = -1;
+#endif
 
 #ifndef SYS_epoll_pwait2
 // It's consistent on multiple architectures

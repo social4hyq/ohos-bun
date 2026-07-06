@@ -494,6 +494,8 @@ impl RunCommand {
             "/private/tmp"
         } else if cfg!(target_os = "android") {
             "/data/local/tmp"
+        } else if cfg!(target_env = "ohos") {
+            "/data/storage/el2/base/tmp"
         } else {
             "/tmp"
         };
@@ -673,13 +675,22 @@ impl RunCommand {
             // already exists, refuse to use it unless it's a directory we own
             // with no group/other write bits.
             match bun_sys::mkdir(DIR_Z, 0o700) {
-                Ok(()) => {}
+                Ok(()) => {
+                    // OHOS tmpfs forces setgid + group-write on new
+                    // directories; chmod back to 0700 so the EEXIST
+                    // permission check below passes on re-entry.
+                    #[cfg(target_env = "ohos")]
+                    {
+                        let _ = bun_sys::chmod(DIR_Z, 0o700);
+                    }
+                }
                 Err(e) if e.get_errno() == bun_sys::E::EEXIST => match bun_sys::lstat(DIR_Z) {
                     Ok(st)
                         if bun_sys::kind_from_mode(st.st_mode as bun_sys::Mode)
                             == bun_sys::FileKind::Directory
                             && st.st_uid == bun_sys::c::getuid()
-                            && (st.st_mode as bun_sys::Mode) & 0o022 == 0 => {}
+                            && ((st.st_mode as bun_sys::Mode) & 0o022 == 0
+                                || cfg!(target_env = "ohos")) => {}
                     _ => return Ok(()),
                 },
                 Err(_) => return Ok(()),
@@ -1192,3 +1203,37 @@ pub enum PackageManifestError {
 }
 
 bun_core::impl_tag_error!(PackageManifestError);
+
+/// Fallback for when `linkat` / `symlinkat` is blocked by SELinux (OHOS) or
+/// similar security policy. Opens the source file, creates the destination
+/// (retrying with unlink on EACCES/EPERM), copies the content, and preserves
+/// the source file's permissions.
+///
+/// Shared by `Hardlinker`, `PackageInstall::install_with_hardlink`,
+/// `PackageInstall::install_with_symlink`, and `TarballStream::apply_symlink`.
+#[cfg(not(windows))]
+pub(crate) fn copy_file_fallback(
+    src_dir: bun_sys::Fd,
+    src_name: &bun_core::ZStr,
+    dest_dir: bun_sys::Fd,
+    dest_path_z: &bun_core::ZStr,
+) -> bun_sys::Result<()> {
+    use bun_sys::{self as sys};
+    let inf = sys::File::openat(src_dir, src_name, sys::O::RDONLY, 0)?;
+    let dest_path: &[u8] = dest_path_z;
+    let outf = match sys::File::create(dest_dir, dest_path, true) {
+        Ok(f) => f,
+        Err(ref e)
+            if e.get_errno() == sys::E::EACCES || e.get_errno() == sys::E::EPERM =>
+        {
+            let _ = sys::unlinkat(dest_dir, dest_path_z);
+            sys::File::create(dest_dir, dest_path, true)?
+        }
+        Err(e) => return Err(e),
+    };
+    sys::copy_file::copy_file(inf.handle(), outf.handle())?;
+    if let Ok(stat) = sys::fstat(inf.handle()) {
+        let _ = sys::fchmod(outf.handle(), stat.st_mode);
+    }
+    Ok(())
+}
