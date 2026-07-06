@@ -198,3 +198,5 @@ src/runtime/bake/generated.ts
 # them on disk; keep ignored so they don't show as untracked).
 src/jsc/bindings/GeneratedJS2Native.zig
 src/jsc/bindings/GeneratedBindings.zig
+.arts
+src/ohos_sign/target/

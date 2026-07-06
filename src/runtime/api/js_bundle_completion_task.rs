@@ -436,35 +436,14 @@ impl JSBundleCompletionTask {
             entry.dest_path.clone_from(&full_outfile_path);
             entry.is_executable = true;
 
-            // OHOS: sign the compiled binary so it can execute (seccomp policy).
+            // OHOS: strip stale .codesign and re-sign in-process (JS API path).
             // Mirrors the CLI codepath in src/runtime/cli/build_command.rs.
-            // Handles the Bun.build({ compile: {...} }) JS API path; `full_outfile_path`
-            // is already an absolute path here.
             #[cfg(target_env = "ohos")]
             {
                 use std::os::unix::ffi::OsStrExt;
                 let outfile_os = std::ffi::OsStr::from_bytes(&full_outfile_path[..]);
                 let _ = std::fs::File::open(outfile_os).and_then(|f| f.sync_all());
-                let mut unsigned_path = full_outfile_path.to_vec();
-                unsigned_path.extend_from_slice(b".unsigned");
-                let unsigned_os = std::ffi::OsStr::from_bytes(&unsigned_path[..]);
-                if std::fs::rename(outfile_os, unsigned_os).is_ok() {
-                    let _ = std::process::Command::new("llvm-objcopy")
-                        .arg("--remove-section=.codesign")
-                        .arg(unsigned_os)
-                        .arg(unsigned_os)
-                        .output();
-                    let _ = std::process::Command::new("binary-sign-tool")
-                        .arg("sign")
-                        .arg("-inFile")
-                        .arg(unsigned_os)
-                        .arg("-outFile")
-                        .arg(outfile_os)
-                        .arg("-selfSign")
-                        .arg("1")
-                        .output();
-                    let _ = std::fs::remove_file(unsigned_os);
-                }
+                let _ = ohos_sign::sign_selfsign_inplace_with_strip(std::path::Path::new(outfile_os));
                 let _ = std::process::Command::new("chmod")
                     .arg("755")
                     .arg(outfile_os)

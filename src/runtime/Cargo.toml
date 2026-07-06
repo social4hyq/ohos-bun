@@ -10,6 +10,7 @@ path = "lib.rs"
 workspace = true
 
 [dependencies]
+ohos_sign = { path = "../ohos_sign", optional = true }
 bun_opaque.workspace = true
 rust-argon2.workspace = true
 bcrypt.workspace = true
@@ -116,3 +117,4 @@ show_crash_trace = ["bun_bundler/show_crash_trace"]
 error_return_tracing = []
 # Mirrors Zig `bun.FeatureFlags.bake_debugging_features` — DevServer dump flags.
 bake_debugging_features = []
+ohos = ["dep:ohos_sign"]

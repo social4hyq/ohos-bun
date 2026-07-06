@@ -12,11 +12,13 @@ path = "lib.rs"
 # crate compiles as `mod`s) pass `unexpected_cfgs`. The feature is *set* only
 # when those files are compiled by the separate `bun_shim_impl` crate.
 shim_standalone = []
+ohos = ["dep:ohos_sign"]
 
 [lints]
 workspace = true
 
 [dependencies]
+ohos_sign = { path = "../ohos_sign", optional = true }
 bytemuck = "1"
 strum.workspace = true
 thiserror.workspace = true

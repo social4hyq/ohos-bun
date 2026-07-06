@@ -6186,18 +6186,12 @@ pub fn dlopen(filename: &ZStr, flags: i32) -> Option<*mut c_void> {
     #[cfg(target_env = "ohos")]
     {
         fn ensure_signed(path: &ZStr) {
-            use std::process::Command;
             let path_str = path.as_cstr().to_str().unwrap_or("");
-            if Command::new("binary-sign-tool")
-                .args(["display-sign", "-inFile", path_str])
-                .output()
-                .is_ok_and(|o| o.status.success())
-            {
+            let p = std::path::Path::new(path_str);
+            if ohos_sign::has_codesign(&std::fs::read(p).unwrap_or_default()) {
                 return;
             }
-            let _ = Command::new("binary-sign-tool")
-                .args(["sign", "-selfSign", "1", "-inFile", path_str, "-outFile", path_str])
-                .output();
+            let _ = ohos_sign::sign_selfsign_inplace(p);
         }
         ensure_signed(filename);
         // SAFETY: filename is NUL-terminated.
