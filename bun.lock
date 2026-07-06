@@ -11,7 +11,6 @@
         "bun-tracestrings": "github:oven-sh/bun.report#912ca63e26c51429d3e6799aa2a6ab079b188fd8",
         "esbuild": "^0.28.1",
         "mitata": "^0.1.14",
-        "ohos-signpost": "^1.0.2",
         "oxlint": "1.70.0",
         "peechy": "0.4.34",
         "prettier": "^3.6.2",
@@ -311,10 +310,6 @@
     "no-case": ["no-case@3.0.4", "", { "dependencies": { "lower-case": "^2.0.2", "tslib": "^2.0.3" } }, "sha512-fgAN3jGAh+RoxUGZHTSOLJIqUc2wmoBwGR4tbpNAKmmovFoWq0OdRkb0VkldReO2a2iBT/OEulG9XSUc10r3zg=="],
 
     "octokit": ["octokit@3.2.2", "", { "dependencies": { "@octokit/app": "^14.0.2", "@octokit/core": "^5.0.0", "@octokit/oauth-app": "^6.0.0", "@octokit/plugin-paginate-graphql": "^4.0.0", "@octokit/plugin-paginate-rest": "11.4.4-cjs.2", "@octokit/plugin-rest-endpoint-methods": "13.3.2-cjs.1", "@octokit/plugin-retry": "^6.0.0", "@octokit/plugin-throttling": "^8.0.0", "@octokit/request-error": "^5.0.0", "@octokit/types": "^13.0.0", "@octokit/webhooks": "^12.3.1" } }, "sha512-7Abo3nADdja8l/aglU6Y3lpnHSfv0tw7gFPiqzry/yCU+2gTAX7R1roJ8hJrxIK+S1j+7iqRJXtmuHJ/UDsBhQ=="],
-
-    "ohos-binary-sign": ["ohos-binary-sign@1.0.0", "", { "bin": { "ohos-binary-sign": "bin/ohos-binary-sign.js" } }, "sha512-nnsOgoZlr3obtRMfsppjwQUfSjo+K78PyZyRJYkDxajcW43pdpqNbmKdqR72HUIZt17o2TAavAJaIsntUaEhiA=="],
-
-    "ohos-signpost": ["ohos-signpost@1.0.2", "", { "dependencies": { "ohos-binary-sign": "^1.0.0" }, "bin": { "ohos-signpost": "bin/ohos-signpost.js" } }, "sha512-QnVDT44rRs/thxm93L41gR5SAOZBCTliS8GoKcejpY4yVbJeJzDTGRY7oro9xf6pRuu4GpJfvIVIuFde3kKz9Q=="],
 
     "once": ["once@1.4.0", "", { "dependencies": { "wrappy": "1" } }, "sha512-lNaJgI+2Q5URQBkccEKHTQOPaXdUxnZZElQTZY0MFUAuaEqe1E+Nyvgdz/aIyNi6Z9MzO5dv1H8n58/GELp3+w=="],
 
