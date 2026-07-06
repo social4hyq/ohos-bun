@@ -632,8 +632,9 @@ export function registerDepRules(n: Ninja, cfg: Config): void {
   // when cross-compiling for windows, cc is clang-cl and defaults to a
   // *-windows-msvc triple — host tools must stay plain clang.
   // Post-link sign for OHOS host: HarmonyOS rejects unsigned ELFs at exec.
-  // Chained so non-OHOS hosts no-op (binary-sign-tool missing → `command -v`
-  // fails, `:` returns true). On OHOS the tool ships via harmonybrew.
+  // Uses binary-sign-tool (from ohos-sdk build dep, always available at build
+  // time) — ohos-selfsign is compiled later inside the same ninja graph and
+  // cannot be used here.
   const hostCcCmd =
     `${q(cfg.hostCc)} $flags -o $out $in` +
     ` && { command -v binary-sign-tool >/dev/null 2>&1` +
