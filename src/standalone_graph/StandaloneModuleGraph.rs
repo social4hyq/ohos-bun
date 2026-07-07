@@ -329,7 +329,12 @@ mod pe {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "freebsd",
+    target_os = "openharmony"
+))]
 mod elf {
     #[cfg(not(target_env = "ohos"))]
     mod imp {
@@ -464,32 +469,71 @@ mod elf {
         }
 
         pub(super) fn get_data() -> Option<(*mut u8, usize)> {
-            let file = File::open("/proc/self/exe").ok()?;
-            let (sh_offset, sh_size) = locate_bun_section(&file)?;
+            // Primary: read .bun section from /proc/self/exe via file I/O then
+            // mmap MAP_PRIVATE so JSC can mutate bytecode in place.
+            match File::open("/proc/self/exe") {
+                Ok(file) => {
+                    let (sh_offset, sh_size) = locate_bun_section(&file)?;
 
-            let mut hdr = [0u8; 8];
-            read_at(&file, sh_offset, &mut hdr)?;
-            let byte_count = u64::from_le_bytes(hdr) as usize;
+                    let mut hdr = [0u8; 8];
+                    read_at(&file, sh_offset, &mut hdr)?;
+                    let byte_count = u64::from_le_bytes(hdr) as usize;
 
-            if byte_count.checked_add(8)? != sh_size as usize {
-                return None;
+                    if byte_count.checked_add(8)? != sh_size as usize {
+                        return None;
+                    }
+
+                    let mapping = unsafe {
+                        libc::mmap(
+                            ptr::null_mut(),
+                            sh_size as usize,
+                            libc::PROT_READ | libc::PROT_WRITE,
+                            libc::MAP_PRIVATE,
+                            file.as_raw_fd(),
+                            sh_offset as i64,
+                        )
+                    };
+                    if mapping == libc::MAP_FAILED {
+                        return None;
+                    }
+
+                    Some((unsafe { (mapping as *mut u8).add(8) }, byte_count))
+                }
+                Err(_) => {
+                    // Fallback for execute-only ELF (chmod 0o111): OHOS hmdfs
+                    // denies open("/proc/self/exe") for files without the read
+                    // bit. But write_bun_section() extends the writable PT_LOAD
+                    // to cover the payload, so the data is already mapped in
+                    // the process address space. Bun__getStandaloneModuleGraphELFVaddr
+                    // returns &BUN_COMPILED.size, which write_bun_section set to
+                    // new_vaddr; dereference it to find [u64 payload_len][payload…].
+                    unsafe extern "C" {
+                        fn Bun__getStandaloneModuleGraphELFVaddr() -> *mut u64;
+                    }
+                    // SAFETY: FFI call; symbol always present in ELF bun binaries.
+                    let vaddr_ptr = unsafe { Bun__getStandaloneModuleGraphELFVaddr() };
+                    if vaddr_ptr.is_null() {
+                        return None;
+                    }
+                    // SAFETY: vaddr_ptr points to BUN_COMPILED.size (u64 align(1)).
+                    let vaddr = unsafe { core::ptr::read_unaligned(vaddr_ptr) };
+                    if vaddr == 0 {
+                        return None;
+                    }
+                    // SAFETY: vaddr is a page-aligned virtual address written by
+                    // write_bun_section(); the writable PT_LOAD covers it.
+                    let target = vaddr as *mut u8;
+                    // SAFETY: target points to an 8-byte little-endian length prefix.
+                    let payload_len = u64::from_le_bytes(unsafe {
+                        core::ptr::read_unaligned(target.cast::<[u8; 8]>())
+                    });
+                    if payload_len < 8 {
+                        return None;
+                    }
+                    // SAFETY: payload_len bytes follow the 8-byte header at `target`.
+                    Some((unsafe { target.add(8) }, payload_len as usize))
+                }
             }
-
-            let mapping = unsafe {
-                libc::mmap(
-                    ptr::null_mut(),
-                    sh_size as usize,
-                    libc::PROT_READ | libc::PROT_WRITE,
-                    libc::MAP_PRIVATE,
-                    file.as_raw_fd(),
-                    sh_offset as i64,
-                )
-            };
-            if mapping == libc::MAP_FAILED {
-                return None;
-            }
-
-            Some((unsafe { (mapping as *mut u8).add(8) }, byte_count))
         }
     }
 
@@ -2156,7 +2200,12 @@ impl StandaloneModuleGraph {
             return from_bytes_alloc(base, len, offsets).map(Some);
         }
 
-        #[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "android",
+            target_os = "freebsd",
+            target_os = "openharmony"
+        ))]
         {
             let Some((base, len)) = elf::get_data() else {
                 return Ok(None);
@@ -2188,7 +2237,8 @@ impl StandaloneModuleGraph {
             windows,
             target_os = "linux",
             target_os = "android",
-            target_os = "freebsd"
+            target_os = "freebsd",
+            target_os = "openharmony"
         )))]
         {
             unreachable!()
@@ -2217,20 +2267,34 @@ impl StandaloneModuleGraph {
                         None => return,
                     }
                 }
-                #[cfg(any(target_os = "linux", target_os = "android"))]
+                #[cfg(any(
+                    target_os = "linux",
+                    target_os = "android",
+                    target_os = "openharmony"
+                ))]
                 {
                     match elf::get_data() {
                         Some(b) => b,
                         None => return,
                     }
                 }
-                #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "android")))]
+                #[cfg(not(any(
+                    target_os = "macos",
+                    target_os = "linux",
+                    target_os = "android",
+                    target_os = "openharmony"
+                )))]
                 {
                     return;
                 }
             };
 
-            #[cfg(any(target_os = "macos", target_os = "linux", target_os = "android"))]
+            #[cfg(any(
+                target_os = "macos",
+                target_os = "linux",
+                target_os = "android",
+                target_os = "openharmony"
+            ))]
             {
                 if len == 0 {
                     return;
