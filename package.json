@@ -13,7 +13,7 @@
     "bun-tracestrings": "github:oven-sh/bun.report#912ca63e26c51429d3e6799aa2a6ab079b188fd8",
     "esbuild": "^0.28.1",
     "mitata": "^0.1.14",
-    "oxlint": "1.70.0",
+    "oxlint": "1.72.0",
     "peechy": "0.4.34",
     "prettier": "^3.6.2",
     "prettier-plugin-organize-imports": "^4.3.0",
