@@ -331,3 +331,11 @@ test/js/node/test/parallel/test-http2-pipe.js [ FLAKY ]
 [ OPENHARMONY ] test/internal/highlighter.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
 [ OPENHARMONY ] test/internal/linear-fifo.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
 [ OPENHARMONY ] test/internal/powershell-escape.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+
+# --- cli/install lifecycle-scripts: uses bun:internal-for-testing ---
+# All lifecycle-scripts tests require bun:internal-for-testing for the lifecycle
+# script watcher thread; unavailable in release bun on OHOS.
+[ OPENHARMONY ] test/cli/install/bun-install-lifecycle-scripts.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+
+# --- cli/install architecture-match: uses bun:internal-for-testing ---
+[ OPENHARMONY ] test/cli/install/architecture-match.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
