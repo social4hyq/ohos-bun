@@ -314,9 +314,5 @@ test/js/node/test/parallel/test-http2-pipe.js [ FLAKY ]
 # --- BUG-03: bun test --parallel worker ID assignment race ---
 [ OPENHARMONY ] test/cli/test/parallel.test.ts [ Failure ] # --parallel: each worker has a unique JEST_WORKER_ID — duplicate ID=1 assigned (fork scheduling race)
 
-# --- BUG-04: scripts/build/config.ts detectHost throws on openharmony ---
-[ OPENHARMONY ] test/internal/macos-cross-config.test.ts [ Failure ] # detectHost: Unsupported host platform: openharmony (BUG-04)
-[ OPENHARMONY ] test/internal/windows-cross-config.test.ts [ Failure ] # detectHost: Unsupported host platform: openharmony (BUG-04)
-
 # --- bake/dev/ecosystem: HMR dev-server test hangs (needs persistent process) ---
 [ OPENHARMONY ] test/bake/dev/ecosystem.test.ts [ Skip ] # starts dev server that never exits within test timeout
