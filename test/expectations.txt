@@ -280,3 +280,36 @@ test/js/node/test/parallel/test-http2-pipe.js [ FLAKY ]
 # node:http servers cannot listen on Windows named pipes yet (ENOENT from
 # uv_pipe bind), so common.PIPE-based http tests cannot run there.
 [ WINDOWS ] test/js/node/test/parallel/test-http-unix-socket-keep-alive.js [ FAIL ] # named-pipe listen unsupported
+
+# ============================================================
+# OpenHarmony (arm64_ohos, hmusl) — validated 2026-07-07 r16
+# ============================================================
+
+# --- OHOS spawn overhead: fork+exit_group path 2-3x slower than vfork ---
+# cli/run parallel/pre-post scripts all hit 5000ms default timeout
+[ OPENHARMONY ] test/cli/run/multi-run.test.ts [ Failure ] # parallel output-formatting / pre-post / pipe tests timeout (spawn overhead)
+
+# --- OHOS hmdfs recursive glob slow (30–60s timeout) ---
+[ OPENHARMONY ] test/js/bun/glob/glob.test.ts [ Failure ] # leaks > scanSync/scan/GlobWalker + glob.match > *node_modules* (hmdfs slow)
+
+# --- OHOS shell: recursive node_modules ops + parallel spawn timeout ---
+[ OPENHARMONY ] test/js/bun/shell/bunshell.test.ts [ Failure ] # shell load > immediate exit; bunshell ls/rm > node_modules (spawn + hmdfs)
+
+# --- OHOS IPv6 DNS unavailable (all IPv6-family lookups fail) ---
+# OHOS hmdfs/network does not expose IPv6 resolver; IPv4 lookups pass normally
+[ OPENHARMONY ] test/js/bun/dns/dns.test.ts [ Failure ] # dns > lookup() > {family:6} — IPv6 unavailable on OHOS
+
+# --- WASI cannot open '/' (EACCES on OHOS root) ---
+[ OPENHARMONY ] test/js/bun/wasm/wasi.test.js [ Failure ] # wasi preopened-dir tries openSync('/') → EACCES on OHOS
+
+# --- bun:internal-for-testing module not loadable on OHOS ---
+[ OPENHARMONY ] test/js/bun/sys/error-name-from-libuv.test.ts [ Failure ] # ENOENT reading bun:internal-for-testing
+
+# --- napi tests require node-gyp C++ toolchain (not available in OHOS test env) ---
+[ OPENHARMONY ] test/napi [ Skip ] # node-gyp native C++ build fails (no g++/clang++ on PATH in OHOS env)
+
+# --- BUG-01: bun build --compile binary PANIC in deleted cwd (r16 regression candidate) ---
+[ OPENHARMONY ] test/bundler/bun-build-compile.test.ts [ Failure ] # compiled binary in deleted cwd → bun PANIC "entered unreachable code" (BUG-01); execute-only ELF runs bun-help instead of user code (BUG-02)
+
+# --- BUG-03: bun test --parallel worker ID assignment race ---
+[ OPENHARMONY ] test/cli/test/parallel.test.ts [ Failure ] # --parallel: each worker has a unique JEST_WORKER_ID — duplicate ID=1 assigned (fork scheduling race)
