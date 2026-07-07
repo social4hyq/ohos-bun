@@ -1788,6 +1788,10 @@ export function libcPathForDlopen() {
         case "musl":
           return "/usr/lib/libc.so";
       }
+    case "openharmony":
+      // OHOS hmusl: /usr/lib/libc.so does not exist on disk; the dynamic
+      // linker resolves bare names via LD_LIBRARY_PATH / soname search.
+      return "libc.so";
     case "darwin":
       return "libc.dylib";
     default:
