@@ -308,11 +308,7 @@ test/js/node/test/parallel/test-http2-pipe.js [ FLAKY ]
 # --- napi tests require node-gyp C++ toolchain (not available in OHOS test env) ---
 [ OPENHARMONY ] test/napi [ Skip ] # node-gyp native C++ build fails (no g++/clang++ on PATH in OHOS env)
 
-# --- BUG-01: bun build --compile binary PANIC in deleted cwd (r16 regression candidate) ---
-[ OPENHARMONY ] test/bundler/bun-build-compile.test.ts [ Failure ] # compiled binary in deleted cwd → bun PANIC "entered unreachable code" (BUG-01); execute-only ELF runs bun-help instead of user code (BUG-02)
-
-# --- BUG-03: bun test --parallel worker ID assignment race ---
-[ OPENHARMONY ] test/cli/test/parallel.test.ts [ Failure ] # --parallel: each worker has a unique JEST_WORKER_ID — duplicate ID=1 assigned (fork scheduling race)
+# BUG-01 (deleted-cwd PANIC), BUG-02 (execute-only ELF), BUG-03 (parallel worker-ID) fixed in r17.
 
 # --- bake/dev/ecosystem: HMR dev-server test hangs (needs persistent process) ---
 [ OPENHARMONY ] test/bake/dev/ecosystem.test.ts [ Skip ] # starts dev server that never exits within test timeout
