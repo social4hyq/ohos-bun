@@ -495,13 +495,15 @@ mod elf {
                     Some((unsafe { (mapping as *mut u8).add(8) }, byte_count))
                 }
                 Err(_) => {
-                    // Fallback for execute-only ELF (chmod 0o111): OHOS hmdfs
-                    // denies open("/proc/self/exe") for files without the read
-                    // bit. But write_bun_section() extends the writable PT_LOAD
-                    // to cover the payload, so the data is already mapped in
-                    // the process address space. Bun__getStandaloneModuleGraphELFVaddr
-                    // returns &BUN_COMPILED.size, which write_bun_section set to
-                    // new_vaddr; dereference it to find [u64 payload_len][payload…].
+                    // Execute-only fallback (chmod 0o111): OHOS hmdfs denies
+                    // open("/proc/self/exe") for files lacking the read bit.
+                    //
+                    // write_bun_section() stored the link-time virtual address of
+                    // the payload in BUN_COMPILED.size. On OHOS all binaries are
+                    // PIE, so that link-time vaddr must be shifted by the ASLR
+                    // base before dereferencing. We read /proc/self/maps (always
+                    // accessible, regardless of file execute-only permission) to
+                    // find the load base, then compute the runtime address.
                     unsafe extern "C" {
                         fn Bun__getStandaloneModuleGraphELFVaddr() -> *mut u64;
                     }
@@ -510,15 +512,49 @@ mod elf {
                     if vaddr_ptr.is_null() {
                         return None;
                     }
-                    // SAFETY: vaddr_ptr points to BUN_COMPILED.size (u64 align(1)).
-                    let vaddr = unsafe { core::ptr::read_unaligned(vaddr_ptr) };
-                    if vaddr == 0 {
+                    // link-time vaddr written by write_bun_section().
+                    let link_vaddr = unsafe { core::ptr::read_unaligned(vaddr_ptr) };
+                    if link_vaddr == 0 {
                         return None;
                     }
-                    // SAFETY: vaddr is a page-aligned virtual address written by
-                    // write_bun_section(); the writable PT_LOAD covers it.
-                    let target = vaddr as *mut u8;
-                    // SAFETY: target points to an 8-byte little-endian length prefix.
+
+                    // Find the PIE load base: scan /proc/self/maps for the first
+                    // executable mapping at file offset 0 (the binary text segment).
+                    let load_base: usize = {
+                        let mut base = 0usize;
+                        if let Ok(maps) = std::fs::read_to_string("/proc/self/maps") {
+                            'maps: for line in maps.lines() {
+                                let mut cols = line.split_whitespace();
+                                let Some(addr_range) = cols.next() else { continue };
+                                let Some(perms) = cols.next() else { continue };
+                                let Some(file_off) = cols.next() else { continue };
+                                cols.next(); // dev
+                                cols.next(); // inode
+                                let has_path = cols.next().is_some();
+                                if perms.contains('x')
+                                    && file_off == "00000000"
+                                    && has_path
+                                {
+                                    if let Some(start_hex) = addr_range.split('-').next() {
+                                        if let Ok(b) = usize::from_str_radix(start_hex, 16) {
+                                            base = b;
+                                            break 'maps;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        base
+                    };
+                    if load_base == 0 {
+                        return None;
+                    }
+
+                    // runtime_addr = load_base + link_vaddr (PIE relocation).
+                    let runtime_addr = load_base.wrapping_add(link_vaddr as usize);
+                    let target = runtime_addr as *mut u8;
+                    // SAFETY: target points to an 8-byte little-endian length prefix
+                    // inside the writable PT_LOAD extended by write_bun_section().
                     let payload_len = u64::from_le_bytes(unsafe {
                         core::ptr::read_unaligned(target.cast::<[u8; 8]>())
                     });
