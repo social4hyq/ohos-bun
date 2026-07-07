@@ -519,21 +519,27 @@ mod elf {
                     }
 
                     // Find the PIE load base: scan /proc/self/maps for the first
-                    // executable mapping at file offset 0 (the binary text segment).
+                    // file-backed mapping at file offset 0.  On OHOS (hmdfs/tmpfs)
+                    // the ELF header segment is mapped `r--p` (not `r-xp` as on
+                    // glibc Linux), so matching on execute permission misses it.
+                    // The first mapping with offset 0 and a real path is always
+                    // the ELF header PT_LOAD — its start address IS the PIE base.
                     let load_base: usize = {
                         let mut base = 0usize;
                         if let Ok(maps) = std::fs::read_to_string("/proc/self/maps") {
                             'maps: for line in maps.lines() {
                                 let mut cols = line.split_whitespace();
                                 let Some(addr_range) = cols.next() else { continue };
-                                let Some(perms) = cols.next() else { continue };
+                                let _perms = cols.next();
                                 let Some(file_off) = cols.next() else { continue };
                                 cols.next(); // dev
-                                cols.next(); // inode
-                                let has_path = cols.next().is_some();
-                                if perms.contains('x')
-                                    && file_off == "00000000"
-                                    && has_path
+                                let inode_str = cols.next().unwrap_or("0");
+                                let path = cols.next().unwrap_or("");
+                                // inode == 0 means anonymous mapping; skip those.
+                                if file_off == "00000000"
+                                    && inode_str != "0"
+                                    && !path.is_empty()
+                                    && !path.starts_with('[')
                                 {
                                     if let Some(start_hex) = addr_range.split('-').next() {
                                         if let Ok(b) = usize::from_str_radix(start_hex, 16) {
