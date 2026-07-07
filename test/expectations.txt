@@ -339,3 +339,38 @@ test/js/node/test/parallel/test-http2-pipe.js [ FLAKY ]
 
 # --- cli/install architecture-match: uses bun:internal-for-testing ---
 [ OPENHARMONY ] test/cli/install/architecture-match.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+
+# --- cli/install tests with bun:internal-for-testing top-level import ---
+# These produce unhandled errors (not test failures) on OHOS.
+[ OPENHARMONY ] test/cli/install/bun-workspaces.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+[ OPENHARMONY ] test/cli/install/bun-pack.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+[ OPENHARMONY ] test/cli/install/hosted-git-info/from-url.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+[ OPENHARMONY ] test/cli/install/hosted-git-info/parse-url.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+[ OPENHARMONY ] test/cli/install/bun-install-registry.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+[ OPENHARMONY ] test/cli/install/migrate-bun-lockb-v2.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+[ OPENHARMONY ] test/cli/install/npmrc.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+[ OPENHARMONY ] test/cli/install/bun-upgrade.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+
+# --- cli/install migration: network-dependent tests ---
+# "bun pm migrate -f" and "bun install --lockfile-only" resolve from npm registry;
+# these cases have large lock files / many packages and time out on OHOS with cold cache.
+[ OPENHARMONY ] test/cli/install/migration/yarn-lock-migration.test.ts [ Flaky ] # 2/16 tests require npm registry access and time out on OHOS
+[ OPENHARMONY ] test/cli/install/migration/pnpm-comprehensive.test.ts [ Flaky ] # bun install --lockfile-only hits npm registry; cold-cache run exceeds 30s timeout
+
+# --- cli/install network-timeout tests ---
+# These tests contact external services (npm audit, npm info, git hosts).
+[ OPENHARMONY ] test/cli/install/GHSA-pfwx-36v6-832x.test.ts [ Flaky ] # audit API timeout
+[ OPENHARMONY ] test/cli/install/bun-info.test.ts [ Flaky ] # npm info timeout
+[ OPENHARMONY ] test/cli/install/bun-pm-scan.test.ts [ Flaky ] # security scan timeout
+[ OPENHARMONY ] test/cli/install/bun-run-dir.test.ts [ Flaky ] # network-dependent test
+[ OPENHARMONY ] test/cli/install/bun-update-security-edge-cases.test.ts [ Flaky ] # 3/6 tests time out waiting for advisory network service
+[ OPENHARMONY ] test/cli/install/bun-update-security-scan-all.test.ts [ Flaky ] # "update without args" needs npm resolution to trigger scanner; fails when network returns no updates
+
+# --- cli/install performance-limited tests ---
+# Writing 3000 .tgz + installing via local registry takes >120s on OHOS (hmdfs I/O).
+[ OPENHARMONY ] test/cli/install/bun-install-security-provider.test.ts [ Flaky ] # large-payload IPC test (3000 pkg) exceeds 120s on OHOS
+
+# --- bunx TLS download failures ---
+# OHOS system CA store not in standard path → UNKNOWN_CERTIFICATE_VERIFICATION_ERROR
+# when bunx tries to install packages from npm live (eslint, @angular/cli).
+[ OPENHARMONY ] test/cli/install/bunx.test.ts [ Flaky ] # TLS cert errors on npm downloads from OHOS
