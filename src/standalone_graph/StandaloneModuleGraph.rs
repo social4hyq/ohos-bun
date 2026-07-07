@@ -329,12 +329,7 @@ mod pe {
     }
 }
 
-#[cfg(any(
-    target_os = "linux",
-    target_os = "android",
-    target_os = "freebsd",
-    target_os = "openharmony"
-))]
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
 mod elf {
     #[cfg(not(target_env = "ohos"))]
     mod imp {
@@ -2200,12 +2195,7 @@ impl StandaloneModuleGraph {
             return from_bytes_alloc(base, len, offsets).map(Some);
         }
 
-        #[cfg(any(
-            target_os = "linux",
-            target_os = "android",
-            target_os = "freebsd",
-            target_os = "openharmony"
-        ))]
+        #[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
         {
             let Some((base, len)) = elf::get_data() else {
                 return Ok(None);
@@ -2237,8 +2227,7 @@ impl StandaloneModuleGraph {
             windows,
             target_os = "linux",
             target_os = "android",
-            target_os = "freebsd",
-            target_os = "openharmony"
+            target_os = "freebsd"
         )))]
         {
             unreachable!()
@@ -2267,34 +2256,20 @@ impl StandaloneModuleGraph {
                         None => return,
                     }
                 }
-                #[cfg(any(
-                    target_os = "linux",
-                    target_os = "android",
-                    target_os = "openharmony"
-                ))]
+                #[cfg(any(target_os = "linux", target_os = "android"))]
                 {
                     match elf::get_data() {
                         Some(b) => b,
                         None => return,
                     }
                 }
-                #[cfg(not(any(
-                    target_os = "macos",
-                    target_os = "linux",
-                    target_os = "android",
-                    target_os = "openharmony"
-                )))]
+                #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "android")))]
                 {
                     return;
                 }
             };
 
-            #[cfg(any(
-                target_os = "macos",
-                target_os = "linux",
-                target_os = "android",
-                target_os = "openharmony"
-            ))]
+            #[cfg(any(target_os = "macos", target_os = "linux", target_os = "android"))]
             {
                 if len == 0 {
                     return;

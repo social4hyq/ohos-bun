@@ -4497,9 +4497,15 @@ impl<'a> Resolver<'a> {
                             // OHOS: Ancestor directories like "/" or "/storage/" may return
                             // EACCES due to sandbox restrictions. Skip the unreadable ancestor
                             // and continue processing child directories in the queue.
+                            // Guard: if the queue is now empty, there is nothing left to walk —
+                            // return Ok(None) instead of `continue`-ing into the while-exit path
+                            // that would hit the post-loop `unreachable!()` (BUG-01).
                             if err == bun_core::err!("EACCES")
                                 || err == bun_core::err!("EPERM")
                             {
+                                if queue_slice_len == 0 {
+                                    return Ok(None);
+                                }
                                 continue 'queue_walk;
                             }
 
