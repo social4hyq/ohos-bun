@@ -308,7 +308,12 @@ test/js/node/test/parallel/test-http2-pipe.js [ FLAKY ]
 # --- napi tests require node-gyp C++ toolchain (not available in OHOS test env) ---
 [ OPENHARMONY ] test/napi [ Skip ] # node-gyp native C++ build fails (no g++/clang++ on PATH in OHOS env)
 
-# BUG-01 (deleted-cwd PANIC), BUG-02 (execute-only ELF), BUG-03 (parallel worker-ID) fixed in r17.
+# BUG-01 (deleted-cwd PANIC), BUG-02 (execute-only ELF), BUG-03 (parallel worker-ID) fixed in r17–r22.
 
 # --- bake/dev/ecosystem: HMR dev-server test hangs (needs persistent process) ---
 [ OPENHARMONY ] test/bake/dev/ecosystem.test.ts [ Skip ] # starts dev server that never exits within test timeout
+
+# --- cross-compile target binary not available for download on OHOS ---
+# "compile with current platform target string" constructs target bun-linux-aarch64-musl-v1.4.0
+# and tries to download it; that artifact does not exist for this version.
+[ OPENHARMONY ] test/bundler/bun-build-compile.test.ts [ Failure ] # compile with current platform target string — bun-linux-aarch64-musl-v1.4.0 not available for download
