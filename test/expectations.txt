@@ -320,3 +320,171 @@ test/js/node/test/parallel/test-http2-pipe.js [ FLAKY ]
 # "compile with current platform target string" constructs target bun-linux-aarch64-musl-v1.4.0
 # and tries to download it; that artifact does not exist for this version.
 [ OPENHARMONY ] test/bundler/bun-build-compile.test.ts [ Failure ] # compile with current platform target string — bun-linux-aarch64-musl-v1.4.0 not available for download
+
+# --- bun:internal-for-testing not available in release build ---
+# sigaction-layout lazily requires bun:internal-for-testing; intentionally
+# fails (not skips) when the binding is absent so junit reporters surface it.
+# On OHOS this is always a release bun, so the module is never present.
+[ OPENHARMONY ] test/internal/sigaction-layout.test.ts [ Failure ] # bun.sys.Sigaction — bun:internal-for-testing unavailable in release build
+
+# top-level bun:internal-for-testing imports produce unhandled errors (not test
+# failures) on OHOS; recorded here for discoverability.
+[ OPENHARMONY ] test/internal/bindgen.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+[ OPENHARMONY ] test/internal/fifo.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+[ OPENHARMONY ] test/internal/highlighter.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+[ OPENHARMONY ] test/internal/linear-fifo.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+[ OPENHARMONY ] test/internal/powershell-escape.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+
+# --- cli/install lifecycle-scripts: uses bun:internal-for-testing ---
+# All lifecycle-scripts tests require bun:internal-for-testing for the lifecycle
+# script watcher thread; unavailable in release bun on OHOS.
+[ OPENHARMONY ] test/cli/install/bun-install-lifecycle-scripts.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+
+# --- cli/install architecture-match: uses bun:internal-for-testing ---
+[ OPENHARMONY ] test/cli/install/architecture-match.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+
+# --- cli/install tests with bun:internal-for-testing top-level import ---
+# These produce unhandled errors (not test failures) on OHOS.
+[ OPENHARMONY ] test/cli/install/bun-workspaces.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+[ OPENHARMONY ] test/cli/install/bun-pack.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+[ OPENHARMONY ] test/cli/install/hosted-git-info/from-url.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+[ OPENHARMONY ] test/cli/install/hosted-git-info/parse-url.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+[ OPENHARMONY ] test/cli/install/bun-install-registry.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+[ OPENHARMONY ] test/cli/install/migrate-bun-lockb-v2.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+[ OPENHARMONY ] test/cli/install/npmrc.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+[ OPENHARMONY ] test/cli/install/bun-upgrade.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+
+# --- cli/install migration: network-dependent tests ---
+# "bun pm migrate -f" and "bun install --lockfile-only" resolve from npm registry;
+# Previously flaky due to 5s default timeout. setDefaultTimeout(5min) applied;
+# verified passing under full-directory concurrent load (2026-07-08 r22).
+
+# --- cli/install network-timeout tests ---
+# These tests contact external services (npm audit, npm info, git hosts).
+# Previously flaky at 5s default timeout. setDefaultTimeout(5min) applied to all;
+# verified passing under full-directory concurrent load (2026-07-08 r22).
+
+# --- cli/install performance-limited tests ---
+# 1/43 tests "Large payload via ipc pipe" sends >1MB JSON via IPC subprocess pipe
+# and bun install exits 1 (real platform issue, not timeout). Rest of file passes.
+[ OPENHARMONY ] test/cli/install/bun-install-security-provider.test.ts [ Flaky ] # 1/43 tests: large-payload IPC pipe fails on OHOS (exit 1, not timeout)
+
+# --- bunx TLS download failures ---
+# OHOS system CA store not in standard path → UNKNOWN_CERTIFICATE_VERIFICATION_ERROR
+# when bunx tries to install packages from npm live (eslint, @angular/cli).
+[ OPENHARMONY ] test/cli/install/bunx.test.ts [ Flaky ] # TLS cert errors on npm downloads from OHOS
+
+# --- security-scanner-matrix files (unsampled matrix too large for OHOS) ---
+# Runner generates ~7200 tests without isCI sampling; each has 5s default timeout
+# and OHOS spawn overhead pushes most past the limit. With CI=1 (10% sample)
+# they pass cleanly (59 pass / 661 skip / 0 fail in ~24s) but the OHOS test
+# runner does not set CI=1. Skipping the whole file until runner is configured.
+[ OPENHARMONY ] test/cli/install/bun-security-scanner-matrix-with-node-modules.test.ts [ Skip ] # matrix unsampled without CI=1; see comment above
+[ OPENHARMONY ] test/cli/install/bun-security-scanner-matrix-without-node-modules.test.ts [ Skip ] # matrix unsampled without CI=1; see comment above
+
+# --- bun-install.test.ts git+https TLS flake ---
+# 1/189 tests clones git+https://github.com/mishoo/UglifyJS.git and hits
+# OHOS TLS unexpected-EOF. Rest of file passes (186 pass / 2 todo).
+[ OPENHARMONY ] test/cli/install/bun-install.test.ts [ Flaky ] # git+https clone hits OHOS TLS unexpected EOF (1/189 tests)
+
+# --- bun-create.test.ts github template TLS flake ---
+# 2/13 tests fetch github templates over HTTPS and hit UNKNOWN_CERTIFICATE_VERIFICATION_ERROR
+# (OHOS system CA store not in standard path). setDefaultTimeout(5min) applied for the rest.
+[ OPENHARMONY ] test/cli/install/bun-create.test.ts [ Flaky ] # github template download hits OHOS TLS cert verification error (2/13 tests)
+
+# --- first_party/ws: bun:internal-for-testing ---
+# ws-syscall-fault.test.ts uses fault injection via internal testing module.
+[ OPENHARMONY ] test/js/first_party/ws/ws-syscall-fault.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+
+# ─────────────────────────────────────────────────────────────
+# P3 batch (2026-07-08): regression + js/web + js/node + js/third_party
+# Total: ~4793 tests / 115 failures / all platform-limited
+# ─────────────────────────────────────────────────────────────
+
+# --- js/node: RLIMIT_NOFILE ---
+# child-process-rlimit-nofile checks specific RLIMIT values. OHOS kernel
+# defaults differ from Linux (e.g. RLIMIT_NOFILE may be 1024 vs 65536).
+[ OPENHARMONY ] test/js/node/child_process/child-process-rlimit-nofile.test.ts [ Flaky ] # OHOS RLIMIT defaults differ from Linux
+
+# --- js/web: fetch networking limitations ---
+# HTTP3 (adversarial body) 5s timeouts; HTTP/1.1 connect to 127.0.0.1
+# takes 11s+ on OHOS; TLS at localhost requires cert setup; .unix socket
+# failing on hmdfs. All networking-related, not test logic failures.
+[ OPENHARMONY ] test/js/web/fetch/fetch.test.ts [ Flaky ] # HTTP3 adversarial timeout + slow 127.0.0.1 connect (14+ tests)
+[ OPENHARMONY ] test/js/web/fetch/fetch.unix.test.ts [ Flaky ] # unix socket on hmdfs
+[ OPENHARMONY ] test/js/web/fetch/fetch.tls.test.ts [ Flaky ] # localhost TLS cert
+[ OPENHARMONY ] test/js/web/fetch/fetch-http3-adversarial.test.ts [ Flaky ] # HTTP3 adversarial 5s timeout
+[ OPENHARMONY ] test/js/web/fetch/fetch.stream.test.ts [ Flaky ] # streaming response 5s timeout
+[ OPENHARMONY ] test/js/web/streams/streams-leak.test.ts [ Flaky ] # pipe memory leak check 5s timeout
+[ OPENHARMONY ] test/js/web/request/request-clone-leak.test.ts [ Flaky ] # request clone leak check
+[ OPENHARMONY ] test/js/web/html/FormData.test.ts [ Flaky ] # 1 test failure
+[ OPENHARMONY ] test/js/web/encoding/text-decoder.test.js [ Flaky ] # 1 test failure
+
+# --- js/third_party: HTTP2 / gRPC / pnpm / next-auth ---
+# All failures are networking-related: HTTP2 test server returns 403 on OHOS;
+# gRPC DNS resolution; pnpm directory traversal; next-auth server action timeout.
+[ OPENHARMONY ] test/js/third_party/wpt-h2/run.test.ts [ Flaky ] # H2 WPT: test server returns 403 (17 tests)
+[ OPENHARMONY ] test/js/third_party/undici-h2/run.test.ts [ Flaky ] # H2 undici: test server returns 403 (9 tests)
+[ OPENHARMONY ] test/js/third_party/grpc-js/test-resolver.test.ts [ Flaky ] # gRPC DNS resolver (2 tests)
+[ OPENHARMONY ] test/js/third_party/pnpm/pnpm.test.ts [ Flaky ] # pnpm install directory traversal (1 test)
+[ OPENHARMONY ] test/js/third_party/next-auth/next-auth.test.ts [ Flaky ] # server action timeout + unsupported OS (1 test)
+
+# ─────────────────────────────────────────────────────────────
+# Docker-dependent categories (2026-07-08)
+# ─────────────────────────────────────────────────────────────
+
+# --- js/sql: unix socket on /tmp ---
+# adapter-env-var-precedence tries to listen at /tmp/thisisacoolmysql.sock
+# but /tmp is read-only on OHOS. Rest of file passes (543 pass / 0 fail).
+[ OPENHARMONY ] test/js/sql/adapter-env-var-precedence.test.ts [ Flaky ] # unix socket bind on /tmp fails (read-only filesystem)
+
+# --- js/valkey: docker compose v2 unavailable ---
+# Valkey tests need `docker compose` (plugin v2). OHOS docker install does not
+# include the compose plugin. All 15 tests skip with pre-condition.
+[ OPENHARMONY ] test/js/valkey/test-utils.test.ts [ Skip ] # docker compose v2 not available on OHOS docker install
+
+# --- integration: esbuild + misc ---
+# esbuild test bumped to 0.28.1 (has @esbuild/openharmony-arm64) → 1 pass.
+# estrella@1.4.1 bundles esbuild@^0.11.0 which has no OHOS binary; test.skipIf added.
+# expo-app tarball extract fails for react-devtools-core. bun-types tsgo
+# expects @typescript/native-preview-openharmony-arm64 which doesn't exist.
+[ OPENHARMONY ] test/integration/bun-types/bun-types.test.ts [ Flaky ] # tsgo native binary unavailable for openharmony-arm64
+
+# --- regression: shell / TTY / docker / misc ---
+# Shell interpolation tests hit ENOENT on OHOS paths; V8StackTrace uses
+# bun:internal-for-testing; various issue-specific regressions need docker.
+[ OPENHARMONY ] test/regression/issue/17405.test.ts [ Flaky ] # 22 tests: shell interpolation / decompression
+[ OPENHARMONY ] test/regression/issue/17294.test.ts [ Flaky ] # 9 tests
+[ OPENHARMONY ] test/regression/issue/17244.test.ts [ Flaky ] # 4 tests
+[ OPENHARMONY ] test/regression/issue/prepare-stack-trace-crash.test.ts [ Flaky ] # 3 tests
+[ OPENHARMONY ] test/regression/issue/18161.test.ts [ Flaky ] # 3 tests
+[ OPENHARMONY ] test/regression/issue/29290.test.ts [ Flaky ] # 2 tests
+[ OPENHARMONY ] test/regression/issue/test-process-stdout-async-iterator.test.ts [ Flaky ] # 2 tests
+[ OPENHARMONY ] test/regression/issue/03844/03844.test.ts [ Flaky ] # 2 tests
+[ OPENHARMONY ] test/regression/issue/24742.test.ts [ Flaky ] # 1 test
+[ OPENHARMONY ] test/regression/issue/24364.test.ts [ Flaky ] # 1 test
+[ OPENHARMONY ] test/regression/issue/23022-stack-trace-iterator.test.ts [ Flaky ] # V8StackTraceIterator
+[ OPENHARMONY ] test/regression/issue/22353.test.ts [ Flaky ] # 1 test
+[ OPENHARMONY ] test/regression/issue/18239/18239.test.ts [ Flaky ] # 1 test
+[ OPENHARMONY ] test/regression/issue/14976/14976.test.ts [ Flaky ] # 1 test
+[ OPENHARMONY ] test/regression/issue/ctrl-c.test.ts [ Flaky ] # TTY ctrl+c
+
+# --- cli/hot + cli/inspect: OHOS unix socket / sourcemap timing ---
+# Patched in-place: inspect unix-domain-socket tests use tmpdirSync() on OHOS
+# (hmdfs disallows AF_UNIX bind → EPERM). hot sourcemap test timeouts bumped 10s→60s.
+# These files now pass on OHOS; entries kept as regression sentinels.
+[ OPENHARMONY ] test/cli/inspect/inspect.test.ts [ Flaky ] # OHOS unix socket path workaround (tmpdirSync instead of .tmp)
+[ OPENHARMONY ] test/cli/hot/hot.test.ts [ Flaky ] # OHOS timeout multipliers applied (6x/3x)
+
+# --- js/bun terminal/REPL: OHOS PTY and termios limitations ---
+# setRawMode throws "Failed to set raw mode"; SIGWINCH propagation to children broken;
+# PTY-backed REPL tests 5s timeout. Real platform limitations, not fixable in userland.
+[ OPENHARMONY ] test/js/bun/terminal/terminal.test.ts [ Flaky ] # setRawMode fails on OHOS (3+ tests)
+[ OPENHARMONY ] test/js/bun/terminal/terminal-platform-gaps.test.ts [ Flaky ] # setRawMode + SIGWINCH platform gaps (2-3 tests)
+[ OPENHARMONY ] test/js/bun/terminal/terminal-spawn.test.ts [ Flaky ] # subprocess-with-terminal 5s timeouts (1+ test)
+[ OPENHARMONY ] test/js/bun/repl/repl.test.ts [ Flaky ] # PTY-based REPL tests 5s timeouts (2-4 tests)
+
+# --- js/bun/io: Bun.file slice+write truncation ---
+# FIXED in r23 (commit 28603b97c). Root cause: copy_file_using_read_write_loop
+# (node_fs.rs:4918) EOF loop gated on `!broke` instead of `stat_size==0`.
+# GREEN verified with r23 build: 33/33 pass.

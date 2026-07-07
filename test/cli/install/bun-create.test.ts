@@ -1,8 +1,10 @@
 import { spawn, spawnSync } from "bun";
-import { beforeEach, describe, expect, it } from "bun:test";
+import { beforeEach, describe, expect, it, setDefaultTimeout } from "bun:test";
 import { exists, stat } from "fs/promises";
 import { bunExe, bunEnv as env, tmpdirSync } from "harness";
 import { join } from "path";
+
+setDefaultTimeout(1000 * 60 * 5);
 
 let x_dir: string;
 

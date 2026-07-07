@@ -1549,7 +1549,7 @@ export function parseOs(string) {
   if (/darwin|apple|mac/i.test(string)) {
     return "darwin";
   }
-  if (/linux/i.test(string)) {
+  if (/linux|openharmony/i.test(string)) {
     return "linux";
   }
   if (/win/i.test(string)) {
@@ -1957,6 +1957,10 @@ export async function getUser(username) {
 export function getDistro() {
   if (isMacOS) {
     return "macOS";
+  }
+
+  if (process.platform === "openharmony") {
+    return "openharmony";
   }
 
   if (isLinux) {
