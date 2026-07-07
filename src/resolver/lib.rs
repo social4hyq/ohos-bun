@@ -286,15 +286,10 @@ pub mod fs {
                 Some(d) => DirnameStore::instance().append_slice(d)?,
                 None => {
                     let mut buf = bun_paths::PathBuffer::default();
-                    let n = match bun_sys::getcwd(&mut buf[..]) {
-                        Ok(n) => n,
-                        Err(_) => {
-                            // OHOS: getcwd can fail (e.g. current dir was
-                            // removed). Fall back to "/" like the Zig code did.
-                            buf[0] = b'/';
-                            1
-                        }
-                    };
+                    // Let getcwd failures (e.g. ENOENT on deleted cwd) propagate so
+                    // callers emit a clean error instead of running JS from an
+                    // indeterminate environment (BUG-01).
+                    let n = bun_sys::getcwd(&mut buf[..])?;
                     DirnameStore::instance().append_slice(&buf[..n])?
                 }
             };
