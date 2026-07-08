@@ -2420,6 +2420,10 @@ fn ohos_sign_native_binaries(pkg_dir: &[u8]) {
         Ok(w) => w,
         Err(_) => return,
     };
+    let verbose = PackageManager::verbose_install();
+    let mut signed: u32 = 0;
+    let mut skipped: u32 = 0;
+    let mut errors: u32 = 0;
     let mut w = w;
     while let Ok(Some(entry)) = w.next() {
         if entry.kind != Syscall::EntryKind::File {
@@ -2441,9 +2445,46 @@ fn ohos_sign_native_binaries(pkg_dir: &[u8]) {
         let full_str = unsafe { core::str::from_utf8_unchecked(&full) };
         let p = std::path::Path::new(full_str);
         if ohos_sign::has_codesign(&std::fs::read(p).unwrap_or_default()) {
+            skipped += 1;
+            if verbose {
+                bun_core::pretty_errorln!(
+                    "<d>[sign]<r> <d>skip<r> {}",
+                    p.display(),
+                );
+            }
             continue;
         }
-        let _ = ohos_sign::sign_selfsign_inplace(p);
+        match ohos_sign::sign_selfsign_inplace(p) {
+            Ok(()) => {
+                signed += 1;
+                if verbose {
+                    bun_core::pretty_errorln!(
+                        "<d>[sign]<r> <green>OK<r>  {}",
+                        p.display(),
+                    );
+                }
+            }
+            Err(e) => {
+                errors += 1;
+                bun_core::pretty_errorln!(
+                    "<d>[sign]<r> <red>FAIL<r> {}: {:?}",
+                    p.display(),
+                    e,
+                );
+            }
+        }
+    }
+    if signed > 0 || errors > 0 {
+        bun_core::pretty_errorln!(
+            "<d>[sign]<r> {} native {} signed{}",
+            signed + skipped + errors,
+            if signed + skipped + errors == 1 { "file" } else { "files" },
+            if errors > 0 {
+                format_args!(", {} error(s)", errors)
+            } else {
+                format_args!("")
+            },
+        );
     }
 }
 
