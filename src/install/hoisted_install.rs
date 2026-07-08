@@ -5,7 +5,7 @@ use core::sync::atomic::Ordering;
 use bun_collections::{DynamicBitSet as Bitset, DynamicBitSetList, StringHashMap};
 use bun_core::strings;
 use bun_core::{Global, Output};
-use bun_paths::{AbsPath, SEP};
+use bun_paths::SEP;
 use bun_sys::{self as sys, Dir, Fd};
 
 use crate::analytics;
