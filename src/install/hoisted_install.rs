@@ -487,7 +487,7 @@ pub(crate) fn install_hoisted_packages(
             #[cfg(target_env = "ohos")]
             {
                 let root = installer.node_modules.path.as_slice();
-                if let Ok(mut root_path) = AbsPath::<u8>::from(root) {
+                if let Ok(root_path) = AbsPath::<u8>::from(root) {
                     crate::package_installer::ohos_sign_native_binaries(root_path.slice());
                 }
             }
