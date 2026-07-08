@@ -495,7 +495,7 @@ pub(crate) fn install_hoisted_packages(
                         AbsPath::<u8>::from(installer.node_modules.path.as_slice())
                     {
                         // alias.name is a DependencyName; use the slice API
-                        if pkg_path.append(alias.as_slice()).is_ok() {
+                        if pkg_path.append(alias.bytes.as_slice()).is_ok() {
                             crate::package_installer::ohos_sign_native_binaries(
                                 pkg_path.slice(),
                             );
