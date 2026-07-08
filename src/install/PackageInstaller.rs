@@ -1805,7 +1805,7 @@ impl<'a> PackageInstaller<'a> {
                         // ── DEBUG: call-site log (remove after confirming) ──
                         {
                             let p = std::path::Path::new(unsafe {
-                                core::str::from_utf8_unchecked(pkg_path.as_slice())
+                                core::str::from_utf8_unchecked(pkg_path.slice())
                             });
                             bun_core::pretty_errorln!(
                                 "<d>[sign]<r> <d>call<r> install_result=Success pkg={}",
