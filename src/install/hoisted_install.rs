@@ -479,19 +479,6 @@ pub(crate) fn install_hoisted_packages(
                 return Err(bun_core::err!("InstallFailed"));
             }
 
-            // ── OHOS: sign native binaries after tree install ──
-            // The per-package signing in install_package_with_name_and_resolution
-            // is not reached in workspace mode (packages are deferred via runTasks).
-            // Walk the entire node_modules tree to sign any .so/.node file that
-            // was installed but missed by the per-package path.
-            #[cfg(target_env = "ohos")]
-            {
-                let root = installer.node_modules.path.as_slice();
-                if let Ok(root_path) = AbsPath::<u8>::from(root) {
-                    crate::package_installer::ohos_sign_native_binaries(root_path.slice());
-                }
-            }
-
             this.tick_lifecycle_scripts();
             this.report_slow_lifecycle_scripts();
         }
@@ -619,6 +606,18 @@ pub(crate) fn install_hoisted_packages(
             this.report_slow_lifecycle_scripts();
 
             this.sleep();
+        }
+
+        // ── OHOS: sign native binaries after all packages are installed ──
+        // In workspace mode the per-package signing path is not reached
+        // (packages are deferred via runTasks). Walk the workspace root's
+        // node_modules to sign any .so/.node files.
+        #[cfg(target_env = "ohos")]
+        {
+            let top = strings::without_trailing_slash(FileSystem::instance().top_level_dir());
+            let mut nm = top.to_vec();
+            nm.extend_from_slice(b"/node_modules");
+            crate::package_installer::ohos_sign_native_binaries(&nm);
         }
 
         if log_level.show_progress() {
