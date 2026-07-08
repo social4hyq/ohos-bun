@@ -482,14 +482,6 @@ test/js/node/test/parallel/test-http2-pipe.js [ FLAKY ]
 [ OPENHARMONY ] test/js/bun/repl/repl.test.ts [ Flaky ] # PTY-based REPL tests 5s timeouts (2-4 tests)
 
 # --- js/bun/io: Bun.file slice+write truncation ---
-# Root cause: copy_file_using_read_write_loop (node_fs.rs:4918) had a `if !broke`
-# gate around the "read until EOF" fallback. When the caller passed a hard limit
-# (stat_size > 0, e.g. sliced Bun.file destination) and the first loop hit the
-# limit without EOF (source larger than slice), the EOF loop ran anyway and
-# copied past the boundary. On Linux this is masked because copy_file_range
-# syscall (kernel ≥4.5) takes the fast path and respects count. OHOS HongMeng
-# kernel 1.12 doesn't have copy_file_range → always hits the buggy fallback.
-# Fix: gate the EOF loop on `stat_size == 0` (the real "unknown size" sentinel)
-# instead of `!broke`. Status: fix in place, awaiting r23 bottle rebuild for
-# GREEN verification. Existing test Bun.file -> Bun.file will then pass.
-[ OPENHARMONY ] test/js/bun/io/bun-write.test.js [ Flaky ] # FIX IN PLACE (node_fs.rs:4918); awaiting r23 rebuild for verification
+# FIXED in r23 (commit 28603b97c). Root cause: copy_file_using_read_write_loop
+# (node_fs.rs:4918) EOF loop gated on `!broke` instead of `stat_size==0`.
+# GREEN verified with r23 build: 33/33 pass.
