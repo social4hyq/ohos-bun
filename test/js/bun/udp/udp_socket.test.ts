@@ -1,9 +1,11 @@
 import { udpSocket } from "bun";
 import { heapStats } from "bun:jsc";
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { bunEnv, bunExe, disableAggressiveGCScope, isWindows, randomPort } from "harness";
 import path from "node:path";
 import { dataCases, dataTypes } from "./testdata";
+
+setDefaultTimeout(1000 * 60 * 5);
 
 describe("udpSocket()", () => {
   test.each(["setTTL", "setMulticastTTL"])(

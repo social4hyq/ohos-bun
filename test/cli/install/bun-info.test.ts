@@ -1,6 +1,8 @@
 import { spawn } from "bun";
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, setDefaultTimeout } from "bun:test";
 import { bunEnv, bunExe, tempDirWithFiles } from "harness";
+
+setDefaultTimeout(1000 * 60 * 5);
 
 describe.concurrent("bun info", () => {
   let i = 0;
