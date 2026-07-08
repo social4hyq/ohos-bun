@@ -1795,17 +1795,6 @@ impl<'a> PackageInstaller<'a> {
                 }
             };
 
-            // ── DEBUG: log every install result ──
-            bun_core::pretty_errorln!(
-                "<d>[debug]<r> install {} → {}",
-                bstr::BStr::new(alias.slice(string_buf!())),
-                if matches!(&install_result, package_install::InstallResult::Success) {
-                    "ok"
-                } else {
-                    "fail"
-                },
-            );
-
             #[cfg(target_env = "ohos")]
             if let package_install::InstallResult::Success = &install_result {
                 // Turbofish ::<u8> is required for type inference in if-let;
@@ -2413,13 +2402,7 @@ impl<'a> PackageInstaller<'a> {
 /// `node_modules/<pkg>` path being a symlink. Resolve to the real path
 /// before walking so the directory iterator operates on a concrete directory.
 #[cfg(target_env = "ohos")]
-fn ohos_sign_native_binaries(pkg_dir: &[u8]) {
-    // ── DEBUG: entry log (remove after confirming calling path) ──
-    {
-        let p = std::path::Path::new(unsafe { core::str::from_utf8_unchecked(pkg_dir) });
-        bun_core::pretty_errorln!("<d>[sign]<r> <d>scan<r> {}", p.display());
-    }
-
+pub(crate) fn ohos_sign_native_binaries(pkg_dir: &[u8]) {
     let pkg_dir_canonical: Vec<u8>;
     let pkg_dir = {
         let p = std::path::Path::new(unsafe { core::str::from_utf8_unchecked(pkg_dir) });
@@ -2434,24 +2417,11 @@ fn ohos_sign_native_binaries(pkg_dir: &[u8]) {
 
     let dir = match Dir::open(pkg_dir) {
         Ok(d) => d,
-        Err(e) => {
-            bun_core::pretty_errorln!(
-                "<d>[sign]<r> <red>Dir::open<r> failed for {}: {:?}",
-                std::path::Path::new(unsafe { core::str::from_utf8_unchecked(pkg_dir) }).display(),
-                e,
-            );
-            return;
-        }
+        Err(_) => return,
     };
     let w = match Syscall::walker_skippable::walk(dir.fd(), &[], &[]) {
         Ok(w) => w,
-        Err(e) => {
-            bun_core::pretty_errorln!(
-                "<d>[sign]<r> <red>walk<r> failed: {:?}",
-                e,
-            );
-            return;
-        }
+        Err(_) => return,
     };
     let verbose = PackageManager::verbose_install();
     let mut signed: u32 = 0;
