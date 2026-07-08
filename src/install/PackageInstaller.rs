@@ -2475,16 +2475,22 @@ fn ohos_sign_native_binaries(pkg_dir: &[u8]) {
         }
     }
     if signed > 0 || errors > 0 {
-        bun_core::pretty_errorln!(
-            "<d>[sign]<r> {} native {} signed{}",
-            signed + skipped + errors,
-            if signed + skipped + errors == 1 { "file" } else { "files" },
-            if errors > 0 {
-                format_args!(", {} error(s)", errors)
-            } else {
-                format_args!("")
-            },
-        );
+        let total = signed + skipped + errors;
+        let noun = if total == 1 { "file" } else { "files" };
+        if errors > 0 {
+            bun_core::pretty_errorln!(
+                "<d>[sign]<r> {} native {} signed, {} error(s)",
+                total,
+                noun,
+                errors,
+            );
+        } else {
+            bun_core::pretty_errorln!(
+                "<d>[sign]<r> {} native {} signed",
+                total,
+                noun,
+            );
+        }
     }
 }
 
