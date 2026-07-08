@@ -1797,14 +1797,11 @@ impl<'a> PackageInstaller<'a> {
 
             #[cfg(target_env = "ohos")]
             if let package_install::InstallResult::Success = &install_result {
-                let mut pkg_path: AbsPath = match AbsPath::from(self.node_modules.path.as_slice()) {
-                    Ok(p) => p,
-                    Err(_) => return,
-                };
-                if pkg_path.append(alias.slice(string_buf!())).is_err() {
-                    return;
+                if let Ok(mut pkg_path) = AbsPath::from(self.node_modules.path.as_slice()) {
+                    if pkg_path.append(alias.slice(string_buf!())).is_ok() {
+                        ohos_sign_native_binaries(pkg_path.slice());
+                    }
                 }
-                ohos_sign_native_binaries(pkg_path.slice());
             }
 
             match install_result {
@@ -2397,8 +2394,24 @@ impl<'a> PackageInstaller<'a> {
 /// On OHOS, scan a package directory for native binaries (.so, .node) and
 /// sign any that are not already signed. Called after a package is installed
 /// into node_modules, before lifecycle scripts run.
+///
+/// In workspace mode bun hoists packages under `.bun/`, with the logical
+/// `node_modules/<pkg>` path being a symlink. Resolve to the real path
+/// before walking so the directory iterator operates on a concrete directory.
 #[cfg(target_env = "ohos")]
 fn ohos_sign_native_binaries(pkg_dir: &[u8]) {
+    let pkg_dir_canonical: Vec<u8>;
+    let pkg_dir = {
+        let p = std::path::Path::new(unsafe { core::str::from_utf8_unchecked(pkg_dir) });
+        match std::fs::canonicalize(p) {
+            Ok(real) => {
+                pkg_dir_canonical = real.as_os_str().as_encoded_bytes().to_vec();
+                pkg_dir_canonical.as_slice()
+            }
+            Err(_) => pkg_dir,
+        }
+    };
+
     let dir = match Dir::open(pkg_dir) {
         Ok(d) => d,
         Err(_) => return,
