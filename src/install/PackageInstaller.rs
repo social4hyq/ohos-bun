@@ -1795,6 +1795,17 @@ impl<'a> PackageInstaller<'a> {
                 }
             };
 
+            // ── DEBUG: log every install result ──
+            bun_core::pretty_errorln!(
+                "<d>[debug]<r> install {} → {}",
+                bstr::BStr::new(alias.slice(string_buf!())),
+                if matches!(&install_result, package_install::InstallResult::Success) {
+                    "ok"
+                } else {
+                    "fail"
+                },
+            );
+
             #[cfg(target_env = "ohos")]
             if let package_install::InstallResult::Success = &install_result {
                 // Turbofish ::<u8> is required for type inference in if-let;
@@ -1802,16 +1813,6 @@ impl<'a> PackageInstaller<'a> {
                 // trigger them the way `let p: AbsPath = ...` does.
                 if let Ok(mut pkg_path) = AbsPath::<u8>::from(self.node_modules.path.as_slice()) {
                     if pkg_path.append(alias.slice(string_buf!())).is_ok() {
-                        // ── DEBUG: call-site log (remove after confirming) ──
-                        {
-                            let p = std::path::Path::new(unsafe {
-                                core::str::from_utf8_unchecked(pkg_path.slice())
-                            });
-                            bun_core::pretty_errorln!(
-                                "<d>[sign]<r> <d>call<r> install_result=Success pkg={}",
-                                p.display(),
-                            );
-                        }
                         ohos_sign_native_binaries(pkg_path.slice());
                     }
                 }
