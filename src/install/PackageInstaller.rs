@@ -1797,7 +1797,10 @@ impl<'a> PackageInstaller<'a> {
 
             #[cfg(target_env = "ohos")]
             if let package_install::InstallResult::Success = &install_result {
-                if let Ok(mut pkg_path) = AbsPath::from(self.node_modules.path.as_slice()) {
+                // Turbofish ::<u8> is required for type inference in if-let;
+                // AbsPath's const generics have defaults but if-let doesn't
+                // trigger them the way `let p: AbsPath = ...` does.
+                if let Ok(mut pkg_path) = AbsPath::<u8>::from(self.node_modules.path.as_slice()) {
                     if pkg_path.append(alias.slice(string_buf!())).is_ok() {
                         ohos_sign_native_binaries(pkg_path.slice());
                     }
