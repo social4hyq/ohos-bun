@@ -1802,6 +1802,16 @@ impl<'a> PackageInstaller<'a> {
                 // trigger them the way `let p: AbsPath = ...` does.
                 if let Ok(mut pkg_path) = AbsPath::<u8>::from(self.node_modules.path.as_slice()) {
                     if pkg_path.append(alias.slice(string_buf!())).is_ok() {
+                        // ── DEBUG: call-site log (remove after confirming) ──
+                        {
+                            let p = std::path::Path::new(unsafe {
+                                core::str::from_utf8_unchecked(pkg_path.as_slice())
+                            });
+                            bun_core::pretty_errorln!(
+                                "<d>[sign]<r> <d>call<r> install_result=Success pkg={}",
+                                p.display(),
+                            );
+                        }
                         ohos_sign_native_binaries(pkg_path.slice());
                     }
                 }
@@ -2403,6 +2413,12 @@ impl<'a> PackageInstaller<'a> {
 /// before walking so the directory iterator operates on a concrete directory.
 #[cfg(target_env = "ohos")]
 fn ohos_sign_native_binaries(pkg_dir: &[u8]) {
+    // ── DEBUG: entry log (remove after confirming calling path) ──
+    {
+        let p = std::path::Path::new(unsafe { core::str::from_utf8_unchecked(pkg_dir) });
+        bun_core::pretty_errorln!("<d>[sign]<r> <d>scan<r> {}", p.display());
+    }
+
     let pkg_dir_canonical: Vec<u8>;
     let pkg_dir = {
         let p = std::path::Path::new(unsafe { core::str::from_utf8_unchecked(pkg_dir) });
@@ -2417,11 +2433,24 @@ fn ohos_sign_native_binaries(pkg_dir: &[u8]) {
 
     let dir = match Dir::open(pkg_dir) {
         Ok(d) => d,
-        Err(_) => return,
+        Err(e) => {
+            bun_core::pretty_errorln!(
+                "<d>[sign]<r> <red>Dir::open<r> failed for {}: {:?}",
+                std::path::Path::new(unsafe { core::str::from_utf8_unchecked(pkg_dir) }).display(),
+                e,
+            );
+            return;
+        }
     };
     let w = match Syscall::walker_skippable::walk(dir.fd(), &[], &[]) {
         Ok(w) => w,
-        Err(_) => return,
+        Err(e) => {
+            bun_core::pretty_errorln!(
+                "<d>[sign]<r> <red>walk<r> failed: {:?}",
+                e,
+            );
+            return;
+        }
     };
     let verbose = PackageManager::verbose_install();
     let mut signed: u32 = 0;
