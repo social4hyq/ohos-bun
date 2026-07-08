@@ -480,27 +480,15 @@ pub(crate) fn install_hoisted_packages(
             }
 
             // ── OHOS: sign native binaries after tree install ──
+            // The per-package signing in install_package_with_name_and_resolution
+            // is not reached in workspace mode (packages are deferred via runTasks).
+            // Walk the entire node_modules tree to sign any .so/.node file that
+            // was installed but missed by the per-package path.
             #[cfg(target_env = "ohos")]
             {
-                let deps: &[DependencyID] = node_modules.dependencies;
-                for &dep_id in deps {
-                    let alias = installer
-                        .lockfile()
-                        .buffers
-                        .dependencies
-                        .as_slice()
-                        [dep_id as usize]
-                        .name;
-                    if let Ok(mut pkg_path) =
-                        AbsPath::<u8>::from(installer.node_modules.path.as_slice())
-                    {
-                        // alias.name is a DependencyName; use the slice API
-                        if pkg_path.append(alias.bytes.as_slice()).is_ok() {
-                            crate::package_installer::ohos_sign_native_binaries(
-                                pkg_path.slice(),
-                            );
-                        }
-                    }
+                let root = installer.node_modules.path.as_slice();
+                if let Ok(mut root_path) = AbsPath::<u8>::from(root) {
+                    crate::package_installer::ohos_sign_native_binaries(root_path.slice());
                 }
             }
 

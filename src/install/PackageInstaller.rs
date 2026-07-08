@@ -2441,10 +2441,14 @@ pub(crate) fn ohos_sign_native_binaries(pkg_dir: &[u8]) {
         if !needs_sign {
             continue;
         }
-        let mut full = Vec::with_capacity(pkg_dir.len() + 1 + name.len());
+        // Use entry.path (relative path from walk root) instead of basename
+        // so the signing works both for per-package dirs (where path == basename)
+        // and for recursive walks of node_modules/ (where path includes subdirs).
+        let rel = entry.path.as_bytes();
+        let mut full = Vec::with_capacity(pkg_dir.len() + 1 + rel.len());
         full.extend_from_slice(pkg_dir);
         full.push(b'/');
-        full.extend_from_slice(name);
+        full.extend_from_slice(rel);
         let full_str = unsafe { core::str::from_utf8_unchecked(&full) };
         let p = std::path::Path::new(full_str);
         if ohos_sign::has_codesign(&std::fs::read(p).unwrap_or_default()) {
