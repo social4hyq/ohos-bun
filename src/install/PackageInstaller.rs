@@ -2403,6 +2403,15 @@ impl<'a> PackageInstaller<'a> {
 /// before walking so the directory iterator operates on a concrete directory.
 #[cfg(target_env = "ohos")]
 pub(crate) fn ohos_sign_native_binaries(pkg_dir: &[u8]) {
+    let verbose = PackageManager::verbose_install();
+    if verbose {
+        let p = std::path::Path::new(unsafe { core::str::from_utf8_unchecked(pkg_dir) });
+        bun_core::pretty_errorln!(
+            "<d>[sign]<r> <d>scan<r> {}",
+            p.display(),
+        );
+    }
+
     let pkg_dir_canonical: Vec<u8>;
     let pkg_dir = {
         let p = std::path::Path::new(unsafe { core::str::from_utf8_unchecked(pkg_dir) });
@@ -2417,13 +2426,27 @@ pub(crate) fn ohos_sign_native_binaries(pkg_dir: &[u8]) {
 
     let dir = match Dir::open(pkg_dir) {
         Ok(d) => d,
-        Err(_) => return,
+        Err(e) => {
+            if verbose {
+                let p = std::path::Path::new(unsafe { core::str::from_utf8_unchecked(pkg_dir) });
+                bun_core::pretty_errorln!(
+                    "<d>[sign]<r> <red>open<r> {}: {}",
+                    p.display(),
+                    e,
+                );
+            }
+            return;
+        }
     };
     let w = match Syscall::walker_skippable::walk(dir.fd(), &[], &[]) {
         Ok(w) => w,
-        Err(_) => return,
+        Err(_) => {
+            if verbose {
+                bun_core::pretty_errorln!("<d>[sign]<r> <red>walker<r> failed to create");
+            }
+            return;
+        }
     };
-    let verbose = PackageManager::verbose_install();
     let mut signed: u32 = 0;
     let mut skipped: u32 = 0;
     let mut errors: u32 = 0;
@@ -2481,23 +2504,25 @@ pub(crate) fn ohos_sign_native_binaries(pkg_dir: &[u8]) {
             }
         }
     }
-    if signed > 0 || errors > 0 {
-        let total = signed + skipped + errors;
-        let noun = if total == 1 { "file" } else { "files" };
-        if errors > 0 {
-            bun_core::pretty_errorln!(
-                "<d>[sign]<r> {} native {} signed, {} error(s)",
-                total,
-                noun,
-                errors,
-            );
-        } else {
-            bun_core::pretty_errorln!(
-                "<d>[sign]<r> {} native {} signed",
-                total,
-                noun,
-            );
-        }
+    let total = signed + skipped + errors;
+    let noun = if total == 1 { "file" } else { "files" };
+    if errors > 0 {
+        bun_core::pretty_errorln!(
+            "<d>[sign]<r> {} native {} signed, {} error(s)",
+            total,
+            noun,
+            errors,
+        );
+    } else if total > 0 {
+        bun_core::pretty_errorln!(
+            "<d>[sign]<r> {} native {} signed",
+            total,
+            noun,
+        );
+    } else if verbose {
+        bun_core::pretty_errorln!(
+            "<d>[sign]<r> <d>no<r> native files found",
+        );
     }
 }
 
