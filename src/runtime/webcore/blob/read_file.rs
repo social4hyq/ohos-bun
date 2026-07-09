@@ -485,7 +485,7 @@ impl ReadFile {
     /// `do_read_loop` can carry it across the `&mut self` `do_read` call
     /// without two live `&mut` covering overlapping memory (Stacked-Borrows
     /// UB). The slice is materialised only at the syscall boundary.
-    #[cfg(not(windows))]
+    #[cfg(all(not(windows), not(target_env = "ohos")))]
     fn remaining_buffer(&mut self, stack_buffer: &mut [u8]) -> (*mut u8, usize) {
         // `spare_capacity_mut()` is the safe spelling of
         // `as_mut_ptr().add(len) .. as_mut_ptr().add(cap)`; we immediately
@@ -813,6 +813,17 @@ impl ReadFile {
                 // to `self.buffer`'s spare capacity is ever live alongside
                 // `&mut self`.
                 let stack_ptr = stack_buffer.as_mut_ptr();
+                // OHOS anti-aliasing fix: when spare >= 64KB, the original code
+                // passed self.buffer's spare pointer into do_read while do_read
+                // also holds &mut self. Under Stacked Borrows this is UB and
+                // manifests on OHOS as Vec.len() appearing to grow during do_read
+                // even though do_read never touches self.buffer (verified via
+                // instrumented trace). Always read into the stack buffer first,
+                // then extend_from_slice into self.buffer — this keeps the &mut
+                // self borrow in do_read disjoint from self.buffer's storage.
+                #[cfg(target_env = "ohos")]
+                let (buf_ptr, buf_len) = (stack_ptr, stack_buffer.len());
+                #[cfg(not(target_env = "ohos"))]
                 let (buf_ptr, buf_len) = self.remaining_buffer(&mut stack_buffer);
 
                 if buf_len > 0 && self.errno.is_none() && !self.read_eof {
