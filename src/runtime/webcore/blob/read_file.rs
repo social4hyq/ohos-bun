@@ -796,6 +796,19 @@ impl ReadFile {
     fn do_read_loop(&mut self) {
         #[cfg(not(windows))]
         {
+            // OHOS DEBUG: trace ReadFile state to find stdin-truncation bug.
+            // Logs to /data/storage/el2/base/tmp/ohos-readfile-trace.log because
+            // eprintln is silenced in release builds.
+            fn trace_log(msg: String) {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("/data/storage/el2/base/tmp/ohos-readfile-trace.log")
+                {
+                    let _ = writeln!(f, "{}", msg);
+                }
+            }
             // we hold a 64 KB stack buffer incase the amount of data to
             // be read is greater than the reported amount
             //
@@ -817,8 +830,30 @@ impl ReadFile {
                 if buf_len > 0 && self.errno.is_none() && !self.read_eof {
                     let mut read_amount: usize = 0;
                     let mut retry = false;
+                    let buf_was_stack = buf_ptr == stack_ptr;
+                    let buf_cap_before = self.buffer.capacity();
+                    let buf_len_before = self.buffer.len();
+                    let buf_ptr_before = buf_ptr;
+                    let spare_ptr_before = self.buffer.as_ptr().wrapping_add(self.buffer.len());
+                    let spare_end_before = self.buffer.as_ptr().wrapping_add(self.buffer.capacity());
                     let continue_reading =
                         self.do_read((buf_ptr, buf_len), &mut read_amount, &mut retry);
+
+                    // Re-fetch after do_read to detect mutation during the call.
+                    let buf_ptr_after_check = buf_ptr;
+                    let stack_ptr_after = stack_buffer.as_mut_ptr();
+                    let cap_after = self.buffer.capacity();
+                    let len_after = self.buffer.len();
+                    let vec_ptr_after = self.buffer.as_ptr();
+
+                    trace_log(format!(
+                        "[do_read] buf_was_stack={} buf_len={} read_amount={} retry={} cont={} eof={} cap_b={} len_b={} cap_a={} len_a={} ptr_b={:p} ptr_a={:p} vec_ptr_a={:p} spare_b={:p} spare_e={:p} stack_a={:p}",
+                        buf_was_stack, buf_len, read_amount, retry, continue_reading,
+                        self.read_eof, buf_cap_before, buf_len_before,
+                        cap_after, len_after,
+                        buf_ptr_before, buf_ptr_after_check, vec_ptr_after,
+                        spare_ptr_before, spare_end_before, stack_ptr_after,
+                    ));
 
                     // We might read into the stack buffer, so we need to copy it into the heap.
                     if buf_ptr == stack_ptr {
