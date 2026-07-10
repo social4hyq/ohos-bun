@@ -576,6 +576,10 @@ export function emitRust(n: Ninja, cfg: Config, inputs: RustBuildInputs): string
   // and the `bun_bin` staticlib has no link step, so it's normally dead — but
   // if a target cdylib ever appears it'd fail with "could not open '-fuse-ld=lld'".
   if (!cfg.windows) rustflags.push(`-Clink-arg=-fuse-ld=lld`);
+  // OHOS: the LLD CodeSign patch injects a .codesign section at link time
+  // when --code-sign is passed. This signs every linked binary (including
+  // cargo build-script artifacts) so the OHOS kernel will execute them.
+  if (cfg.ohos) rustflags.push(`-Clink-arg=--code-sign`);
   // Keep the clang driver quiet about link args that don't apply to a given
   // artifact kind: rustc adds `-no-pie` under `-Crelocation-model=static`,
   // which is meaningless when it links a target cdylib, and rustc's

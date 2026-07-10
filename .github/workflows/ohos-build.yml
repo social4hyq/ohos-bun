@@ -1,0 +1,265 @@
+# OHOS (HarmonyOS) aarch64 Build CI
+#
+# Self-hosted runner on HarmonyOS PC.
+# Builds bun for OHOS on push to ohos-aarch64 branch.
+# On workflow_dispatch: also creates Homebrew bottle + uploads to atomgit.
+#
+# Environment mirrors the successful Homebrew formula build (bun.rb).
+# Key: brew cc/c++ wrappers auto-sign every ELF output (incl. cargo build-scripts).
+#
+# CI trigger: manual re-run after clearing Actions history (2026-07-11).
+
+name: OHOS Build
+
+on:
+  push:
+    branches: [ohos-aarch64]
+    paths:
+      - 'src/**'
+      - 'scripts/build/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'patches/**'
+      - '.github/workflows/ohos-build.yml'
+  workflow_dispatch:
+    inputs:
+      bottle_rev:
+        description: 'Bottle revision number (e.g. 30)'
+        required: false
+        type: string
+
+concurrency:
+  group: ohos-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  OHOS_SDK_ROOT: /storage/Users/currentUser/.harmonybrew/opt/ohos-sdk
+  OHOS_SYSROOT: /storage/Users/currentUser/.harmonybrew/opt/ohos-sdk/native/sysroot
+  OHOS_LLVM_PREFIX: /storage/Users/currentUser/.harmonybrew/opt/llvm@21
+  OHOS_ICU_PREFIX: /storage/Users/currentUser/.harmonybrew/opt/icu4c@78
+  HOMEBREW_PREFIX: /storage/Users/currentUser/.harmonybrew
+  TMPDIR: /data/storage/el2/base/tmp
+  # CARGO_BUILD_JOBS=1 used to be required: the shared llvm@21 cc/c++ shims
+  # signed build outputs in-place with no sync before returning control to
+  # the caller, and concurrent cargo build-script link+exec hit ETXTBSY.
+  # The shared shim has since been fixed (llvm@21 formula's LLD --code-sign
+  # design, redeployed 2026-07-11) — verified locally (exec + dlopen) and
+  # via CI at jobs=4 with zero ETXTBSY. Re-lower to 1 if this regresses.
+  CARGO_BUILD_JOBS: 4
+  RUSTUP_HOME: /data/storage/el2/base/tmp/rust-nightly-2026-05-06
+  CARGO_HOME: /data/storage/el2/base/tmp/rust-nightly-2026-05-06/cargo
+  RUSTUP_TOOLCHAIN: nightly-2026-05-06
+  # brew cc/c++ wrappers auto-sign ELF outputs (OHOS kernel exec requirement)
+  CC: /storage/Users/currentUser/.harmonybrew/bin/cc
+  CXX: /storage/Users/currentUser/.harmonybrew/bin/c++
+
+jobs:
+  build:
+    runs-on: self-hosted
+    timeout-minutes: 300
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync WebKit version pin
+        run: |
+          grep 'export const WEBKIT_VERSION' scripts/build/deps/webkit.ts | grep -oE '[a-f0-9]{40}' > .webkit-version
+          echo "Pinned WebKit commit: $(cat .webkit-version)"
+
+      # --- Environment ---
+
+      - name: Setup toolchain
+        run: |
+          mkdir -p .bin
+          # Use brew cc/c++ wrappers that auto-sign every ELF output
+          ln -sf "$HOMEBREW_PREFIX/bin/cc" .bin/clang
+          ln -sf "$HOMEBREW_PREFIX/bin/c++" .bin/clang++
+          ln -sf "$OHOS_LLVM_PREFIX/bin/llvm-strip" .bin/strip
+          ln -sf "$HOMEBREW_PREFIX/bin/cc" .bin/gcc
+
+      - name: Setup ICU symlinks
+        run: |
+          mkdir -p build/ohos-icu/target/include build/ohos-icu/target/lib || exit 1
+          ln -sf "$OHOS_ICU_PREFIX/include/unicode" build/ohos-icu/target/include/unicode || exit 1
+          for a in libicudata.a libicui18n.a libicuuc.a; do
+            ln -sf "$OHOS_ICU_PREFIX/lib/$a" "build/ohos-icu/target/lib/$a" || exit 1
+          done
+          mkdir -p build/ohos-icu/host/bin || exit 1
+          for t in genrb genccode gencmn pkgdata; do
+            if [ -f "$OHOS_ICU_PREFIX/bin/$t" ]; then
+              ln -sf "$OHOS_ICU_PREFIX/bin/$t" "build/ohos-icu/host/bin/$t" || true
+            fi
+          done
+
+      - name: Setup LLVM cross-libs symlinks
+        run: |
+          mkdir -p build/ohos-cross-libs/libcxx/include
+          ln -sf "$OHOS_LLVM_PREFIX/include/aarch64-linux-ohos/c++/v1" build/ohos-cross-libs/libcxx/include/v1
+          mkdir -p build/ohos-cross-libs/libcxxabi/include
+          ln -sf "$OHOS_LLVM_PREFIX/include/aarch64-linux-ohos/c++/v1" build/ohos-cross-libs/libcxxabi/include
+          for d in libcxx libcxxabi libunwind; do
+            mkdir -p "build/ohos-cross-libs/$d/lib"
+            for a in "$OHOS_LLVM_PREFIX/lib/aarch64-linux-ohos/"*.a; do
+              ln -sf "$a" "build/ohos-cross-libs/$d/lib/$(basename "$a")"
+            done
+          done
+
+      # --- Caches ---
+
+      - name: Restore Rust cache
+        uses: actions/cache@v4
+        with:
+          path: build/release/rust-target
+          key: rust-ohos-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-v2
+          restore-keys: rust-ohos-
+
+      - name: Restore WebKit build cache
+        uses: actions/cache@v4
+        with:
+          path: build/release/deps/WebKit
+          key: webkit-ohos-${{ hashFiles('.webkit-version') }}-v3
+
+      # --- Dependencies ---
+
+      - name: bun install
+        run: |
+          bun install
+          bun install --cwd src/node-fallbacks
+
+      # --- Build ---
+
+      - name: Restore WebKit source cache
+        uses: actions/cache@v4
+        with:
+          path: vendor/WebKit
+          key: webkit-src-${{ hashFiles('.webkit-version') }}
+          restore-keys: webkit-src-
+
+      - name: Prepare WebKit source
+        run: |
+          retry_git() {
+            n=$1; shift
+            attempt=1
+            while [ "$attempt" -le "$n" ]; do
+              echo "git $* (attempt $attempt/$n)"
+              if git "$@" 2>&1; then
+                return 0
+              fi
+              echo "Failed, retrying in 10s..."
+              sleep 10
+              attempt=$((attempt + 1))
+            done
+            return 1
+          }
+
+          WEBKIT_VERSION=$(cat .webkit-version)
+          echo "WEBKIT_VERSION=$WEBKIT_VERSION" >> "$GITHUB_ENV"
+
+          if [ -d vendor/WebKit/.git ] && git -C vendor/WebKit cat-file -e "$WEBKIT_VERSION" 2>/dev/null; then
+            echo "WebKit source cache hit — checkout $WEBKIT_VERSION"
+            git -C vendor/WebKit checkout -f "$WEBKIT_VERSION"
+          elif [ -d vendor/WebKit/.git ]; then
+            echo "WebKit repo present but missing $WEBKIT_VERSION — trying incremental fetch..."
+            if retry_git 3 -C vendor/WebKit fetch --depth=500 origin "$WEBKIT_VERSION" \
+               && git -C vendor/WebKit cat-file -e "$WEBKIT_VERSION" 2>/dev/null; then
+              git -C vendor/WebKit checkout -f "$WEBKIT_VERSION"
+            elif retry_git 3 -C vendor/WebKit fetch --deepen=2000 origin main \
+               && git -C vendor/WebKit cat-file -e "$WEBKIT_VERSION" 2>/dev/null; then
+              git -C vendor/WebKit checkout -f "$WEBKIT_VERSION"
+            else
+              echo "Incremental fetch exhausted, falling back to full re-clone..."
+              rm -rf vendor/WebKit
+            fi
+          fi
+
+          if [ ! -d vendor/WebKit/.git ]; then
+            echo "No usable WebKit source cache, cloning fresh..."
+            retry_git 3 clone --depth 1 https://github.com/oven-sh/WebKit.git vendor/WebKit \
+              || { echo "ERROR: WebKit clone failed after retries"; exit 1; }
+            retry_git 3 -C vendor/WebKit fetch --deepen=500 origin main || true
+            if ! git -C vendor/WebKit checkout "$WEBKIT_VERSION" 2>/dev/null; then
+              echo "Commit not in --deepen=500, trying --unshallow..."
+              retry_git 3 -C vendor/WebKit fetch --unshallow origin || true
+              git -C vendor/WebKit checkout "$WEBKIT_VERSION"
+            fi
+          fi
+
+      - name: Save WebKit source cache
+        uses: actions/cache@v4
+        with:
+          path: vendor/WebKit
+          key: webkit-src-${{ hashFiles('.webkit-version') }}
+
+      - name: Configure
+        env:
+          # llvm@21 FIRST so ld.lld 21.1.8 shadows brew's 15.0.4
+          PATH: ${{ github.workspace }}/.bin:/storage/Users/currentUser/.harmonybrew/opt/llvm@21/bin:/data/storage/el2/base/tmp/rust-nightly-2026-05-06/bin:/storage/Users/currentUser/.harmonybrew/bin:/storage/Users/currentUser/.harmonybrew/opt/bun-bootstrap/bin:/usr/local/bin:/usr/bin:/bin
+          # LD_LIBRARY_PATH for lld runtime deps + cargo OpenSSL
+          LD_LIBRARY_PATH: /storage/Users/currentUser/.harmonybrew/opt/openssl@3/lib:/storage/Users/currentUser/.harmonybrew/opt/libxml2/lib:/storage/Users/currentUser/.harmonybrew/opt/zlib/lib
+        run: |
+          echo "CC=$CC ($($CC --version | head -1))"
+          echo "CXX=$CXX ($($CXX --version | head -1))"
+          echo "ld.lld=$(which ld.lld) ($(ld.lld --version | head -1))"
+          bun scripts/build.ts \
+            --os=ohos \
+            --arch=aarch64 \
+            --profile=release \
+            --webkit=local \
+            --ohos-sdk-root="$OHOS_SDK_ROOT" \
+            --ohos-sysroot="$OHOS_SYSROOT" \
+            --configure-only
+
+      - name: Build
+        env:
+          PATH: ${{ github.workspace }}/.bin:/storage/Users/currentUser/.harmonybrew/opt/llvm@21/bin:/data/storage/el2/base/tmp/rust-nightly-2026-05-06/bin:/storage/Users/currentUser/.harmonybrew/bin:/usr/local/bin:/usr/bin:/bin
+          LD_LIBRARY_PATH: /storage/Users/currentUser/.harmonybrew/opt/openssl@3/lib:/storage/Users/currentUser/.harmonybrew/opt/libxml2/lib:/storage/Users/currentUser/.harmonybrew/opt/zlib/lib
+        run: ninja -C build/release bun
+
+      # --- Sign final binary ---
+
+      - name: Sign binary
+        run: |
+          cp build/release/bun build/release/bun.unsigned
+          binary-sign-tool sign -selfSign 1 \
+            -inFile build/release/bun.unsigned \
+            -outFile build/release/bun
+          chmod +x build/release/bun
+
+      # --- Verify ---
+
+      - name: Binary info
+        run: |
+          file build/release/bun
+          ls -lh build/release/bun
+          file build/release/bun | grep -qiE "ELF.*(arm64|aarch64)" || {
+            echo "ERROR: Not an ARM64 ELF"; exit 1
+          }
+
+      - name: Smoke test
+        env:
+          NO_COLOR: "1"
+        run: |
+          RESULT=$(build/release/bun -e 'console.log(2**32)')
+          echo "2**32 = $RESULT"
+          [ "$RESULT" = "4294967296" ] || { echo "FAILED"; exit 1; }
+          echo "Smoke test passed"
+
+      # --- Artifact ---
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bun-ohos-aarch64
+          path: build/release/bun
+          retention-days: 30
+
+      # --- Bottle (workflow_dispatch only) ---
+
+      - name: Create and upload bottle
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          ATOMGIT_TOKEN: ${{ secrets.ATOMGIT_TOKEN }}
+        run: |
+          export BOTTLE_REV="${{ inputs.bottle_rev }}"
+          bash scripts/ohos/upload-bottle.sh

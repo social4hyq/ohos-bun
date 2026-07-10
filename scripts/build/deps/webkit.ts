@@ -375,7 +375,6 @@ export const webkit: Dependency = {
             CMAKE_PREFIX_PATH: cfg.ohosIcuDir,
             ICU_ROOT: cfg.ohosIcuDir,
             CMAKE_THREAD_LIBS_INIT: "-lpthread",
-            CMAKE_HAVE_THREADS_LIBRARY: "1",
             CMAKE_DL_LIBS: "",
             CMAKE_FIND_ROOT_PATH_MODE_PACKAGE: "BOTH",
             CMAKE_FIND_ROOT_PATH_MODE_LIBRARY: "BOTH",
