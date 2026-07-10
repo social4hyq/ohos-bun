@@ -196,9 +196,12 @@ export const webkit: Dependency = {
   versionMacro: "WEBKIT",
 
   source: cfg => {
-    // OHOS: use locally installed bun-webkit (formula) instead of downloading.
-    // The build environment pre-populates the cache from OHOS_WEBKIT_ROOT.
-    if (cfg.ohos) {
+    // OHOS prebuilt: use locally installed bun-webkit (formula) instead of
+    // downloading. The build environment pre-populates the cache from
+    // OHOS_WEBKIT_ROOT.
+    // OHOS local: fall through to the cmake build path below when
+    // --webkit=local is specified.
+    if (cfg.ohos && cfg.webkit === "prebuilt") {
       const destDir = prebuiltDestDir(cfg);
       const identity = `${cfg.webkitVersion}${prebuiltSuffix(cfg)}`;
       const identityPath = join(destDir, ".identity");
