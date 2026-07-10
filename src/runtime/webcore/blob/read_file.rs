@@ -519,7 +519,25 @@ impl ReadFile {
             // this call. We never access `self.buffer` here, so no aliasing.
             let buf = unsafe { core::slice::from_raw_parts_mut(buffer.0, buffer.1) };
             if bun_sys::S::ISSOCK(self.file_store.mode) {
-                break 'brk bun_sys::recv_non_block(self.opened_fd, buf);
+                // OHOS bug workaround: recv(MSG_DONTWAIT) on AF_UNIX SOCK_STREAM
+                // can report EAGAIN while having actually written bytes into buf,
+                // which corrupts the Vec spare capacity (commit_spare(0) leaves
+                // those bytes uncommitted, and the next recv overwrites them).
+                // Result: Bun.stdin reads of >1MB return zero-garbage data.
+                // Verified via instrumented ReadFile trace (logs/test-stdin-race/
+                // trace-fail-v2.log): Vec.len() grows by exactly 524160 (socket
+                // buffer cap) during retry=true iterations where read_amount=0.
+                // Workaround: use blocking read() for sockets on OHOS — the fd
+                // is already blocking (spawn creates socketpair with nonblock=false),
+                // so read() will not return EAGAIN spuriously.
+                #[cfg(target_env = "ohos")]
+                {
+                    break 'brk bun_sys::read(self.opened_fd, buf);
+                }
+                #[cfg(not(target_env = "ohos"))]
+                {
+                    break 'brk bun_sys::recv_non_block(self.opened_fd, buf);
+                }
             }
             break 'brk bun_sys::read(self.opened_fd, buf);
         };
