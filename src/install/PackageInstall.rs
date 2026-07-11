@@ -1656,10 +1656,11 @@ impl<'a> PackageInstall<'a> {
                                         ) {
                                             Ok(()) => {}
                                             Err(retry_err)
-                                                if matches!(
-                                                    retry_err.get_errno(),
-                                                    sys::E::EPERM | sys::E::EACCES
-                                                ) =>
+                                                if cfg!(target_env = "ohos")
+                                                    && matches!(
+                                                        retry_err.get_errno(),
+                                                        sys::E::EPERM | sys::E::EACCES
+                                                    ) =>
                                             {
                                                 // OHOS: retry also blocked; copy instead
                                                 crate::copy_file_fallback(
@@ -1680,8 +1681,11 @@ impl<'a> PackageInstall<'a> {
                                             bun_errno::SystemErrno::ENXIO,
                                         ));
                                     }
-                                    sys::E::EPERM | sys::E::EACCES => {
-                                        // OHOS SELinux blocks hard links; fall back to copy
+                                    // OHOS SELinux blocks hard links; fall back to copy. Not
+                                    // enabled elsewhere: a hardlink EPERM/EACCES there (e.g.
+                                    // fs.protected_hardlinks=1 on Linux) is a real failure that
+                                    // should surface, not be silently papered over with a copy.
+                                    sys::E::EPERM | sys::E::EACCES if cfg!(target_env = "ohos") => {
                                         crate::copy_file_fallback(
                                             entry.dir,
                                             entry.basename,

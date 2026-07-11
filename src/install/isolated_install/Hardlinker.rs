@@ -274,10 +274,11 @@ impl Hardlinker {
                                         ) {
                                             sys::Result::Ok(()) => {}
                                             sys::Result::Err(link_err2)
-                                                if matches!(
-                                                    link_err2.get_errno(),
-                                                    sys::E::EPERM | sys::E::EACCES
-                                                ) =>
+                                                if cfg!(target_env = "ohos")
+                                                    && matches!(
+                                                        link_err2.get_errno(),
+                                                        sys::E::EPERM | sys::E::EACCES
+                                                    ) =>
                                             {
                                                 // OHOS: retry also blocked; copy instead
                                                 if crate::copy_file_fallback(
@@ -310,10 +311,11 @@ impl Hardlinker {
                                         ) {
                                             sys::Result::Ok(()) => {}
                                             sys::Result::Err(link_err2)
-                                                if matches!(
-                                                    link_err2.get_errno(),
-                                                    sys::E::EPERM | sys::E::EACCES
-                                                ) =>
+                                                if cfg!(target_env = "ohos")
+                                                    && matches!(
+                                                        link_err2.get_errno(),
+                                                        sys::E::EPERM | sys::E::EACCES
+                                                    ) =>
                                             {
                                                 // OHOS: linkat blocked even after creating
                                                 // parent dir; fall back to copy.
@@ -333,8 +335,10 @@ impl Hardlinker {
                                             }
                                         }
                                     }
-                                    sys::E::EPERM | sys::E::EACCES => {
-                                        // OHOS SELinux blocks linkat; fall back to copy
+                                    // OHOS SELinux blocks linkat; fall back to copy. Not
+                                    // enabled elsewhere: see the matching comment in
+                                    // PackageInstall.rs.
+                                    sys::E::EPERM | sys::E::EACCES if cfg!(target_env = "ohos") => {
                                         let Some(dest_parent) = self.dest.dirname() else {
                                             break 'body Some(link_err1);
                                         };
