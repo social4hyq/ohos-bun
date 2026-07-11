@@ -68,6 +68,32 @@ fn unsigned_elf_not_detected_as_signed() {
 }
 
 #[test]
+fn sign_rejects_non_64byte_section_header_entries() {
+    let mut elf = tiny_elf64();
+    // Corrupt e_shentsize (offset 0x3a) — every downstream offset computation
+    // assumes 64-byte entries, so this must be rejected up front rather than
+    // silently misparsing the section header table.
+    elf[0x3a..0x3c].copy_from_slice(&40u16.to_le_bytes());
+    let result = sign_selfsign(&elf);
+    assert!(result.is_err(), "sign must reject a non-64-byte e_shentsize");
+}
+
+#[test]
+fn sign_rejects_truncated_section_header_table() {
+    let elf = tiny_elf64();
+    // tiny_elf64: e_shoff=64, e_shnum=2 -> the section header table needs
+    // 64 + 2*64 = 192 bytes. Truncate well below that so the second (shstrtab)
+    // entry is missing entirely — parse_header must reject this instead of a
+    // downstream read later panicking on an out-of-bounds slice.
+    let truncated = &elf[..150];
+    let result = sign_selfsign(truncated);
+    assert!(
+        result.is_err(),
+        "sign must reject a section header table that runs past the end of the buffer"
+    );
+}
+
+#[test]
 fn sign_adds_codesign_section() {
     let elf = tiny_elf64();
     let signed = sign_selfsign(&elf).expect("sign failed");
