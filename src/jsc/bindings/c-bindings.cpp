@@ -90,9 +90,13 @@ extern "C" bool is_executable_file(const char* path)
     close(fd);
     return true;
 #else
-    // Linux (no O_EXEC): use stat to check x bit.
+    // Linux (no O_EXEC): use stat to check x bit. Directories also carry an
+    // x bit (traversal permission), so this must also reject non-regular
+    // files the same way the OHOS branch above does.
     struct stat st;
     if (stat(path, &st) != 0)
+        return false;
+    if (!S_ISREG(st.st_mode))
         return false;
     return (st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) != 0;
 #endif
