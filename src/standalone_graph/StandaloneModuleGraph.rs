@@ -464,32 +464,113 @@ mod elf {
         }
 
         pub(super) fn get_data() -> Option<(*mut u8, usize)> {
-            let file = File::open("/proc/self/exe").ok()?;
-            let (sh_offset, sh_size) = locate_bun_section(&file)?;
+            // Primary: read .bun section from /proc/self/exe via file I/O then
+            // mmap MAP_PRIVATE so JSC can mutate bytecode in place.
+            match File::open("/proc/self/exe") {
+                Ok(file) => {
+                    let (sh_offset, sh_size) = locate_bun_section(&file)?;
 
-            let mut hdr = [0u8; 8];
-            read_at(&file, sh_offset, &mut hdr)?;
-            let byte_count = u64::from_le_bytes(hdr) as usize;
+                    let mut hdr = [0u8; 8];
+                    read_at(&file, sh_offset, &mut hdr)?;
+                    let byte_count = u64::from_le_bytes(hdr) as usize;
 
-            if byte_count.checked_add(8)? != sh_size as usize {
-                return None;
+                    if byte_count.checked_add(8)? != sh_size as usize {
+                        return None;
+                    }
+
+                    let mapping = unsafe {
+                        libc::mmap(
+                            ptr::null_mut(),
+                            sh_size as usize,
+                            libc::PROT_READ | libc::PROT_WRITE,
+                            libc::MAP_PRIVATE,
+                            file.as_raw_fd(),
+                            sh_offset as i64,
+                        )
+                    };
+                    if mapping == libc::MAP_FAILED {
+                        return None;
+                    }
+
+                    Some((unsafe { (mapping as *mut u8).add(8) }, byte_count))
+                }
+                Err(_) => {
+                    // Execute-only fallback (chmod 0o111): OHOS hmdfs denies
+                    // open("/proc/self/exe") for files lacking the read bit.
+                    //
+                    // write_bun_section() stored the link-time virtual address of
+                    // the payload in BUN_COMPILED.size. On OHOS all binaries are
+                    // PIE, so that link-time vaddr must be shifted by the ASLR
+                    // base before dereferencing. We read /proc/self/maps (always
+                    // accessible, regardless of file execute-only permission) to
+                    // find the load base, then compute the runtime address.
+                    unsafe extern "C" {
+                        fn Bun__getStandaloneModuleGraphELFVaddr() -> *mut u64;
+                    }
+                    // SAFETY: FFI call; symbol always present in ELF bun binaries.
+                    let vaddr_ptr = unsafe { Bun__getStandaloneModuleGraphELFVaddr() };
+                    if vaddr_ptr.is_null() {
+                        return None;
+                    }
+                    // link-time vaddr written by write_bun_section().
+                    let link_vaddr = unsafe { core::ptr::read_unaligned(vaddr_ptr) };
+                    if link_vaddr == 0 {
+                        return None;
+                    }
+
+                    // Find the PIE load base: scan /proc/self/maps for the first
+                    // file-backed mapping at file offset 0.  On OHOS (hmdfs/tmpfs)
+                    // the ELF header segment is mapped `r--p` (not `r-xp` as on
+                    // glibc Linux), so matching on execute permission misses it.
+                    // The first mapping with offset 0 and a real path is always
+                    // the ELF header PT_LOAD — its start address IS the PIE base.
+                    let load_base: usize = {
+                        let mut base = 0usize;
+                        if let Ok(maps) = std::fs::read_to_string("/proc/self/maps") {
+                            'maps: for line in maps.lines() {
+                                let mut cols = line.split_whitespace();
+                                let Some(addr_range) = cols.next() else { continue };
+                                let _perms = cols.next();
+                                let Some(file_off) = cols.next() else { continue };
+                                cols.next(); // dev
+                                let inode_str = cols.next().unwrap_or("0");
+                                let path = cols.next().unwrap_or("");
+                                // inode == 0 means anonymous mapping; skip those.
+                                if file_off == "00000000"
+                                    && inode_str != "0"
+                                    && !path.is_empty()
+                                    && !path.starts_with('[')
+                                {
+                                    if let Some(start_hex) = addr_range.split('-').next() {
+                                        if let Ok(b) = usize::from_str_radix(start_hex, 16) {
+                                            base = b;
+                                            break 'maps;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        base
+                    };
+                    if load_base == 0 {
+                        return None;
+                    }
+
+                    // runtime_addr = load_base + link_vaddr (PIE relocation).
+                    let runtime_addr = load_base.wrapping_add(link_vaddr as usize);
+                    let target = runtime_addr as *mut u8;
+                    // SAFETY: target points to an 8-byte little-endian length prefix
+                    // inside the writable PT_LOAD extended by write_bun_section().
+                    let payload_len = u64::from_le_bytes(unsafe {
+                        core::ptr::read_unaligned(target.cast::<[u8; 8]>())
+                    });
+                    if payload_len < 8 {
+                        return None;
+                    }
+                    // SAFETY: payload_len bytes follow the 8-byte header at `target`.
+                    Some((unsafe { target.add(8) }, payload_len as usize))
+                }
             }
-
-            let mapping = unsafe {
-                libc::mmap(
-                    ptr::null_mut(),
-                    sh_size as usize,
-                    libc::PROT_READ | libc::PROT_WRITE,
-                    libc::MAP_PRIVATE,
-                    file.as_raw_fd(),
-                    sh_offset as i64,
-                )
-            };
-            if mapping == libc::MAP_FAILED {
-                return None;
-            }
-
-            Some((unsafe { (mapping as *mut u8).add(8) }, byte_count))
         }
     }
 
