@@ -28,8 +28,9 @@ use bun_sys;
 /// `bun_core::Fd` lacks an inherent forwarder.
 #[cfg(unix)]
 #[inline]
-fn dir_exists(path: &'static [u8]) -> bool {
-    // SAFETY: `path` is a NUL-free static literal; copy into a stack ZBox.
+fn dir_exists(path: &[u8]) -> bool {
+    // ZBox::from_bytes copies into an owned stack ZBox — `path` doesn't need
+    // to outlive this call.
     let z = ZBox::from_bytes(path);
     bun_sys::directory_exists_at(bun_sys::Fd::cwd(), &z).unwrap_or(false)
 }
