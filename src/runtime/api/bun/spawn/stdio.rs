@@ -114,7 +114,7 @@ impl Stdio {
         }
     }
 
-    pub fn can_use_memfd(&self, _is_sync: bool, _has_max_buffer: bool) -> bool {
+    pub fn can_use_memfd(&self) -> bool {
         // OHOS: memfd writes not visible to fstat (see use_memfd).
         #[cfg(not(all(any(target_os = "linux", target_os = "android"), not(target_env = "ohos"))))]
         {

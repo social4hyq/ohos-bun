@@ -643,16 +643,20 @@ Full documentation is available at <magenta>https://bun.com/docs/cli/run<r>
 
         // SAFETY: `Transpiler::init` always sets `fs` to the process singleton.
         let top_level_dir = unsafe { (*this_transpiler.fs).top_level_dir };
+        // On OHOS, a permission-denied top-level dir (e.g. a FUSE mount where
+        // getcwd/openat is blocked by SELinux) is not fatal — the resolver
+        // already silences EPERM/EACCES internally (see the matching handling
+        // at resolver.rs:4454), and this recovers with a $HOME/"/" fallback
+        // DirInfo instead. Everywhere else, a failure to read the top-level
+        // directory is a real, fatal error and must be reported as such —
+        // restore that upstream behavior exactly.
         let root_dir_info: Option<bun_resolver::DirInfoRef> =
             match this_transpiler.resolver.read_dir_info(top_level_dir) {
+                #[cfg(target_env = "ohos")]
                 Err(err)
                     if err == bun_resolver::Error::Sys(bun_errno::SystemErrno::EPERM)
                         || err == bun_resolver::Error::Sys(bun_errno::SystemErrno::EACCES) =>
                 {
-                    // Permission-denied directories (e.g. FUSE mounts where
-                    // `getcwd` / `openat` is blocked by SELinux) are not fatal.
-                    // Skip package.json env metadata, same as the resolver
-                    // handling at resolver.rs:4454 (EPERM/EACCES → Ok(None)).
                     None
                 }
                 Err(err) => {
@@ -674,25 +678,40 @@ Full documentation is available at <magenta>https://bun.com/docs/cli/run<r>
                     Output::flush();
                     return Err(err.into());
                 }
+                #[cfg(target_env = "ohos")]
+                Ok(None) => None,
+                #[cfg(not(target_env = "ohos"))]
                 Ok(None) => {
-                    // Directory not found or unreadable — not fatal.
-                    // The resolver already silences EPERM/EACCES internally;
-                    // this catches the remaining cases (ENOENT, ENOTDIR, etc.)
-                    // that propagate as Ok(None) from dir_info_cached_miss.
-                    None
+                    // SAFETY: see `Err` arm above.
+                    let _ = unsafe { ctx.log() }.print(std::ptr::from_mut::<bun_core::io::Writer>(
+                        Output::error_writer(),
+                    ));
+                    pretty_errorln!("error loading current directory");
+                    Output::flush();
+                    return Err(crate::Error::CouldntReadCurrentDirectory);
                 }
                 Ok(Some(info)) => Some(info),
             };
-        // Fallback root DirInfo for callers that ignore the return value
-        // (filter_run.rs, pack_command.rs both discard it). Uses $HOME
-        // which is always readable; "/" may be blocked by SELinux (OHOS).
+        // OHOS-only fallback root DirInfo for the two None cases above. Uses
+        // $HOME which is always readable; "/" may be blocked by SELinux.
         // Returns an error only when neither path is readable.
-        let home = std::env::var("HOME").unwrap_or_default();
-        let root_dir_info_fallback: bun_resolver::DirInfoRef = this_transpiler
-            .resolver
-            .read_dir_info_ignore_error(if home.is_empty() { b"/" } else { home.as_bytes() })
-            .or_else(|| this_transpiler.resolver.read_dir_info_ignore_error(b"/"))
-            .ok_or(crate::Error::InstallFailed)?;
+        #[cfg(target_env = "ohos")]
+        let root_dir_info: bun_resolver::DirInfoRef = match root_dir_info {
+            Some(info) => info,
+            None => {
+                let home = std::env::var("HOME").unwrap_or_default();
+                this_transpiler
+                    .resolver
+                    .read_dir_info_ignore_error(if home.is_empty() { b"/" } else { home.as_bytes() })
+                    .or_else(|| this_transpiler.resolver.read_dir_info_ignore_error(b"/"))
+                    .ok_or(crate::Error::InstallFailed)?
+            }
+        };
+        // Off OHOS, every arm above either diverges (return Err(...)) or
+        // produces Some(info), so this is always populated.
+        #[cfg(not(target_env = "ohos"))]
+        let root_dir_info: bun_resolver::DirInfoRef =
+            root_dir_info.expect("Ok(None)/EPERM/EACCES arms are OHOS-only; other arms diverge");
 
         this_transpiler.resolver.store_fd = false;
 
@@ -771,42 +790,40 @@ Full documentation is available at <magenta>https://bun.com/docs/cli/run<r>
             }
         }
 
-        if let Some(root_dir_info) = root_dir_info {
-            if let Some(package_json) = root_dir_info.enclosing_package_json {
-                if !package_json.name.is_empty() {
-                    if env_loader.map.get(NpmArgs::PACKAGE_NAME).is_none() {
-                        env_loader
-                            .map
-                            .put(NpmArgs::PACKAGE_NAME, &package_json.name)
-                            .expect("unreachable");
-                    }
+        if let Some(package_json) = root_dir_info.enclosing_package_json {
+            if !package_json.name.is_empty() {
+                if env_loader.map.get(NpmArgs::PACKAGE_NAME).is_none() {
+                    env_loader
+                        .map
+                        .put(NpmArgs::PACKAGE_NAME, &package_json.name)
+                        .expect("unreachable");
                 }
+            }
 
-                env_loader
-                    .map
-                    .put_default(b"npm_package_json", package_json.source.path.text)
-                    .expect("unreachable");
+            env_loader
+                .map
+                .put_default(b"npm_package_json", package_json.source.path.text)
+                .expect("unreachable");
 
-                if !package_json.version.is_empty() {
-                    if env_loader.map.get(NpmArgs::PACKAGE_VERSION).is_none() {
-                        env_loader
-                            .map
-                            .put(NpmArgs::PACKAGE_VERSION, &package_json.version)
-                            .expect("unreachable");
-                    }
+            if !package_json.version.is_empty() {
+                if env_loader.map.get(NpmArgs::PACKAGE_VERSION).is_none() {
+                    env_loader
+                        .map
+                        .put(NpmArgs::PACKAGE_VERSION, &package_json.version)
+                        .expect("unreachable");
                 }
+            }
 
-                if let Some(config) = package_json.config.as_deref() {
-                    env_loader.map.ensure_unused_capacity(config.count())?;
-                    for (k, v) in config.keys().iter().zip(config.values().iter()) {
-                        let key = strings::concat(&[b"npm_package_config_", &k[..]]);
-                        env_loader.map.put_assume_capacity(&key, *v);
-                    }
+            if let Some(config) = package_json.config.as_deref() {
+                env_loader.map.ensure_unused_capacity(config.count())?;
+                for (k, v) in config.keys().iter().zip(config.values().iter()) {
+                    let key = strings::concat(&[b"npm_package_config_", &k[..]]);
+                    env_loader.map.put_assume_capacity(&key, *v);
                 }
             }
         }
 
-        Ok(root_dir_info.unwrap_or(root_dir_info_fallback))
+        Ok(root_dir_info)
     }
 
     /// Best-effort default-loader lookup by file extension. Thin forwarder to
