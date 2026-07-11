@@ -40,13 +40,15 @@ env:
   OHOS_ICU_PREFIX: /storage/Users/currentUser/.harmonybrew/opt/icu4c@78
   HOMEBREW_PREFIX: /storage/Users/currentUser/.harmonybrew
   TMPDIR: /data/storage/el2/base/tmp
-  # CARGO_BUILD_JOBS=1 used to be required: the shared llvm@21 cc/c++ shims
-  # signed build outputs in-place with no sync before returning control to
-  # the caller, and concurrent cargo build-script link+exec hit ETXTBSY.
-  # The shared shim has since been fixed (llvm@21 formula's LLD --code-sign
-  # design, redeployed 2026-07-11) — verified locally (exec + dlopen) and
-  # via CI at jobs=4 with zero ETXTBSY. Re-lower to 1 if this regresses.
-  CARGO_BUILD_JOBS: 4
+  # CARGO_BUILD_JOBS used to be capped (1, then 4) because the shared
+  # llvm@21 cc/c++ shims signed build outputs in-place with no sync before
+  # returning control to the caller, and concurrent cargo build-script
+  # link+exec hit ETXTBSY. The shared shim has since been fixed (llvm@21
+  # formula's LLD --code-sign design, redeployed 2026-07-11, and further
+  # fixed 2026-07-11 to only sign at actual link time rather than every
+  # invocation) — verified locally (exec + dlopen) and via CI at jobs=4
+  # with zero ETXTBSY. No cap here: let cargo use its own default
+  # (nproc-based) parallelism. Re-add a cap if ETXTBSY or OOM resurfaces.
   RUSTUP_HOME: /data/storage/el2/base/tmp/rust-nightly-2026-05-06
   CARGO_HOME: /data/storage/el2/base/tmp/rust-nightly-2026-05-06/cargo
   RUSTUP_TOOLCHAIN: nightly-2026-05-06
