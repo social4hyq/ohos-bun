@@ -164,7 +164,7 @@ impl<'a> ProcessHandle<'a> {
             // Required on OHOS (blocking pipe strategy causes infinite loop)
             // and safe on other Unix platforms.
             let pipe_setup =
-                |reader: &mut BufferedReader, fd: sys::Fd| -> Result<(), bun_core::Error> {
+                |reader: &mut BufferedReader, fd: sys::Fd| -> crate::Result<()> {
                     let _ = sys::set_nonblocking(fd);
                     reader.start(fd, true)?;
                     reader.flags.insert(
