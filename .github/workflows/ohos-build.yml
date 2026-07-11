@@ -62,6 +62,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Link persistent build caches
+        run: |
+          # This self-hosted runner (github-act-runner, a third-party
+          # implementation, not the official GitHub Actions runner) doesn't
+          # implement actions/cache@v4's backend — there is no
+          # ACTIONS_CACHE_URL in the job environment, so every
+          # restore/save step silently no-ops (actions/cache's own
+          # documented graceful-degradation behavior when it can't reach a
+          # cache service). Verified via the runner binary (no cache-service
+          # strings beyond its own unrelated action-repo cache) and via two
+          # separate runs' vendor/WebKit reflogs, both showing a fresh
+          # `git clone` despite an unchanged .webkit-version.
+          #
+          # Symlink these paths at a fixed location outside the per-job
+          # ephemeral workdir instead. Existing scripts (Prepare WebKit
+          # source's retry_git logic, cargo, ninja) all work incrementally
+          # through the symlink with no other changes needed — this restores
+          # actual persistence, not just a green checkmark.
+          CACHE_ROOT=/storage/Users/currentUser/.cache/ohos-bun-ci
+          mkdir -p "$CACHE_ROOT/webkit-src" "$CACHE_ROOT/webkit-build" "$CACHE_ROOT/rust-target"
+          mkdir -p vendor build/release/deps
+          rm -rf vendor/WebKit build/release/deps/WebKit build/release/rust-target
+          ln -sfn "$CACHE_ROOT/webkit-src" vendor/WebKit
+          ln -sfn "$CACHE_ROOT/webkit-build" build/release/deps/WebKit
+          ln -sfn "$CACHE_ROOT/rust-target" build/release/rust-target
+
       - name: Sync WebKit version pin
         run: |
           grep 'export const WEBKIT_VERSION' scripts/build/deps/webkit.ts | grep -oE '[a-f0-9]{40}' > .webkit-version
@@ -105,21 +131,6 @@ jobs:
             done
           done
 
-      # --- Caches ---
-
-      - name: Restore Rust cache
-        uses: actions/cache@v4
-        with:
-          path: build/release/rust-target
-          key: rust-ohos-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-v2
-          restore-keys: rust-ohos-
-
-      - name: Restore WebKit build cache
-        uses: actions/cache@v4
-        with:
-          path: build/release/deps/WebKit
-          key: webkit-ohos-${{ hashFiles('.webkit-version') }}-v3
-
       # --- Dependencies ---
 
       - name: bun install
@@ -128,13 +139,6 @@ jobs:
           bun install --cwd src/node-fallbacks
 
       # --- Build ---
-
-      - name: Restore WebKit source cache
-        uses: actions/cache@v4
-        with:
-          path: vendor/WebKit
-          key: webkit-src-${{ hashFiles('.webkit-version') }}
-          restore-keys: webkit-src-
 
       - name: Prepare WebKit source
         run: |
@@ -184,12 +188,6 @@ jobs:
               git -C vendor/WebKit checkout "$WEBKIT_VERSION"
             fi
           fi
-
-      - name: Save WebKit source cache
-        uses: actions/cache@v4
-        with:
-          path: vendor/WebKit
-          key: webkit-src-${{ hashFiles('.webkit-version') }}
 
       - name: Configure
         env:
