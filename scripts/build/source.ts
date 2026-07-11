@@ -634,12 +634,15 @@ export function registerDepRules(n: Ninja, cfg: Config): void {
   // Post-link sign for OHOS host: HarmonyOS rejects unsigned ELFs at exec.
   // Uses binary-sign-tool (from ohos-sdk build dep, always available at build
   // time) — ohos-selfsign is compiled later inside the same ninja graph and
-  // cannot be used here.
-  const hostCcCmd =
-    `${q(cfg.hostCc)} $flags -o $out $in` +
-    ` && { command -v binary-sign-tool >/dev/null 2>&1` +
-    ` && binary-sign-tool sign -selfSign 1 -inFile $out -outFile $out.signed >/dev/null 2>&1` +
-    ` && mv -f $out.signed $out && chmod +x $out; :; }`;
+  // cannot be used here. Every other platform keeps the plain command: this
+  // rule runs on every dep_host_cc invocation, so it shouldn't pay for an
+  // extra `command -v` shell fork where signing is a no-op anyway.
+  const hostCcCmd = cfg.ohos
+    ? `${q(cfg.hostCc)} $flags -o $out $in` +
+      ` && { command -v binary-sign-tool >/dev/null 2>&1` +
+      ` && binary-sign-tool sign -selfSign 1 -inFile $out -outFile $out.signed >/dev/null 2>&1` +
+      ` && mv -f $out.signed $out && chmod +x $out; :; }`
+    : `${q(cfg.hostCc)} $flags -o $out $in`;
   n.rule("dep_host_cc", {
     command: hostCcCmd,
     description: "host-cc $out",
