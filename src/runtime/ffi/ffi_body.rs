@@ -718,21 +718,23 @@ impl CompileC {
         {
             // OHOS: libc lives in the SDK sysroot, not in standard FHS paths.
             // TCC needs libc to link; the SDK sysroot provides libc.so / libc.a.
-            // Try known SDK install location at runtime (brew prefix).
-            const OHOS_SDK_LIB: &[u8] =
-                b"/storage/Users/currentUser/.harmonybrew/opt/ohos-sdk/native/sysroot/usr/lib/aarch64-linux-ohos";
-            if dir_exists(OHOS_SDK_LIB) {
-                let path_z = bun_core::ZBox::from_bytes(OHOS_SDK_LIB);
-                if state.add_library_path(&path_z).is_err() {
-                    bun_output::scoped_log!(TCC, "TinyCC failed to add OHOS SDK library path");
+            // Read the sysroot from $OHOS_SYSROOT rather than a baked-in
+            // path — there is no single fixed SDK install location across
+            // OHOS devices.
+            if let Ok(sysroot) = std::env::var("OHOS_SYSROOT") {
+                let sdk_lib = format!("{sysroot}/usr/lib/aarch64-linux-ohos");
+                if dir_exists(sdk_lib.as_bytes()) {
+                    let path_z = bun_core::ZBox::from_bytes(sdk_lib.as_bytes());
+                    if state.add_library_path(&path_z).is_err() {
+                        bun_output::scoped_log!(TCC, "TinyCC failed to add OHOS SDK library path");
+                    }
                 }
-            }
-            const OHOS_SDK_INCLUDE: &[u8] =
-                b"/storage/Users/currentUser/.harmonybrew/opt/ohos-sdk/native/sysroot/usr/include";
-            if dir_exists(OHOS_SDK_INCLUDE) {
-                let path_z = bun_core::ZBox::from_bytes(OHOS_SDK_INCLUDE);
-                if state.add_sys_include_path(&path_z).is_err() {
-                    bun_output::scoped_log!(TCC, "TinyCC failed to add OHOS SDK include path");
+                let sdk_include = format!("{sysroot}/usr/include");
+                if dir_exists(sdk_include.as_bytes()) {
+                    let path_z = bun_core::ZBox::from_bytes(sdk_include.as_bytes());
+                    if state.add_sys_include_path(&path_z).is_err() {
+                        bun_output::scoped_log!(TCC, "TinyCC failed to add OHOS SDK include path");
+                    }
                 }
             }
         }
