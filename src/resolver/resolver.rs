@@ -4478,12 +4478,17 @@ impl<'a> Resolver<'a> {
 
                             // OHOS: Ancestor directories like "/" or "/storage/" may return
                             // EACCES due to sandbox restrictions. Skip the unreadable ancestor
-                            // and continue processing child directories in the queue.
+                            // and continue processing child directories in the queue, instead
+                            // of falling through to the generic error handling below (which
+                            // would abandon this whole resolve attempt). Not enabled on other
+                            // platforms: there, an EACCES/EPERM on a directory in the resolve
+                            // path is a real error the generic handling below should report.
                             // Guard: if the queue is now empty, there is nothing left to walk —
                             // return Ok(None) instead of `continue`-ing into the while-exit path
-                            // that would hit the post-loop `unreachable!()` (BUG-01).
-                            if err == crate::Error::Sys(bun_errno::SystemErrno::EACCES)
-                                || err == crate::Error::Sys(bun_errno::SystemErrno::EPERM)
+                            // that would hit the post-loop `unreachable!()`.
+                            if cfg!(target_env = "ohos")
+                                && (err == crate::Error::Sys(bun_errno::SystemErrno::EACCES)
+                                    || err == crate::Error::Sys(bun_errno::SystemErrno::EPERM))
                             {
                                 if queue_slice_len == 0 {
                                     return Ok(None);
@@ -5737,9 +5742,13 @@ impl<'a> Resolver<'a> {
         if let Fs::file_system::real_fs::EntriesOption::Err(err) = dir_entry.get() {
             match err.original_err {
                 crate::Error::Sys(bun_errno::SystemErrno::ENOENT)
-                | crate::Error::Sys(bun_errno::SystemErrno::ENOTDIR)
-                | crate::Error::Sys(bun_errno::SystemErrno::EACCES)
-                | crate::Error::Sys(bun_errno::SystemErrno::EPERM) => {}
+                | crate::Error::Sys(bun_errno::SystemErrno::ENOTDIR) => {}
+                // OHOS: sandboxed ancestor directories can return EACCES/EPERM
+                // where other platforms would see ENOENT; treat those as
+                // benign there only — elsewhere they're real errors to report.
+                crate::Error::Sys(bun_errno::SystemErrno::EACCES)
+                | crate::Error::Sys(bun_errno::SystemErrno::EPERM)
+                    if cfg!(target_env = "ohos") => {}
                 _ => {
                     let _ = self.log_mut().add_error_fmt(
                         None,
@@ -6423,14 +6432,21 @@ impl<'a> Resolver<'a> {
                     Ok(v) => v.map(bun_core::heap::into_raw),
                     Err(err) => {
                         let pretty = tsconfigpath;
-                        if matches!(
-                            err,
-                            crate::Error::Sys(
-                                bun_errno::SystemErrno::ENOENT
-                                    | bun_errno::SystemErrno::EACCES
-                                    | bun_errno::SystemErrno::EPERM
-                            )
-                        ) {
+                        // OHOS: sandboxed ancestor directories can surface
+                        // EACCES/EPERM for a tsconfig path that would read as
+                        // ENOENT elsewhere; report those the same as
+                        // not-found there only.
+                        let is_not_found_like = err
+                            == crate::Error::Sys(bun_errno::SystemErrno::ENOENT)
+                            || (cfg!(target_env = "ohos")
+                                && matches!(
+                                    err,
+                                    crate::Error::Sys(
+                                        bun_errno::SystemErrno::EACCES
+                                            | bun_errno::SystemErrno::EPERM
+                                    )
+                                ));
+                        if is_not_found_like {
                             let _ = self.log_mut().add_error_fmt(
                                 None,
                                 bun_ast::Loc::EMPTY,

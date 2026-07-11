@@ -1174,14 +1174,20 @@ pub mod fs {
         ) -> crate::CrateResult<&'static mut EntriesOption> {
             if bun_core::FeatureFlags::ENABLE_ENTRY_CACHE {
                 let mut get_or_put_result = self.entries.get_or_put(dir)?;
-                if matches!(
-                    err,
-                    crate::Error::Sys(
-                        bun_errno::SystemErrno::ENOENT
-                            | bun_errno::SystemErrno::EACCES
-                            | bun_errno::SystemErrno::EPERM
-                    )
-                ) {
+                // See the matching comment in fs.rs's read_directory_error: on
+                // OHOS, sandboxed ancestor directories can return EACCES/EPERM
+                // where other platforms would see ENOENT or succeed; treat
+                // those as "not found" there only, so a real permission error
+                // elsewhere isn't silently cached as missing.
+                let is_not_found = err == crate::Error::Sys(bun_errno::SystemErrno::ENOENT)
+                    || (cfg!(target_env = "ohos")
+                        && matches!(
+                            err,
+                            crate::Error::Sys(
+                                bun_errno::SystemErrno::EACCES | bun_errno::SystemErrno::EPERM
+                            )
+                        ));
+                if is_not_found {
                     self.entries.mark_not_found(get_or_put_result);
                     return Ok(temp_entries_option_write(EntriesOption::Err(
                         dir_entry::Err {

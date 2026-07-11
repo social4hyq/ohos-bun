@@ -1062,7 +1062,7 @@ impl RealFS {
             {
                 return b"/data/local/tmp";
             }
-            #[cfg(not(target_os = "android"))]
+            #[cfg(all(not(target_os = "android"), target_env = "ohos"))]
             {
                 // OHOS /tmp is read-only erofs. Check writability at runtime
                 // and fall back to /data/local/tmp → $HOME/tmp → /tmp (last resort).
@@ -1093,6 +1093,10 @@ impl RealFS {
                     // Last resort: /tmp even if readonly
                     b"/tmp"
                 });
+            }
+            #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+            {
+                return b"/tmp";
             }
         }
     }
@@ -1563,14 +1567,20 @@ impl RealFS {
             // always `Some` here.
             let entries = entries.expect("caller holds entries_mutex when ENABLE_ENTRY_CACHE");
             let mut get_or_put_result = entries.get_or_put(dir)?;
-            if matches!(
-                err,
-                crate::Error::Sys(
-                    bun_errno::SystemErrno::ENOENT
-                        | bun_errno::SystemErrno::EACCES
-                        | bun_errno::SystemErrno::EPERM
-                )
-            ) {
+            // OHOS sandboxing can return EACCES/EPERM for ancestor directories
+            // (e.g. "/", "/storage/") that are otherwise walkable; treat those
+            // the same as ENOENT there so resolution can continue past them.
+            // Elsewhere EACCES/EPERM on a directory read is a real error and
+            // must not be silently cached as "not found".
+            let is_not_found = err == crate::Error::Sys(bun_errno::SystemErrno::ENOENT)
+                || (cfg!(target_env = "ohos")
+                    && matches!(
+                        err,
+                        crate::Error::Sys(
+                            bun_errno::SystemErrno::EACCES | bun_errno::SystemErrno::EPERM
+                        )
+                    ));
+            if is_not_found {
                 entries.mark_not_found(get_or_put_result);
                 return Ok(TEMP_ENTRIES_OPTION.with_borrow_mut(|slot| {
                     slot.write(EntriesOption::Err(dir_entry::Err {
