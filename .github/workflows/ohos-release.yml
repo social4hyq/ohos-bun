@@ -1,30 +1,32 @@
-# OHOS (HarmonyOS) aarch64 Build CI
+# OHOS (HarmonyOS) aarch64 Release CI
 #
-# Self-hosted runner on HarmonyOS PC.
-# Fast path: builds bun for OHOS and smoke-tests it on every push to
-# ohos-aarch64. Full test suite + release + Homebrew bottle live in
-# ohos-release.yml (manual workflow_dispatch only) so a routine push can't
-# cancel a multi-hour release run in flight.
+# Self-hosted runner on HarmonyOS PC. Manual-only: full rebuild, full test
+# suite (1868 test files, single machine, no Buildkite sharding — much
+# slower wall-clock than upstream's 20-way-sharded cluster), then publishes
+# a GitHub Release + Homebrew bottle to atomgit, gated on >=99% pass rate.
+#
+# Split out from ohos-build.yml (2026-07-12) so a routine push to
+# ohos-aarch64 can no longer cancel a multi-hour release run in flight, and
+# so the fast push-triggered build stays fast. The build/sign steps below
+# are intentionally a full copy of ohos-build.yml's, not a shared reusable
+# workflow — this runs standalone and always tests exactly what it's about
+# to release. Keep the two in sync by hand when touching build/env setup.
 #
 # Environment mirrors the successful Homebrew formula build (bun.rb).
 # Key: brew cc/c++ wrappers auto-sign every ELF output (incl. cargo build-scripts).
 
-name: OHOS Build
+name: OHOS Release
 
 on:
-  push:
-    branches: [ohos-aarch64]
-    paths:
-      - 'src/**'
-      - 'scripts/build/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'rust-toolchain.toml'
-      - 'patches/**'
-      - '.github/workflows/ohos-build.yml'
+  workflow_dispatch:
+    inputs:
+      bottle_rev:
+        description: 'Bottle revision number (e.g. 30)'
+        required: false
+        type: string
 
 concurrency:
-  group: ohos-build-${{ github.ref }}
+  group: ohos-release-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -51,10 +53,14 @@ env:
   CXX: /storage/Users/currentUser/.harmonybrew/bin/c++
 
 jobs:
-  build:
+  release:
     runs-on: self-hosted
-    # Configure+Build typically ~40-90 min; give some buffer on top.
-    timeout-minutes: 150
+    # Configure+Build alone can take ~40-90 min; Test bun budgets up to 240
+    # min on top of that — give the whole job enough room so the job-level
+    # limit doesn't cut off a run that's still within Test bun's own timeout.
+    timeout-minutes: 420
+    permissions:
+      contents: write # gh release create
 
     steps:
       - uses: actions/checkout@v4
@@ -240,6 +246,47 @@ jobs:
           [ "$RESULT" = "4294967296" ] || { echo "FAILED"; exit 1; }
           echo "Smoke test passed"
 
+      # --- Full test suite (gates the release steps below) ---
+      # Runs after the fast Smoke test so trivial breakage fails before
+      # committing to this: 1868 test files, single machine, no Buildkite
+      # sharding. --parallel uses all available cores (still much slower
+      # wall-clock than upstream's 20-way-sharded cluster).
+
+      - name: Test bun
+        env:
+          NO_COLOR: "1"
+        timeout-minutes: 240
+        run: |
+          node scripts/runner.node.mjs \
+            --exec-path=build/release/bun \
+            --parallel \
+            --results-json=test-results.json \
+            --exclude=integration/bun-types \
+          || true
+
+      - name: Compute test pass rate
+        id: test_summary
+        run: |
+          python3 -c "
+          import json, os
+          try:
+              with open('test-results.json') as f:
+                  results = json.load(f)
+          except (FileNotFoundError, json.JSONDecodeError) as e:
+              print(f'test-results.json missing or unreadable ({e}) — treating as 0% pass rate')
+              results = []
+          total = len(results)
+          passed = sum(1 for r in results if r.get('ok'))
+          rate = (passed / total * 100) if total else 0
+          print(f'Passed {passed}/{total} ({rate:.2f}%)')
+          ok = 'true' if rate >= 99 else 'false'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write(f'pass_rate={rate:.2f}\n')
+              out.write(f'pass_rate_ok={ok}\n')
+              out.write(f'test_total={total}\n')
+              out.write(f'test_passed={passed}\n')
+          "
+
       # --- Artifact ---
 
       - name: Upload artifact
@@ -248,3 +295,37 @@ jobs:
           name: bun-ohos-aarch64
           path: build/release/bun
           retention-days: 30
+
+      # --- Release (gated on >=99% test pass rate) ---
+
+      - name: Create GitHub Release
+        if: steps.test_summary.outputs.pass_rate_ok == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BUN_VERSION=$(grep -m1 '"version"' package.json | sed -E 's/.*"version": *"([^"]+)".*/\1/')
+          TAG="ohos-aarch64-v${BUN_VERSION}-r${{ github.run_number }}"
+          gh release create "$TAG" build/release/bun \
+            --repo social4hyq/ohos-bun \
+            --title "$TAG" \
+            --notes "Automated release — test-bun pass rate ${{ steps.test_summary.outputs.pass_rate }}% (${{ steps.test_summary.outputs.test_passed }}/${{ steps.test_summary.outputs.test_total }})"
+
+      - name: Create and upload bottle
+        if: steps.test_summary.outputs.pass_rate_ok == 'true'
+        env:
+          ATOMGIT_TOKEN: ${{ secrets.ATOMGIT_TOKEN }}
+        run: |
+          export BOTTLE_REV="${{ inputs.bottle_rev }}"
+          bash scripts/ohos/upload-bottle.sh
+
+      # Runs last so artifact upload / release / bottle above (each already
+      # gated on pass_rate_ok individually) still happen when the rate is
+      # fine. This step's only job is to turn the overall workflow red when
+      # it isn't, so a regression doesn't silently show as a green run with
+      # no release.
+      - name: Enforce test pass-rate gate
+        run: |
+          if [ "${{ steps.test_summary.outputs.pass_rate_ok }}" != "true" ]; then
+            echo "::error::Test pass rate ${{ steps.test_summary.outputs.pass_rate }}% is below the 99% gate (${{ steps.test_summary.outputs.test_passed }}/${{ steps.test_summary.outputs.test_total }} passed) — release and bottle steps were skipped."
+            exit 1
+          fi
