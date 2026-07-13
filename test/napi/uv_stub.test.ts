@@ -75,6 +75,17 @@ describe.if(!isWindows)("uv stubs", () => {
     const libuvDir = path.join(__dirname, "../../src/jsc/bindings/libuv");
     await Bun.$`cp -R ${libuvDir} ${path.join(tempdir, "libuv")}`;
     await Bun.$`${bunExe()} i && ${bunExe()} build:napi`.env(bunEnv).cwd(tempdir);
+
+    if (process.platform === "openharmony") {
+      // build:napi runs node-gyp as a generic package.json script, which never
+      // goes through bun's own install/build pipeline — nothing signs the
+      // resulting .node files, so dlopen later fails with EACCES.
+      for (const addon of ["xXx123_foo_counter_321xXx", "good_plugin"]) {
+        const built = path.join(tempdir, `build/Release/${addon}.node`);
+        await Bun.$`binary-sign-tool sign -selfSign 1 -inFile ${built} -outFile ${built}.signed && cp ${built}.signed ${built} && chmod +x ${built}`;
+      }
+    }
+
     console.log("tempdir:", tempdir);
   });
 

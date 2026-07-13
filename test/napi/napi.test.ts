@@ -235,9 +235,13 @@ describe.concurrent.skipIf(!canBuildNodeAddons())("napi", () => {
   });
 
   describe("napi_get_value_string_*", () => {
-    it("behaves like node on edge cases", async () => {
-      await checkSameOutput("test_get_value_string", []);
-    });
+    it(
+      "behaves like node on edge cases",
+      async () => {
+        await checkSameOutput("test_get_value_string", []);
+      },
+      process.platform === "openharmony" ? 15000 : 5000, // spawns node+bun to compare; OHOS fork overhead is 2-3x slower
+    );
   });
 
   it("#1288", async () => {
