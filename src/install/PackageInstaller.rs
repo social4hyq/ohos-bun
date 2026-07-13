@@ -1799,14 +1799,22 @@ impl<'a> PackageInstaller<'a> {
 
             #[cfg(target_env = "ohos")]
             if let package_install::InstallResult::Success = &install_result {
-                let mut pkg_path: AbsPath = match AbsPath::from(self.node_modules.path.as_slice()) {
-                    Ok(p) => p,
-                    Err(_) => return,
-                };
-                if pkg_path.append(alias.slice(string_buf!())).is_err() {
-                    return;
+                // Resolve `destination_dir`'s real path via `/proc/self/fd`
+                // instead of re-deriving it from `self.node_modules.path` +
+                // `alias`: that reconstruction assumes a flat, non-isolated
+                // node_modules layout, but bun falls back to isolated
+                // installs (packages materialized once under the `.bun`
+                // store, referenced by symlinks) whenever hoisting hits a
+                // conflict. In that mode the guessed path doesn't match
+                // where the package actually landed, so the scan below
+                // would open the wrong directory (or none) and silently
+                // leave native bindings unsigned. `destination_dir` is the
+                // exact directory this package was just installed into,
+                // regardless of layout.
+                let mut fd_path_buf = PathBuffer::uninit();
+                if let Ok(pkg_path) = Syscall::get_fd_path(destination_dir.fd(), &mut fd_path_buf) {
+                    ohos_sign_native_binaries(pkg_path);
                 }
-                ohos_sign_native_binaries(pkg_path.slice());
             }
 
             match install_result {
