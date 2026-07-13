@@ -22,18 +22,23 @@ test(
 
     if (process.platform === "openharmony") {
       // bun's install-time auto-sign pass (PackageInstaller.rs
-      // ohos_sign_native_binaries) computes each package's node_modules path
-      // assuming a flat, non-isolated layout. In a tree this large bun falls
-      // back to its isolated-install (.bun store) layout for hoisting
-      // conflicts, so optional native bindings resolved deep in the graph
-      // (like rolldown's) land outside the path the signer scans and are
-      // left unsigned — dlopen then fails with Permission denied.
-      const rolldownBinding = path.join(
-        testDir,
+      // ohos_sign_native_binaries) still misses some optional native
+      // bindings in a dependency tree this large — verified against a
+      // build with the destination_dir-based path fix in place (see this
+      // repo's PackageInstaller.rs history): that fix covers the isolated
+      // .bun-store case, but @rollup/rollup-openharmony-arm64 here lands at
+      // a perfectly flat, non-isolated node_modules path and is *still*
+      // left unsigned, so there's at least one more gap in that pass that
+      // hasn't been root-caused yet. Sign both known-affected bindings
+      // explicitly until that's tracked down.
+      for (const binding of [
         "node_modules/@rolldown/binding-openharmony-arm64/rolldown-binding.openharmony-arm64.node",
-      );
-      if (fs.existsSync(rolldownBinding)) {
-        await Bun.$`binary-sign-tool sign -selfSign 1 -inFile ${rolldownBinding} -outFile ${rolldownBinding}.signed && cp ${rolldownBinding}.signed ${rolldownBinding} && chmod +x ${rolldownBinding}`;
+        "node_modules/@rollup/rollup-openharmony-arm64/rollup.openharmony-arm64.node",
+      ]) {
+        const p = path.join(testDir, binding);
+        if (fs.existsSync(p)) {
+          await Bun.$`binary-sign-tool sign -selfSign 1 -inFile ${p} -outFile ${p}.signed && cp ${p}.signed ${p} && chmod +x ${p}`;
+        }
       }
     }
 
