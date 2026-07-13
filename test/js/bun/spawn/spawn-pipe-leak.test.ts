@@ -7,6 +7,10 @@
  */
 import { bunExe, isASAN, isCI, isWindows } from "harness";
 
+// Each test spawns hundreds of processes across warmup + measured batches;
+// OHOS fork+exit_group overhead is 2-3x slower than vfork.
+const timeout = 30_000 * (process.platform === "openharmony" ? 3 : 1);
+
 describe.todoIf(
   /**
    * ASAN CI runs out of file descriptors? Or maybe it's virtual memory
@@ -125,17 +129,17 @@ describe.todoIf(
 
   test("'pipe' stdout if read after exit should not leak memory", async () => {
     await run(readPipeAfterExit);
-  }, 30_000);
+  }, timeout);
 
   test("'pipe' stdout if not read should not leak memory", async () => {
     await run(dontRead);
-  }, 30_000);
+  }, timeout);
 
   test.todoIf(isWindows)(
     "'pipe' stdout if read before exit should not leak memory",
     async () => {
       await run(readPipeBeforeExit);
     },
-    30_000,
+    timeout,
   );
 });

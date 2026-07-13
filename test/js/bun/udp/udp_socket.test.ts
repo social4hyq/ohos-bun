@@ -5,7 +5,12 @@ import { bunEnv, bunExe, disableAggressiveGCScope, isWindows, randomPort } from 
 import path from "node:path";
 import { dataCases, dataTypes } from "./testdata";
 
-setDefaultTimeout(1000 * 60 * 5);
+// OHOS spawn/socket overhead is 2-3x slower than Linux; the default per-test
+// timeout is too tight there. Only widen it on OHOS to keep everyone else's
+// timeout budget unchanged.
+if (process.platform === "openharmony") {
+  setDefaultTimeout(1000 * 60 * 5);
+}
 
 describe("udpSocket()", () => {
   test.each(["setTTL", "setMulticastTTL"])(

@@ -46,4 +46,4 @@ test("req.url doesn't leak memory", async () => {
   //  44 MB on Bun 1.3
   // ASAN's quarantine + shadow memory raise the absolute RSS floor; widen there.
   expect(maxRSS).toBeLessThan(1024 * 1024 * (isASAN ? 450 : 150));
-}, 10_000);
+}, 10_000 * (process.platform === "openharmony" ? 4 : 1)); // 16384 fetches; OHOS HTTP throughput is lower
