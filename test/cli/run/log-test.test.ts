@@ -1,18 +1,19 @@
 import { spawnSync } from "bun";
 import { expect, it } from "bun:test";
 import * as fs from "fs";
-import { bunEnv, bunExe } from "harness";
+import { bunEnv, bunExe, tmpdirSync } from "harness";
 import { dirname, join, resolve } from "path";
 
 it("should not log .env when quiet", async () => {
-  writeDirectoryTree("/tmp/log-test-silent", {
+  const dir = tmpdirSync("log-test-silent");
+  writeDirectoryTree(dir, {
     ".env": "FOO=bar",
     "bunfig.toml": `logLevel = "error"`,
     "index.ts": "export default console.log('Here');",
   });
   const { stderr } = spawnSync({
     cmd: [bunExe(), "index.ts"],
-    cwd: "/tmp/log-test-silent",
+    cwd: dir,
     env: bunEnv,
   });
 
@@ -20,7 +21,8 @@ it("should not log .env when quiet", async () => {
 });
 
 it("should log .env by default", async () => {
-  writeDirectoryTree("/tmp/log-test-silent", {
+  const dir = tmpdirSync("log-test-silent");
+  writeDirectoryTree(dir, {
     ".env": "FOO=bar",
     "bunfig.toml": ``,
     "index.ts": "export default console.log('Here');",
@@ -28,7 +30,7 @@ it("should log .env by default", async () => {
 
   const { stderr } = spawnSync({
     cmd: [bunExe(), "index.ts"],
-    cwd: "/tmp/log-test-silent",
+    cwd: dir,
     env: bunEnv,
   });
 

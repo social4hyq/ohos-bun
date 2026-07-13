@@ -4,10 +4,11 @@ import { cp, rm, writeFile } from "fs/promises";
 import { bunExe, bunEnv as env, isArm64, isWindows, tempDir } from "harness";
 import { join } from "path";
 
-// esbuild@0.28.1 includes @esbuild/openharmony-arm64 and @esbuild/win32-arm64
-// estrella@1.4.1 bundles esbuild@^0.11.0 which has no OHOS binary.
 const isWindowsArm64 = isWindows && isArm64;
 const isOHOSArm64 = process.platform === "openharmony";
+// esbuild@0.19.8 has no OHOS binary; esbuild@0.28.1 added @esbuild/openharmony-arm64.
+// Only bump the version under test on OHOS — other platforms keep the pinned baseline.
+const esbuildVersion = isOHOSArm64 ? "0.28.1" : "0.19.8";
 
 beforeAll(() => {
   setDefaultTimeout(1000 * 60 * 5);
@@ -24,7 +25,7 @@ describe.concurrent("esbuild integration test", () => {
     const packageDir = dir + "";
 
     var { stdout, stderr, exited } = spawn({
-      cmd: [bunExe(), "install", "esbuild@0.28.1"],
+      cmd: [bunExe(), "install", `esbuild@${esbuildVersion}`],
       cwd: packageDir,
       stdout: "pipe",
       stdin: "pipe",
@@ -35,7 +36,7 @@ describe.concurrent("esbuild integration test", () => {
     var err = await stderr.text();
     var out = await stdout.text();
     expect(err).toContain("Saved lockfile");
-    expect(out).toContain("esbuild@0.28.1");
+    expect(out).toContain(`esbuild@${esbuildVersion}`);
     expect(await exited).toBe(0);
 
     ({ stdout, stderr, exited } = spawn({
@@ -50,7 +51,7 @@ describe.concurrent("esbuild integration test", () => {
     err = await stderr.text();
     out = await stdout.text();
     expect(err).toBe("");
-    expect(out).toContain("0.28.1");
+    expect(out).toContain(esbuildVersion);
     expect(await exited).toBe(0);
   });
 
@@ -118,7 +119,7 @@ describe.concurrent("esbuild integration test", () => {
         dependencies: {
           "estrella": "1.4.1",
           // different version of esbuild
-          "esbuild": "0.28.1",
+          "esbuild": "0.19.8",
         },
       }),
     );
@@ -135,7 +136,7 @@ describe.concurrent("esbuild integration test", () => {
     [err, out, exitCode] = await Promise.all([stderr.text(), stdout.text(), exited]);
     expect(err).toContain("Saved lockfile");
     expect(out).toContain("estrella@1.4.1");
-    expect(out).toContain("esbuild@0.28.1");
+    expect(out).toContain("esbuild@0.19.8");
     expect(exitCode).toBe(0);
 
     ({ stdout, stderr, exited } = spawn({
@@ -163,7 +164,7 @@ describe.concurrent("esbuild integration test", () => {
 
     [err, out, exitCode] = await Promise.all([stderr.text(), stdout.text(), exited]);
     expect(err).toBe("");
-    expect(out).toContain("0.28.1");
+    expect(out).toContain("0.19.8");
     expect(exitCode).toBe(0);
 
     ({ stdout, stderr, exited } = spawn({

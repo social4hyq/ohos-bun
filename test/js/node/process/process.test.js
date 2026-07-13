@@ -43,7 +43,12 @@ it("process", () => {
   if (process.platform !== "win32" && process.env.USER.length === 0)
     throw new Error("process.env is missing a USER property");
 
-  if (process.platform !== "darwin" && process.platform !== "linux" && process.platform !== "win32")
+  if (
+    process.platform !== "darwin" &&
+    process.platform !== "linux" &&
+    process.platform !== "win32" &&
+    process.platform !== "openharmony"
+  )
     throw new Error("process.platform is invalid");
 
   if (isNode) throw new Error("process.isBun is invalid");
@@ -197,9 +202,12 @@ it("process.hrtime() coerces tuple elements with ToNumber like node", async () =
 
 it("process.release", () => {
   expect(process.release.name).toBe("node");
-  const platform = process.platform == "win32" ? "windows" : process.platform;
+  // OHOS release artifacts are published as a Linux variant (bun-linux-<arch>-ohos),
+  // not bun-openharmony-<arch> — process.platform is "openharmony" but the
+  // release naming scheme treats it like a musl/baseline-style ABI suffix.
+  const platform = process.platform == "win32" ? "windows" : process.platform == "openharmony" ? "linux" : process.platform;
   const arch = { arm64: "aarch64", x64: "x64" }[process.arch] || process.arch;
-  const abi = familySync() === "musl" ? "-musl" : "";
+  const abi = familySync() === "musl" ? "-musl" : process.platform === "openharmony" ? "-ohos" : "";
   const nonbaseline = `https://github.com/oven-sh/bun/releases/download/bun-v${process.versions.bun}/bun-${platform}-${arch}${abi}.zip`;
   const baseline = `https://github.com/oven-sh/bun/releases/download/bun-v${process.versions.bun}/bun-${platform}-${arch}${abi}-baseline.zip`;
 
@@ -238,6 +246,7 @@ const MIN_ICU_VERSIONS_BY_PLATFORM_ARCH = {
   "linux-arm64": "72.1",
   "win32-x64": "72.1",
   "win32-arm64": "72.1",
+  "openharmony-arm64": "72.1", // built against icu4c@78 (see CLAUDE.md); floor matches the other arm64 platforms
 };
 
 it("ICU version does not regress", () => {
