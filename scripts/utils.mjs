@@ -1313,6 +1313,13 @@ export function getFileUrl(filename, line) {
   if (!filename) {
     return baseUrl;
   }
+  if (!baseUrl) {
+    // getRepositoryUrl() returns undefined for any origin remote that isn't
+    // github.com/git@github.com (e.g. a proxy mirror, or a `git remote get-url`
+    // failure) — without this guard, `new URL(path, undefined + "/")` throws
+    // and takes down the whole runner on the next test failure it reports.
+    return;
+  }
 
   const filePath = (cwd ? relative(cwd, filename) : filename).replace(/\\/g, "/");
   const commit = getCommit(cwd);
@@ -1900,8 +1907,20 @@ export function getHostname() {
  * @returns {string}
  */
 export function getUsername() {
-  const { username } = userInfo();
-  return username;
+  try {
+    const { username } = userInfo();
+    return username;
+  } catch (error) {
+    // libuv's uv_os_get_passwd() throws ENOENT when the process uid has no
+    // /etc/passwd entry (e.g. some sandboxed execution contexts, including
+    // OHOS app-sandbox uids that are never registered there). Fall back to
+    // env vars, then the raw uid, instead of crashing before a single test
+    // has run.
+    if (error?.code === "ERR_SYSTEM_ERROR" && error?.info?.code === "ENOENT") {
+      return process.env.USER || process.env.LOGNAME || `uid${process.getuid?.() ?? "unknown"}`;
+    }
+    throw error;
+  }
 }
 
 /**

@@ -299,7 +299,12 @@ const localIPv6Hosts =
 
 const PIPE = (() => {
   const localRelative = path.relative(process.cwd(), `${tmpdir.path}/`);
-  const pipePrefix = isWindows ? '\\\\.\\pipe\\' : localRelative;
+  // On OHOS, cwd is the repo checkout (under /storage/...) and tmpdir.path is
+  // under /data/storage/... — completely different top-level directories, so
+  // the relative path is dominated by a long ../../../.. climb and ends up
+  // LONGER than the absolute path, not shorter. AF_UNIX sun_path is capped at
+  // 108 bytes; use the absolute path there to keep pipe names under it.
+  const pipePrefix = isWindows ? '\\\\.\\pipe\\' : process.platform === 'openharmony' ? tmpdir.path : localRelative;
   const pipeName = `node-test.${process.pid}.sock`;
   return path.join(pipePrefix, pipeName);
 })();
