@@ -298,9 +298,11 @@ test/js/node/test/parallel/test-http2-pipe.js [ FLAKY ]
 # --- OHOS shell: recursive node_modules ops + parallel spawn timeout ---
 [ OPENHARMONY ] test/js/bun/shell/bunshell.test.ts [ Failure ] # shell load > immediate exit; bunshell ls/rm > node_modules (spawn + hmdfs)
 
-# --- OHOS IPv6 DNS unavailable (all IPv6-family lookups fail) ---
-# OHOS hmdfs/network does not expose IPv6 resolver; IPv4 lookups pass normally
-[ OPENHARMONY ] test/js/bun/dns/dns.test.ts [ Failure ] # dns > lookup() > {family:6} — IPv6 unavailable on OHOS
+# --- OHOS IPv6 DNS unavailable ---
+# dns.test.ts was renamed/merged upstream into resolve-dns.test.ts; this entry
+# had gone stale (matched nothing) since the rename. IPv6 lookups and the
+# malformed " " hostname case are now handled with per-test skipIf guards
+# directly in resolve-dns.test.ts instead of quarantining the whole file.
 
 # --- WASI cannot open '/' (EACCES on OHOS root) ---
 [ OPENHARMONY ] test/js/bun/wasm/wasi.test.js [ Failure ] # wasi preopened-dir tries openSync('/') → EACCES on OHOS
@@ -308,8 +310,15 @@ test/js/node/test/parallel/test-http2-pipe.js [ FLAKY ]
 # --- bun:internal-for-testing module not loadable on OHOS ---
 [ OPENHARMONY ] test/js/bun/sys/error-name-from-libuv.test.ts [ Failure ] # ENOENT reading bun:internal-for-testing
 
-# --- napi tests require node-gyp C++ toolchain (not available in OHOS test env) ---
-[ OPENHARMONY ] test/napi [ Skip ] # node-gyp native C++ build fails (no g++/clang++ on PATH in OHOS env)
+# --- napi: node-gyp found ohos-sdk's older bundled clang (15.0.4, no C++20
+# libc++) instead of llvm@21 via PATH search, regardless of CC/CXX env vars.
+# Fixed in scripts/runner.node.mjs::getCombinedPath() (prepend llvm@21's keg
+# bin dir) and getOhosSysroot/OHOS_SYSROOT fallback (bun:ffi's TCC linker
+# needs it for <stdint.h> etc). napi.test.ts's one spawn-comparison timeout
+# got an OHOS multiplier; uv.test.ts/uv_stub.test.ts sign their own
+# `build:napi`-produced .node files (that script bypasses bun's own
+# install/build pipeline, so nothing else signs them). All 60 files under
+# test/napi now pass — no expectations entries needed for this directory.
 
 # BUG-01 (deleted-cwd PANIC), BUG-02 (execute-only ELF), BUG-03 (parallel worker-ID) fixed in r17–r22.
 
@@ -353,6 +362,11 @@ test/js/node/test/parallel/test-http2-pipe.js [ FLAKY ]
 [ OPENHARMONY ] test/cli/install/migrate-bun-lockb-v2.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
 [ OPENHARMONY ] test/cli/install/npmrc.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
 [ OPENHARMONY ] test/cli/install/bun-upgrade.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+
+# --- integration/next-pages: all 3 files top-level import bun:internal-for-testing ---
+[ OPENHARMONY ] test/integration/next-pages/test/dev-server.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+[ OPENHARMONY ] test/integration/next-pages/test/dev-server-ssr-100.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+[ OPENHARMONY ] test/integration/next-pages/test/next-build.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
 
 # --- cli/install migration: network-dependent tests ---
 # "bun pm migrate -f" and "bun install --lockfile-only" resolve from npm registry;
@@ -483,6 +497,37 @@ test/js/node/test/parallel/test-http2-pipe.js [ FLAKY ]
 [ OPENHARMONY ] test/js/bun/terminal/terminal-platform-gaps.test.ts [ Flaky ] # setRawMode + SIGWINCH platform gaps (2-3 tests)
 [ OPENHARMONY ] test/js/bun/terminal/terminal-spawn.test.ts [ Flaky ] # subprocess-with-terminal 5s timeouts (1+ test)
 [ OPENHARMONY ] test/js/bun/repl/repl.test.ts [ Flaky ] # PTY-based REPL tests 5s timeouts (2-4 tests)
+
+# --- js/third_party: packages with prebuilt native bindings, no OHOS target ---
+# These fail at import/require time (native .node/.so binding load), so the
+# whole file genuinely cannot run — not a case of quarantining 1-2 broken
+# cases. Each upstream package only ships prebuilt binaries for a fixed set of
+# platform triples and has no openharmony-arm64 build.
+[ OPENHARMONY ] test/integration/sharp/sharp.test.ts [ Skip ] # sharp has no OHOS prebuilt binary (checked latest 0.35.3: still no openharmony build)
+# astro@5.5.5 pins its own nested rollup@4.37.0 (independent of test/package.json's
+# top-level rollup dep, see below) which predates rollup's openharmony-arm64 binary.
+[ OPENHARMONY ] test/js/third_party/astro/astro-post.test.js [ Skip ] # astro's transitively-pinned rollup has no OHOS build
+[ OPENHARMONY ] test/js/third_party/prisma/prisma.test.ts [ Skip ] # pulls in @napi-rs/canvas native binding, no OHOS build (checked latest 1.0.2: still no openharmony build)
+[ OPENHARMONY ] test/js/third_party/resvg/bbox.test.js [ Skip ] # @resvg/resvg-js has no OHOS prebuilt binary (checked latest 2.6.2: still no openharmony build)
+[ OPENHARMONY ] test/js/third_party/@napi-rs/canvas/napi-rs-canvas.test.ts [ Skip ] # @napi-rs/canvas has no OHOS prebuilt binary (checked latest 1.0.2: still no openharmony build)
+# rspack's WASM fallback also fails: napi-rs's generated *.wasi.cjs hardcodes
+# `preopens: {'/': '/'}` (path.parse(cwd).root is always '/' on POSIX, not
+# configurable), and OHOS's app sandbox refuses to open '/' in ANY mode
+# (verified: fs.openSync("/", "r") itself throws EACCES) — same root cause as
+# the WASI test and bundler_edgecase's root-dir case below, just reached via
+# a different path. bun's installer also treats these packages' "cpu":
+# ["wasm32"] as a real arch restriction and won't install them on arm64
+# without a manual override, so this doesn't even get as far as the sandbox
+# wall on a normal install.
+[ OPENHARMONY ] test/js/bun/test/parallel/test-integration-rspack.ts [ Skip ] # rspack has no OHOS native binding; WASM fallback hits the '/' preopen sandbox wall
+
+
+# --- FUSE mount tests: /dev/fuse exists but the OHOS app sandbox denies access
+# to it (verified: opening it returns Permission denied, not ENOENT), and
+# `fusermount`/`fusermount3` aren't installed either. Both files' entire setup
+# is building a FUSE mount, so nothing in them can run.
+[ OPENHARMONY ] test/cli/run/glob-on-fuse.test.ts [ Skip ] # FUSE is blocked by the OHOS app sandbox (/dev/fuse: Permission denied) and fusermount isn't installed
+[ OPENHARMONY ] test/cli/run/run-file-on-fuse.test.ts [ Skip ] # same FUSE sandbox restriction as glob-on-fuse.test.ts
 
 # --- js/bun/io: Bun.file slice+write truncation ---
 # FIXED in r23 (commit 28603b97c). Root cause: copy_file_using_read_write_loop
