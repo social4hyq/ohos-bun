@@ -984,16 +984,36 @@ pub unsafe fn spawn_process_posix(
     // the already-signed interpreter; the script path becomes an argv entry
     // and is only opened/read (not exec'd) by the interpreter.
     #[cfg(target_env = "ohos")]
+    let _ohos_debug = std::env::var_os("BUN_OHOS_SHEBANG_DEBUG").is_some();
+    #[cfg(target_env = "ohos")]
     let _ohos_shebang_keepalive: Option<(std::ffi::CString, Vec<std::ffi::CString>, Vec<*const c_char>)> = 'shim: {
         use std::io::Read as _;
         use std::os::unix::ffi::OsStrExt as _;
         let path = std::ffi::OsStr::from_bytes(argv0_cstr.to_bytes());
+        if _ohos_debug {
+            eprintln!("[ohos-shebang] argv0 path = {:?}", path);
+        }
         let mut buf = [0u8; 128];
-        let n = match std::fs::File::open(path).and_then(|mut f| f.read(&mut buf)) {
+        let open_result = std::fs::File::open(path).and_then(|mut f| f.read(&mut buf));
+        let n = match open_result {
             Ok(n) if n >= 2 => n,
-            _ => break 'shim None,
+            Ok(n) => {
+                if _ohos_debug {
+                    eprintln!("[ohos-shebang] break: read only {n} bytes");
+                }
+                break 'shim None;
+            }
+            Err(e) => {
+                if _ohos_debug {
+                    eprintln!("[ohos-shebang] break: open/read failed: {e:?}");
+                }
+                break 'shim None;
+            }
         };
         if &buf[..2] != b"#!" {
+            if _ohos_debug {
+                eprintln!("[ohos-shebang] break: first 2 bytes not #! -> {:?}", &buf[..2]);
+            }
             break 'shim None;
         }
         let line_end = buf[..n].iter().position(|&b| b == b'\n').unwrap_or(n);
@@ -1026,7 +1046,17 @@ pub unsafe fn spawn_process_posix(
             }
         };
         if interp_b.is_empty() || interp_b[0] != b'/' {
+            if _ohos_debug {
+                eprintln!("[ohos-shebang] break: interp not absolute -> {:?}", String::from_utf8_lossy(interp_b));
+            }
             break 'shim None;
+        }
+        if _ohos_debug {
+            eprintln!(
+                "[ohos-shebang] parsed interp={:?} arg={:?}",
+                String::from_utf8_lossy(interp_b),
+                arg_b.map(String::from_utf8_lossy)
+            );
         }
         let interp_cs = match std::ffi::CString::new(interp_b) {
             Ok(c) => c,
@@ -1066,11 +1096,28 @@ pub unsafe fn spawn_process_posix(
     };
     #[cfg(target_env = "ohos")]
     let (argv0_cstr, argv) = match _ohos_shebang_keepalive.as_ref() {
-        Some((interp, _owned, ptrs)) => (interp.as_c_str(), ptrs.as_ptr()),
-        None => (argv0_cstr, argv),
+        Some((interp, _owned, ptrs)) => {
+            if _ohos_debug {
+                eprintln!("[ohos-shebang] shim ENGAGED, exec target = {:?}", interp);
+            }
+            (interp.as_c_str(), ptrs.as_ptr())
+        }
+        None => {
+            if _ohos_debug {
+                eprintln!("[ohos-shebang] shim NOT engaged, exec target = {:?}", argv0_cstr);
+            }
+            (argv0_cstr, argv)
+        }
     };
 
     let spawn_result = posix_spawn::spawn_z(argv0_cstr, Some(&actions), Some(&attr), argv, envp);
+    #[cfg(target_env = "ohos")]
+    if _ohos_debug {
+        match &spawn_result {
+            Ok(pid) => eprintln!("[ohos-shebang] spawn_z Ok pid={pid:?}"),
+            Err(e) => eprintln!("[ohos-shebang] spawn_z Err errno={:?}", e.get_errno()),
+        }
+    }
 
     match spawn_result {
         Err(err) => {
