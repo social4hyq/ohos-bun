@@ -8,8 +8,9 @@
 import { bunExe, isASAN, isCI, isWindows } from "harness";
 
 // Each test spawns hundreds of processes across warmup + measured batches;
-// OHOS fork+exit_group overhead is 2-3x slower than vfork.
-const timeout = 30_000 * (process.platform === "openharmony" ? 3 : 1);
+// OHOS fork+exit_group overhead is 2-3x slower than vfork. 3x still timed out
+// mid-batch on a loaded run (500-process batch in the third sub-test).
+const timeout = 30_000 * (process.platform === "openharmony" ? 5 : 1);
 
 describe.todoIf(
   /**

@@ -4,6 +4,10 @@ import { bunExe, bunEnv as env, isASAN, tmpdirSync } from "harness";
 import path from "path";
 
 const ASAN_MULTIPLIER = isASAN ? 3 : 1;
+// This build routinely takes 110-120s on OHOS, right at the edge of the
+// 120s budget below — any system jitter tips it into a timeout even though
+// the build itself succeeds (verified: 116.69s wall clock, 1 pass, 0 fail).
+const OHOS_MULTIPLIER = process.platform === "openharmony" ? 1.5 : 1;
 
 test(
   "vite build works",
@@ -55,5 +59,5 @@ test(
     const out = await stdout.text();
     expect(out).toContain("done");
   },
-  120_000 * ASAN_MULTIPLIER,
+  120_000 * ASAN_MULTIPLIER * OHOS_MULTIPLIER,
 );

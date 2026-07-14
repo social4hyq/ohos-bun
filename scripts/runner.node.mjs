@@ -1635,7 +1635,14 @@ async function spawnBunTest(execPath, testPath, opts = { cwd }) {
     // setup (napi node-gyp compiles) or many subprocess spawns don't hit
     // the file wall before any individual test times out. Kept below the
     // per-test multiplier so the overall shard stays inside the job timeout.
-    timeout: isReallyTest ? Math.ceil(timeout * (isAsan ? 2 : 1)) : 30_000,
+    // OHOS: this outer wall-clock kill runs regardless of a file's own
+    // setDefaultTimeout() call, so install/migration-heavy files (fork/spawn
+    // and fs syscall overhead documented at 2-3x) were getting killed here
+    // at the plain 3-minute testTimeout even after raising their own
+    // internal timeout to 5 minutes — the outer kill fired first.
+    timeout: isReallyTest
+      ? Math.ceil(timeout * (isAsan ? 2 : 1) * (process.platform === "openharmony" ? 2 : 1))
+      : 30_000,
     env,
     stdout: options.stdout,
     stderr: options.stderr,

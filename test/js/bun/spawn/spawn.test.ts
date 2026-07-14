@@ -566,6 +566,10 @@ it.skipIf(Boolean(process.env.BUN_FEATURE_FLAG_FORCE_WAITER_THREAD) || !isPosix 
 
 describe("spawn unref and kill should not hang", () => {
   const cmd = [shellExe(), "-c", "sleep 0.001"];
+  // Each of these spawns up to 100 processes in a loop; OHOS fork/spawn
+  // overhead is 2-3x higher than Linux, so the default 5000ms budget is too
+  // tight (observed real runs at 5050ms/6754ms).
+  const OHOS_TIMEOUT = process.platform === "openharmony" ? 20000 : undefined;
 
   it("kill and await exited", async () => {
     const promises = new Array(10);
@@ -599,40 +603,48 @@ describe("spawn unref and kill should not hang", () => {
 
     expect().pass();
   });
-  it("kill and unref", async () => {
-    for (let i = 0; i < (isWindows ? 10 : 100); i++) {
-      const proc = spawn({
-        cmd,
-        stdout: "ignore",
-        stderr: "ignore",
-        stdin: "ignore",
-      });
+  it(
+    "kill and unref",
+    async () => {
+      for (let i = 0; i < (isWindows ? 10 : 100); i++) {
+        const proc = spawn({
+          cmd,
+          stdout: "ignore",
+          stderr: "ignore",
+          stdin: "ignore",
+        });
 
-      proc.kill();
-      if (!isWindows) proc.unref();
+        proc.kill();
+        if (!isWindows) proc.unref();
 
-      await proc.exited;
-      console.count("Finished");
-    }
+        await proc.exited;
+        console.count("Finished");
+      }
 
-    expect().pass();
-  });
-  it("unref and kill", async () => {
-    for (let i = 0; i < (isWindows ? 10 : 100); i++) {
-      const proc = spawn({
-        cmd,
-        stdout: "ignore",
-        stderr: "ignore",
-        stdin: "ignore",
-      });
-      // TODO: on Windows
-      if (!isWindows) proc.unref();
-      proc.kill();
-      await proc.exited;
-    }
+      expect().pass();
+    },
+    OHOS_TIMEOUT,
+  );
+  it(
+    "unref and kill",
+    async () => {
+      for (let i = 0; i < (isWindows ? 10 : 100); i++) {
+        const proc = spawn({
+          cmd,
+          stdout: "ignore",
+          stderr: "ignore",
+          stdin: "ignore",
+        });
+        // TODO: on Windows
+        if (!isWindows) proc.unref();
+        proc.kill();
+        await proc.exited;
+      }
 
-    expect().pass();
-  });
+      expect().pass();
+    },
+    OHOS_TIMEOUT,
+  );
 
   // process.unref() on Windows does not work ye :(
   it("should not hang after unref", async () => {

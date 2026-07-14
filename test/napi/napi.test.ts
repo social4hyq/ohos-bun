@@ -253,9 +253,13 @@ describe.concurrent.skipIf(!canBuildNodeAddons())("napi", () => {
     it("keeps strings alive", async () => {
       await checkSameOutput("test_napi_handle_scope_string", []);
     });
-    it("keeps bigints alive", async () => {
-      await checkSameOutput("test_napi_handle_scope_bigint", []);
-    }, 10000);
+    it(
+      "keeps bigints alive",
+      async () => {
+        await checkSameOutput("test_napi_handle_scope_bigint", []);
+      },
+      process.platform === "openharmony" ? 20000 : 10000, // spawns node+bun to compare; OHOS fork overhead is 2-3x slower
+    );
     it("keeps the parent handle scope alive", async () => {
       await checkSameOutput("test_napi_handle_scope_nesting", []);
     });
