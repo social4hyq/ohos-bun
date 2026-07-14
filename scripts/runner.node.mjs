@@ -1641,7 +1641,7 @@ async function spawnBunTest(execPath, testPath, opts = { cwd }) {
     // at the plain 3-minute testTimeout even after raising their own
     // internal timeout to 5 minutes — the outer kill fired first.
     timeout: isReallyTest
-      ? Math.ceil(timeout * (isAsan ? 2 : 1) * (process.platform === "openharmony" ? 2 : 1))
+      ? Math.ceil(timeout * (isAsan ? 2 : 1) * (process.platform === "openharmony" ? 3 : 1))
       : 30_000,
     env,
     stdout: options.stdout,

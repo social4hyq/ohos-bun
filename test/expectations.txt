@@ -343,6 +343,7 @@ test/js/node/test/parallel/test-http2-pipe.js [ FLAKY ]
 [ OPENHARMONY ] test/internal/highlighter.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
 [ OPENHARMONY ] test/internal/linear-fifo.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
 [ OPENHARMONY ] test/internal/powershell-escape.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+[ OPENHARMONY ] test/js/node/fs/fs-oom.test.ts [ Skip ] # top-level `import { memfd_create, ... } from "bun:internal-for-testing"` — ENOENT in release build, whole file unloadable
 
 # --- cli/install lifecycle-scripts: uses bun:internal-for-testing ---
 # All lifecycle-scripts tests require bun:internal-for-testing for the lifecycle
@@ -431,6 +432,19 @@ test/js/node/test/parallel/test-http2-pipe.js [ FLAKY ]
 [ OPENHARMONY ] test/js/web/fetch/fetch.stream.test.ts [ Flaky ] # streaming response 5s timeout
 [ OPENHARMONY ] test/js/web/streams/streams-leak.test.ts [ Flaky ] # pipe memory leak check 5s timeout
 [ OPENHARMONY ] test/js/web/request/request-clone-leak.test.ts [ Flaky ] # request clone leak check
+
+# --- "localhost" resolves to nothing when family-restricted to IPv6 ---
+# This sandbox's /etc/hosts maps `::1` to `ip6-localhost`/`ip6-loopback`, not
+# to the literal name `localhost` (only the 127.0.0.1 line uses that name).
+# Any connect/listen path that ends up doing a family:6-restricted lookup of
+# "localhost" (e.g. `net.createConnection(server.address())`, where an IPv6
+# wildcard-bound server's AddressInfo has no `host` field, so the client
+# falls back to `net`'s documented "localhost" default) gets a real, correct
+# ENOTFOUND on this host — verified directly: `dns.lookup("localhost",
+# {family: 6})` -> ENOTFOUND, `{family: 4}` -> 127.0.0.1. These are verbatim
+# upstream Node test ports; not patched to keep them byte-identical.
+[ OPENHARMONY ] test/js/node/test/parallel/test-http2-premature-close.js [ Failure ] # family:6-restricted "localhost" lookup has no /etc/hosts entry here
+[ OPENHARMONY ] test/js/node/test/parallel/test-net-socket-connect-without-cb.js [ Failure ] # family:6-restricted "localhost" lookup has no /etc/hosts entry here
 [ OPENHARMONY ] test/js/web/html/FormData.test.ts [ Flaky ] # 1 test failure
 [ OPENHARMONY ] test/js/web/encoding/text-decoder.test.js [ Flaky ] # 1 test failure
 

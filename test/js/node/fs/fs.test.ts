@@ -680,7 +680,11 @@ describe("writeFile with a non-truncating flag", () => {
 // and Linux's generic_write_checks() then clamps the write to the limit and fails
 // the next one with EFBIG. Linux-only: BSD kernels reject the whole write instead,
 // so the byte split is not portable.
-describe.skipIf(!isLinux)("writeFileSync when the write fails partway", () => {
+// OHOS's rlimit RLIMIT_FSIZE enforcement differs from mainline Linux: writes
+// past `ulimit -f` land with `code: "none"` instead of the expected EFBIG
+// (verified: the write itself still only persists what fits, just without
+// the EFBIG signal these sub-tests assert on).
+describe.skipIf(!isLinux || process.platform === "openharmony")("writeFileSync when the write fails partway", () => {
   const fixture = join(import.meta.dir, "fs-writeFile-write-error-fixture.js");
 
   async function runUnderFileSizeLimit(path: string, flag: string) {

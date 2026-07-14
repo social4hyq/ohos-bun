@@ -749,7 +749,9 @@ describe("should not hang", () => {
           return ret;
         });
       },
-      128_000,
+      // 16 orderings x 100 iterations (5 concurrent) = 1600 spawns; OHOS
+      // fork/spawn overhead is 2-3x higher than Linux.
+      process.platform === "openharmony" ? 256_000 : 128_000,
     );
   }
 });

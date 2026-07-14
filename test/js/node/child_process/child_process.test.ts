@@ -571,7 +571,7 @@ it("it accepts stdio passthrough", async () => {
     console.error({ exitCode, err, out });
     throw e;
   }
-}, 30_000);
+}, process.platform === "openharmony" ? 90_000 : 30_000); // real `bun install` + run; OHOS network/install overhead is higher
 
 it.if(!isWindows)("spawnSync correctly reports signal codes", () => {
   const trapCode = `
