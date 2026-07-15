@@ -214,6 +214,10 @@ jobs:
         env:
           PATH: ${{ github.workspace }}/.bin:/storage/Users/currentUser/.harmonybrew/opt/llvm@21/bin:/data/storage/el2/base/tmp/rust-nightly-2026-05-06/bin:/storage/Users/currentUser/.harmonybrew/bin:/usr/local/bin:/usr/bin:/bin
           LD_LIBRARY_PATH: /storage/Users/currentUser/.harmonybrew/opt/openssl@3/lib:/storage/Users/currentUser/.harmonybrew/opt/libxml2/lib:/storage/Users/currentUser/.harmonybrew/opt/zlib/lib
+          # OHOS: serialize Rust build-script runs so freshly-compiled proc-macro
+          # binaries aren't exec'd while still being written → Text file busy (ETXTBSY).
+          # Verify: CARGO_BUILD_JOBS=4 zero ETXTBSY + 37% faster vs =1 (see project memory).
+          CARGO_BUILD_JOBS: 4
         run: ninja -C build/release bun
 
       # --- Sign final binary ---
