@@ -105,10 +105,6 @@ impl<'a> ProcessHandle<'a> {
             // mutated by put() below.
             let original_path: Box<[u8]> = env.map.get(b"PATH").unwrap_or(b"").into();
             let _ = env.map.put(b"PATH", &handle.config.PATH);
-            // OHOS: set $PWD so bash verifies CWD via stat() instead of getcwd().
-            // See ohos_set_pwd() for details.
-            #[cfg(target_env = "ohos")]
-            crate::cli::run_command::ohos_set_pwd(env, &handle.options.cwd)?;
             // Restores PATH unconditionally at block exit (success OR error).
             // Keep the guard armed for the whole block so `?` early-returns also
             // restore.

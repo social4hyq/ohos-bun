@@ -1655,21 +1655,6 @@ impl<'a> PackageInstall<'a> {
                                             entry.path,
                                         ) {
                                             Ok(()) => {}
-                                            Err(retry_err)
-                                                if cfg!(target_env = "ohos")
-                                                    && matches!(
-                                                        retry_err.get_errno(),
-                                                        sys::E::EPERM | sys::E::EACCES
-                                                    ) =>
-                                            {
-                                                // OHOS: retry also blocked; copy instead
-                                                crate::copy_file_fallback(
-                                                    entry.dir,
-                                                    entry.basename,
-                                                    destination_dir.fd(),
-                                                    entry.path,
-                                                )?;
-                                            }
                                             Err(retry_err) => return Err(retry_err.into()),
                                         }
                                     }
@@ -1680,18 +1665,6 @@ impl<'a> PackageInstall<'a> {
                                         return Err(crate::Error::Sys(
                                             bun_errno::SystemErrno::ENXIO,
                                         ));
-                                    }
-                                    // OHOS SELinux blocks hard links; fall back to copy. Not
-                                    // enabled elsewhere: a hardlink EPERM/EACCES there (e.g.
-                                    // fs.protected_hardlinks=1 on Linux) is a real failure that
-                                    // should surface, not be silently papered over with a copy.
-                                    sys::E::EPERM | sys::E::EACCES if cfg!(target_env = "ohos") => {
-                                        crate::copy_file_fallback(
-                                            entry.dir,
-                                            entry.basename,
-                                            destination_dir.fd(),
-                                            entry.path,
-                                        )?;
                                     }
                                     _ => return Err(err.into()),
                                 }

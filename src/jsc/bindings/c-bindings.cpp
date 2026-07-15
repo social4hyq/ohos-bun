@@ -308,14 +308,7 @@ extern "C" void windows_enable_stdio_inheritance()
 // close_range is glibc > 2.33, which is very new
 extern "C" ssize_t bun_close_range(unsigned int start, unsigned int end, unsigned int flags)
 {
-#if defined(__OHOS__)
-    // OHOS kernel sends uncatchable SIGSYS for unimplemented syscalls.
-    // Fall back to the caller's closeRangeLoop.
-    errno = ENOSYS;
-    return -1;
-#else
     return syscall(__NR_close_range, start, end, flags);
-#endif
 }
 #else // OS(FREEBSD)
 // FreeBSD 12.2+ libc has close_range; 14.0+ supports CLOSE_RANGE_CLOEXEC
@@ -611,7 +604,7 @@ extern "C" void bun_initialize_process()
     setvbuf(stdout, nullptr, _IONBF, 0);
     setvbuf(stderr, nullptr, _IONBF, 0);
 
-#if OS(LINUX) && !defined(__OHOS__)
+#if OS(LINUX)
     // Prevent leaking inherited file descriptors on Linux
     // This is less of an issue for macOS due to posix_spawn
     // This is best effort, not all linux kernels support close_range or CLOSE_RANGE_CLOEXEC
@@ -1050,14 +1043,6 @@ extern "C" const char* BUN_DEFAULT_PATH_FOR_SPAWN = _PATH_DEFPATH;
 extern "C" const char* BUN_DEFAULT_PATH_FOR_SPAWN = "C:\\Windows\\System32;C:\\Windows;";
 #else
 extern "C" const char* BUN_DEFAULT_PATH_FOR_SPAWN = "/usr/bin:/bin";
-#endif
-
-// OHOS seccomp blocks close_range with uncatchable SIGSYS (verified 2026-06-07).
-// pidfd_open and memfd_create are available (no longer gated by this flag).
-#if defined(__OHOS__)
-extern "C" const bool BUN_OHOS_CLOSE_RANGE_BLOCKED = true;
-#else
-extern "C" const bool BUN_OHOS_CLOSE_RANGE_BLOCKED = false;
 #endif
 
 #if OS(DARWIN)

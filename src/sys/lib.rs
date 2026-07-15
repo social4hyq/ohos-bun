@@ -2850,10 +2850,7 @@ mod posix_impl {
             );
             Ok(())
         }
-        #[cfg(all(
-            not(any(target_os = "macos", target_os = "freebsd")),
-            not(target_env = "ohos")
-        ))]
+        #[cfg(not(any(target_os = "macos", target_os = "freebsd")))]
         {
             const SYS_FCHMODAT2: libc::c_long = 452;
             loop {
@@ -2879,15 +2876,6 @@ mod posix_impl {
                 }
                 return Ok(());
             }
-        }
-        #[cfg(all(
-            not(any(target_os = "macos", target_os = "freebsd")),
-            target_env = "ohos"
-        ))]
-        {
-            // OHOS: fchmodat2 (#452) is blocked by seccomp → triggers SIGSYS.
-            // Skip the syscall and go directly to the fchmodat fallback.
-            return fchmodat(Fd::cwd(), path, mode, libc::AT_SYMLINK_NOFOLLOW);
         }
     }
     pub fn chown(path: &ZStr, uid: u32, gid: u32) -> Maybe<()> {
