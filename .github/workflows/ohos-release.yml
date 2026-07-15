@@ -137,6 +137,11 @@ jobs:
       # --- Dependencies ---
 
       - name: bun install
+        env:
+          # Match Configure/Build PATH: the runner's default PATH no longer
+          # includes ~/.harmonybrew/bin, so bun-bootstrap isn't found here
+          # unless set explicitly (even though it's installed).
+          PATH: ${{ github.workspace }}/.bin:/storage/Users/currentUser/.harmonybrew/opt/llvm@21/bin:/data/storage/el2/base/tmp/rust-nightly-2026-05-06/bin:/storage/Users/currentUser/.harmonybrew/bin:/storage/Users/currentUser/.harmonybrew/opt/bun-bootstrap/bin:/usr/local/bin:/usr/bin:/bin
         run: |
           bun install
           bun install --cwd src/node-fallbacks
