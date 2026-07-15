@@ -162,6 +162,13 @@ jobs:
           WEBKIT_VERSION=$(cat .webkit-version)
           echo "WEBKIT_VERSION=$WEBKIT_VERSION" >> "$GITHUB_ENV"
 
+          # Clear stale index.lock left by a cancelled previous run
+          # (concurrency.cancel-in-progress SIGKILLs checkout mid-flight).
+          # Safe in CI: no concurrent git touches this repo within a job, so
+          # a lock present at step start is always stale — git's own
+          # documented recovery action.
+          rm -f vendor/WebKit/.git/index.lock 2>/dev/null || true
+
           if [ -d vendor/WebKit/.git ] && git -C vendor/WebKit cat-file -e "$WEBKIT_VERSION" 2>/dev/null; then
             echo "WebKit source cache hit — checkout $WEBKIT_VERSION"
             git -C vendor/WebKit checkout -f "$WEBKIT_VERSION"
