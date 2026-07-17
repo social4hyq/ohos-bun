@@ -876,3 +876,56 @@ node scripts/runner.node.mjs --exec-path=<bun> --results-json=logs/refail-serial
 - **下一轮建议优先级**：① `spawn.test.ts` close-handling 的 fd 所有权 bug（影响面最大，值得插桩+CI 编译）；② `readdir` ELOOP 需要先在真实 Node.js 上对照才能判断是否是 bug；③ 其余为长尾单点问题，性价比较低。
 
 ---
+
+## 追加：2026-07-15（第九轮）— 全量重跑（CI 29302888397，含 shebang 修复 8f35afccb）
+
+应要求用最新构建重新跑全量，验证上一轮 shebang-shim 修复（`8f35afccb`）+ test/ 改动是否反映到通过率。
+
+**被测二进制**：CI run `29302888397`（OHOS Build，head=`8f35afccb`）的 `bun-ohos-aarch64` artifact，`1.4.0-canary.1+8f35afccb`，CI 已签名。比第八轮用的二进制新，包含 shebang 缓冲区 128→4096 修复。冒烟 `2**32`→4294967296 ✓。
+
+### 通过率（三口径）
+
+| 口径 | 计算 | 结果 | 说明 |
+|---|---|---|---|
+| runner gate（CI 原始） | 4613/4742 | **97.28%** | 含 71 个 parallel 假阳性水分，CI release gate 用的就是这个 |
+| serial-corrected | 4686/4742 | **98.82%** | 71 个 `--parallel` 假阳性（串行能过）视为 pass |
+| 排除平台限制/缺服务 | (4742−46)/4742 | **99.03%** | 再去掉 12 个非 bun 责任（fs.watch-recursive 6 + privileged-port 2 + valkey 缺 Redis 4）|
+
+全量耗时 ~54min（19:37→20:31，`--parallel`）；129 失败串行重跑 ~100min（20:46→22:26）。
+
+### vs 第八轮：真实失败 78 → 58，消除 39 个
+
+第八轮串行确认的 78 个真实失败里，本轮有 **39 个已修复**（真实 pass），包括上一轮动手修的全部验证通过：`serve/socket/pipeline_stack/garbage-env/vite-build/spawn-pipe-leak/fs-birthtime/server.spec/node-http-backpressure/fs-oom/snapshot` 等，以及 third_party 网络类（pg/postgres/mongodb/stripe/azure/nodemailer）随网络状态转 pass。**第八轮记录的四个 EACCES 文件已全部清零**——shebang-shim 修复在真实全量里生效。
+
+持续失败 39，本轮新增 19。
+
+### 58 真实失败分类
+
+| 类别 | 数量 | 性质 |
+|---|---|---|
+| F 其它真实 bug | 24 | secrets/ls/shell-load/fs.test/napi(uv,uv_stub,napi-value-ffi)/process/stdin-stale-hup/fs.watch/express-memory-leak/message-port-leak/glob-path-length/expo/complex-workspace/no-orphans/native-plugin/create-jsx + 几个 regression issue |
+| E node-vendored 平台差异 | 16 | `test/js/node/test/*` 移植，fs-stat-date/fs-link/process-constants-noatime/getgroups/trace-events-fs 等 |
+| D spawn/child_process | 6 | **fd 所有权 bug（第八轮已记录）+ 新发现 spawn-stdin-large-buffer segfault** |
+| A fs.watch-recursive | 6 | OHOS 内核不支持递归监听，硬平台限制 |
+| C valkey | 4 | 缺 Redis 服务（环境，非 bun bug）|
+| B privileged-port | 2 | 绑定 <1024 端口需 root |
+
+### 本轮新发现 / 仍待修的真实 bug
+
+1. **`spawn-stdin-large-buffer.test.ts` segfault（新）**：串行重跑时 `pid 52135 segmentation fault`——向子进程灌大块 stdin 时崩溃。和第八轮记录的 spawn fd 所有权 bug（D 类，`spawn.test.ts` close-handling 簇）同属 spawn 子系统，可能相关，值得一起插桩查。
+2. **spawn fd 所有权 bug 仍在**（D 类 6 个）：第八轮记录的"字面 fd 数字作 stdio 导致父进程自身 fd 失效"未修，仍是影响面最大的真实 bug 簇。
+3. **napi uv/uv_stub/napi-value-ffi**：libuv/napi 移植相关，本轮新增（第八轮未记录），需排查。
+4. **F 类长尾**：secrets/ls/shell-load 等单点，性价比较低，长尾。
+
+### 方法论备注
+
+- **runner filter 用法陷阱**：serial rerun 第一次跑空了（`Running tests: 0`）。根因——`scripts/runner.node.mjs:2139` 证明 runner 内部 testPath **不带 `test/` 前缀**（expectations 做 `replace("test/","")` 后才匹配），而 positional filter 走 `isMatch = testPath.includes(filter)` 子串匹配；传完整路径 `test/bundler/...` 比内部标题长，永不命中。**正确用法：filter 去掉 `test/` 前缀**（`bundler/...`），或用文件名 basename。
+- **`--parallel` 假阳性比例高**：129 raw fail 里 71 个（55%）是并发假阳性，主要是性能断言（`spawn-pipe-leak` 的 `expect(pct).toBeLessThan(0.8)` 在高负载下超阈值）和超时（bundler `[5000ms]`）。**结论：CI release gate 的 97.28% 严重低估真实质量，serial-corrected 98.82% 才是可比口径。**
+
+### 小结
+
+- shebang 修复 + 上轮 test/ 改动确认在全量里生效（EACCES 清零，真实失败 78→58）；
+- 真实 bun 代码问题集中在 spawn 子系统（fd 所有权 + 新 segfault），是下一轮最高优先级；
+- 平台限制/缺服务 12 个应逐步收窄为 expectations 条目或文件内 skip，从 CI gate 分母里理清。
+
+---
