@@ -268,6 +268,16 @@ use bun_sys as Syscall;
 #[cfg(windows)]
 use bun_sys::sys_uv as Syscall;
 
+// Kernel limit on iovec count for a single readv(2)/writev(2). libuv's
+// `uv__getiovmax()` prefers compile-time `IOV_MAX`; Linux headers spell it
+// `UIO_MAXIOV`. Windows has no kernel iovec limit (sys_uv chunks internally).
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const IOV_MAX: usize = libc::UIO_MAXIOV as usize;
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+const IOV_MAX: usize = libc::IOV_MAX as usize;
+#[cfg(windows)]
+const IOV_MAX: usize = core::ffi::c_uint::MAX as usize;
+
 /// In-place RAII wrapper for a libuv `fs_t` request.
 ///
 /// `scopeguard::guard(fs_t, |mut r| r.deinit())` is *wrong* here: its `Drop`
@@ -6372,7 +6382,10 @@ impl NodeFS {
 
     fn preadv_inner(&mut self, args: &args::Readv) -> Maybe<ret::Readv> {
         let position = args.position.unwrap();
-        match Syscall::preadv(args.fd, args.buffers.buffers.as_slice(), position as i64) {
+        let bufs = args.buffers.buffers.as_slice();
+        // libuv `uv__fs_read`: cap `nbufs` at IOV_MAX and issue one syscall.
+        let bufs = &bufs[..bufs.len().min(IOV_MAX)];
+        match Syscall::preadv(args.fd, bufs, position as i64) {
             Err(err) => Err(err),
             Ok(amt) => Ok(ret::Readv {
                 bytes_read: amt as u64,
@@ -6381,7 +6394,10 @@ impl NodeFS {
     }
 
     fn readv_inner(&mut self, args: &args::Readv) -> Maybe<ret::Readv> {
-        match Syscall::readv(args.fd, args.buffers.buffers.as_slice()) {
+        let bufs = args.buffers.buffers.as_slice();
+        // libuv `uv__fs_read`: cap `nbufs` at IOV_MAX and issue one syscall.
+        let bufs = &bufs[..bufs.len().min(IOV_MAX)];
+        match Syscall::readv(args.fd, bufs) {
             Err(err) => Err(err),
             Ok(amt) => Ok(ret::Readv {
                 bytes_read: amt as u64,
@@ -6390,7 +6406,7 @@ impl NodeFS {
     }
 
     fn pwritev_inner(&mut self, args: &args::Writev) -> Maybe<ret::Write> {
-        let position = args.position.unwrap();
+        let mut position = args.position.unwrap() as i64;
         // `PlatformIoVec`
         // and `PlatformIoVecConst` are layout-identical (`{ *void, usize }`); the
         // kernel never writes through `iov_base` for pwritev(2).
@@ -6404,12 +6420,32 @@ impl NodeFS {
                 args.buffers.buffers.len(),
             )
         };
-        match Syscall::pwritev(args.fd, vecs, position as i64) {
-            Err(err) => Err(err),
-            Ok(amt) => Ok(ret::Write {
-                bytes_written: amt as u64,
-            }),
+        // libuv `uv__fs_write_all`: loop IOV_MAX-sized batches until every
+        // buffer is written; an error after the first batch returns the
+        // accumulated total instead of the error.
+        let mut remaining = vecs;
+        let mut total: u64 = 0;
+        while !remaining.is_empty() {
+            let chunk_len = remaining.len().min(IOV_MAX);
+            let chunk = &remaining[..chunk_len];
+            match Syscall::pwritev(args.fd, chunk, position) {
+                Err(err) if total == 0 => return Err(err),
+                Err(_) => break,
+                Ok(0) => break,
+                Ok(amt) => {
+                    total += amt as u64;
+                    position = position.wrapping_add(amt as i64);
+                    let chunk_capacity: usize = chunk.iter().map(|b| b.len as usize).sum();
+                    if amt < chunk_capacity {
+                        break;
+                    }
+                    remaining = &remaining[chunk_len..];
+                }
+            }
         }
+        Ok(ret::Write {
+            bytes_written: total,
+        })
     }
 
     fn writev_inner(&mut self, args: &args::Writev) -> Maybe<ret::Write> {
@@ -6417,12 +6453,31 @@ impl NodeFS {
         // never writes through `iov_base`. `PlatformIoVec` and
         // `PlatformIoVecConst` are layout-identical (`{ *void, usize }`), so
         // pass the slice through `Syscall::writev` as-is.
-        match Syscall::writev(args.fd, args.buffers.buffers.as_slice()) {
-            Err(err) => Err(err),
-            Ok(amt) => Ok(ret::Write {
-                bytes_written: amt as u64,
-            }),
+        // libuv `uv__fs_write_all`: loop IOV_MAX-sized batches until every
+        // buffer is written; an error after the first batch returns the
+        // accumulated total instead of the error.
+        let mut remaining = args.buffers.buffers.as_slice();
+        let mut total: u64 = 0;
+        while !remaining.is_empty() {
+            let chunk_len = remaining.len().min(IOV_MAX);
+            let chunk = &remaining[..chunk_len];
+            match Syscall::writev(args.fd, chunk) {
+                Err(err) if total == 0 => return Err(err),
+                Err(_) => break,
+                Ok(0) => break,
+                Ok(amt) => {
+                    total += amt as u64;
+                    let chunk_capacity: usize = chunk.iter().map(sys::platform_iovec_len).sum();
+                    if amt < chunk_capacity {
+                        break;
+                    }
+                    remaining = &remaining[chunk_len..];
+                }
+            }
         }
+        Ok(ret::Write {
+            bytes_written: total,
+        })
     }
 
     pub fn readdir(&mut self, args: &args::Readdir, flavor: Flavor) -> Maybe<ret::Readdir> {
@@ -7171,12 +7226,18 @@ impl NodeFS {
         // The sync case borrows `vm.rareData().pipeReadBuffer()` (a per-VM
         // 256 KB heap slab) when a VM is present, otherwise leaves the buffer
         // zero-length so the loop is skipped and we fall through to fstat.
-        // The async path heap-allocates a 256 KB buffer instead.
-        let mut async_stack_buffer: Vec<u8> = if flavor == Flavor::Sync {
-            Vec::new()
-        } else {
-            vec![0u8; 256 * 1024]
-        };
+        // The async path heap-allocates a 256 KB buffer instead (Zig used a
+        // comptime-sized stack array; Rust cannot size a stack array on
+        // `flavor`, so heap is forced, but the slab stays uninitialised: it
+        // is write-only, `Syscall::read` hands it straight to the kernel).
+        use bun_collections::vec_ext::VecExt as _;
+        let mut async_stack_buffer: Vec<u8> = Vec::new();
+        if flavor != Flavor::Sync && async_stack_buffer.try_reserve_exact(256 * 1024).is_ok() {
+            // SAFETY: `u8` has no validity invariant; the buffer is handed
+            // straight to the kernel which only stores into it. Only the
+            // `[..total]` prefix actually filled by `read` is ever observed.
+            unsafe { async_stack_buffer.expand_to_capacity() };
+        }
         let pre_stat_buf: &mut [u8] = if flavor == Flavor::Sync {
             match self.vm {
                 // SAFETY: `self.vm` is the live owning `*mut VirtualMachine`;
@@ -7318,7 +7379,6 @@ impl NodeFS {
         // specialisation), which dominated `readFileSync` of large files. Use
         // `VecExt::expand_to_capacity` (the tail is write-only — `Syscall::read`
         // hands it straight to the kernel, which only stores into it).
-        use bun_collections::vec_ext::VecExt as _;
         // SAFETY: `u8` has no validity invariant; the buffer is handed straight
         // to the kernel which only stores into it.
         unsafe { buf.expand_to_capacity() };
