@@ -19,31 +19,48 @@ echo "Version: $VERSION  Rev: $REV  Tag: $TAG"
 echo "Bottle:  $BOTTLE"
 
 # ── Create bottle ─────────────────────────────────────────────────────
+# Hand-rolled tarball (NOT `brew bottle`): brew bottle only operates on a keg
+# installed in the Cellar, so pointing it at the CI build tree would silently
+# re-bottle whatever old bun happens to be installed on the runner. Instead we
+# replicate bun.rb's install() keg layout exactly:
+#   <keg>/libexec/bin/bun  — the real (CI-built, signed) binary
+#   <keg>/bin/bun          — LD_PRELOAD wrapper (must match bun.rb verbatim)
+# Keg dir MUST be bun/<version>_<rev> when the formula has `revision N`;
+# a bun/<version> dir pours into the wrong place and the install breaks.
 
 echo ""
 echo "--- Creating bottle layout ---"
 
+HB="${HOMEBREW_PREFIX:?HOMEBREW_PREFIX not set}"
 BOTTLE_DIR="/tmp/bun-bottle-$$"
-KEG="$BOTTLE_DIR/bun/$VERSION"
-mkdir -p "$KEG/bin"
-cp build/release/bun "$KEG/bin/bun"
+KEG="$BOTTLE_DIR/bun/${VERSION}_${REV}"
+mkdir -p "$KEG/bin" "$KEG/libexec/bin"
+cp build/release/bun "$KEG/libexec/bin/bun"
+chmod 0755 "$KEG/libexec/bin/bun"
 
-echo "✅ Layout: $KEG/bin/bun"
+# Wrapper content mirrors bun.rb install() — keep the two in sync.
+cat > "$KEG/bin/bun" <<WRAP
+#!/bin/sh
+export LD_PRELOAD="$HB/opt/ohos-compat-shim/lib/libohos_compat.so\${LD_PRELOAD:+:\$LD_PRELOAD}"
+# Opt in the shim's linkat hook (default OFF): OHOS SELinux blocks hardlinks.
+# bun's source-level copy_file_fallback was removed in favor of the shim's
+# byte-copy fallback (equivalent — both lose hardlink identity). symlinkat is
+# deliberately NOT opted in (unsafe for relative tarball symlink targets).
+export OHOS_COMPAT_SHIM_ENABLE="linkat\${OHOS_COMPAT_SHIM_ENABLE:+,\$OHOS_COMPAT_SHIM_ENABLE}"
+exec "$HB/opt/bun/libexec/bin/bun" "\$@"
+WRAP
+chmod 0755 "$KEG/bin/bun"
 
+echo "✅ Layout: $KEG/{bin/bun wrapper, libexec/bin/bun}"
+
+# gnu-tar required: toybox tar/gzip cannot produce a valid compressed bottle.
+GTAR=$(command -v gtar || command -v "$HB/bin/tar" || command -v tar)
 cd "$BOTTLE_DIR"
-brew bottle --json --root-url="https://atomgit.com/social4hyq/homebrew-core/releases/download/$TAG" bun
-
-# brew bottle outputs: bun-<version>_<rev>.arm64_ohos.bottle.{tar.gz,json}
-# but with directory name bun/<version>/ inside.
-# The expected bottle filename may differ; find it.
-BOTTLE_FILE=$(ls *.arm64_ohos.bottle.tar.gz 2>/dev/null | head -1)
-if [ -z "$BOTTLE_FILE" ]; then
-  echo "❌ Bottle tarball not found in $BOTTLE_DIR"
-  ls -la "$BOTTLE_DIR"
-  exit 1
-fi
+"$GTAR" -czf "$BOTTLE" bun
+BOTTLE_FILE="$BOTTLE"
 
 echo "✅ Created: $BOTTLE_FILE ($(du -h "$BOTTLE_FILE" | cut -f1))"
+echo "sha256: $(sha256sum "$BOTTLE_FILE" | cut -d' ' -f1)  ← paste into bun.rb bottle block"
 
 # ── Step 1 — Ensure release tag exists on atomgit ──────────────────────
 
