@@ -80,9 +80,9 @@ export const workarounds: Workaround[] = [
     // (probe: a plain close_range() call surviving in a hishell terminal).
     expectedToBeFixed: () => false,
     cleanup:
-      `Delete scripts/build/shims/ohos_compat_shim.c, needsOhosCompatShim()/OHOS_COMPAT_SHIM_SYMBOLS ` +
-      `and their blocks in scripts/build/shims.ts, restore the LD_PRELOAD wrapper in the bun.rb ` +
-      `formula, and this entry.`,
+      `Delete scripts/build/shims/ohos_compat_shim.c, needsOhosCompatShim() and its blocks in ` +
+      `scripts/build/shims.ts, the shim symbol block in src/linker.lds, restore the LD_PRELOAD ` +
+      `wrapper in the bun.rb formula, and this entry.`,
   },
   {
     id: "asan-dyld-shim",

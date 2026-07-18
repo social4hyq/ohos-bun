@@ -146,22 +146,16 @@ function needsOhosCompatShim(cfg: Config): boolean {
 }
 
 /**
- * Symbols the shim interposes. Re-exported from the executable
- * (--export-dynamic-symbol) so dlopen'd native modules (.node/.so) resolve
- * them from the main binary too — the executable is first in the loader's
- * global lookup order, which matches LD_PRELOAD interposition semantics.
+ * The shim's interposed symbols are re-exported from the executable via the
+ * global list in src/linker.lds so dlopen'd native modules (.node/.so)
+ * resolve them from the main binary too — the executable is first in the
+ * loader's global lookup order, which matches LD_PRELOAD interposition
+ * semantics. NOTE: the version script's `local: *` overrides
+ * --export-dynamic-symbol/--dynamic-list in lld (verified empirically on
+ * LLD 21), so linker.lds is the only working export mechanism here.
  * linkat/symlinkat interposers are runtime opt-in (OHOS_COMPAT_SHIM_ENABLE)
  * and pass through by default, same as the preload .so.
  */
-const OHOS_COMPAT_SHIM_SYMBOLS = [
-  "syscall",
-  "close_range",
-  "getcwd",
-  "getpwuid_r",
-  "tmpfile",
-  "linkat",
-  "symlinkat",
-];
 
 /**
  * Register shim compile rules. Call once from rules.ts alongside the
@@ -271,10 +265,8 @@ export function emitShims(n: Ninja, cfg: Config): ShimLinkOpts {
     });
     // A plain .o is always fully linked (no archive member selection), so
     // its definitions interpose libc's regardless of position in the line.
+    // Dynamic-table export happens via src/linker.lds (see comment above).
     ldflags.push(out);
-    for (const sym of OHOS_COMPAT_SHIM_SYMBOLS) {
-      ldflags.push(`-Wl,--export-dynamic-symbol=${sym}`);
-    }
     implicitInputs.push(out);
   }
 
