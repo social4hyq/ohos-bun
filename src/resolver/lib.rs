@@ -1687,7 +1687,39 @@ pub mod fs {
             {
                 return b"/data/local/tmp";
             }
-            #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "android")))]
+            #[cfg(all(not(target_os = "android"), target_env = "ohos"))]
+            {
+                // OHOS /tmp is read-only erofs. Check writability at runtime
+                // and fall back to /data/local/tmp → $HOME/tmp → /tmp (last resort).
+                static FALLBACK: std::sync::OnceLock<&'static [u8]> = std::sync::OnceLock::new();
+                return *FALLBACK.get_or_init(|| {
+                    let candidates: &[&[u8]] = &[b"/tmp", b"/data/local/tmp"];
+                    for &candidate in candidates {
+                        let cstr = match std::ffi::CString::new(candidate) {
+                            Ok(c) => c,
+                            Err(_) => continue,
+                        };
+                        // SAFETY: candidate is a valid C string for libc::access
+                        if unsafe { libc::access(cstr.as_ptr(), libc::W_OK) } == 0 {
+                            // Return the static literal directly (no allocation needed)
+                            if candidate == b"/tmp" { return b"/tmp"; }
+                            if candidate == b"/data/local/tmp" { return b"/data/local/tmp"; }
+                            return Box::leak(candidate.to_vec().into_boxed_slice());
+                        }
+                    }
+                    // Fallback: try $HOME/tmp
+                    if let Some(home) = env_var::HOME.get_not_empty() {
+                        let mut v = Vec::with_capacity(home.len() + 5);
+                        v.extend_from_slice(home);
+                        v.push(b'/');
+                        v.extend_from_slice(b"tmp");
+                        return Box::leak(v.into_boxed_slice());
+                    }
+                    // Last resort: /tmp even if readonly
+                    b"/tmp"
+                });
+            }
+            #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "android", target_env = "ohos")))]
             {
                 b"/tmp"
             }
