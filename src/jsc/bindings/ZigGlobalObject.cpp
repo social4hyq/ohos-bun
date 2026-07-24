@@ -278,6 +278,11 @@ extern "C" unsigned getJSCBytecodeCacheVersion()
 extern "C" void Bun__REPRL__registerFuzzilliFunctions(Zig::GlobalObject*);
 #endif
 
+#if OS(WINDOWS) && (CPU(X86_64) || CPU(ARM64))
+#include <JavaScriptCore/ExecutableAllocator.h>
+extern "C" long Bun__crashHandlerFromJSCFrame(void*, void*, void*, void*);
+#endif
+
 extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(const char* ptr, size_t length), bool evalMode, bool oneShotStartup)
 {
     static std::once_flag jsc_init_flag;
@@ -315,6 +320,10 @@ extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(c
             JSC::Options::useAsyncStackTrace() = true;
             JSC::Options::useExplicitResourceManagement() = true;
             JSC::Options::useImportDefer() = true;
+            // Upstream enabled Temporal by default; keep it off in Bun until
+            // the remaining integration work lands. BUN_JSC_useTemporal=1
+            // re-enables it for opt-in testing.
+            JSC::Options::useTemporal() = false;
             JSC::dangerouslyOverrideJSCBytecodeCacheVersion(getWebKitBytecodeCacheVersion());
 
 #ifdef BUN_DEBUG
@@ -353,6 +362,15 @@ extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(c
             }
             JSC::Options::assertOptionsAreCoherent();
         }); // end JSC::initialize lambda
+
+#if OS(WINDOWS) && (CPU(X86_64) || CPU(ARM64))
+        // JSC::initialize() registered unwind info + a language-specific SEH
+        // handler for the JIT pool. Route that handler to the crash reporter
+        // so a hardware fault under a JIT frame is reported deterministically
+        // at the JSC boundary. LLInt is not yet covered (needs build-time
+        // offlineasm .seh_* emission).
+        JSC::setJITExceptionHandlerWin(&Bun__crashHandlerFromJSCFrame);
+#endif
     }); // end std::call_once lambda
 
     // NOLINTEND
@@ -1655,7 +1673,16 @@ JSC_DEFINE_HOST_FUNCTION(jsFunctionDispatchEvent, (JSGlobalObject * lexicalGloba
 
 JSC_DEFINE_CUSTOM_GETTER(getterSubtleCrypto, (JSGlobalObject * lexicalGlobalObject, EncodedJSValue thisValue, PropertyName attributeName))
 {
-    return JSValue::encode(static_cast<Zig::GlobalObject*>(lexicalGlobalObject)->subtleCrypto());
+    // Node brand-checks the receiver: Crypto.prototype.subtle on anything but
+    // the crypto global throws ERR_INVALID_THIS. Resolve through
+    // defaultGlobalObject so vm-context lexical globals still find the singleton.
+    auto* global = defaultGlobalObject(lexicalGlobalObject);
+    if (JSValue::decode(thisValue) != global->cryptoObject()) [[unlikely]] {
+        auto& vm = JSC::getVM(lexicalGlobalObject);
+        auto scope = DECLARE_THROW_SCOPE(vm);
+        return Bun::throwError(lexicalGlobalObject, scope, Bun::ErrorCode::ERR_INVALID_THIS, "Value of \"this\" must be of type Crypto"_s);
+    }
+    return JSValue::encode(global->subtleCrypto());
 }
 
 extern "C" JSC::EncodedJSValue ExpectMatcherUtils_createSigleton(JSC::JSGlobalObject* lexicalGlobalObject);
@@ -1710,6 +1737,7 @@ JSC_DECLARE_HOST_FUNCTION(jsBunPeekPromiseStatus);
 JSC_DECLARE_HOST_FUNCTION(jsBunPeekPromiseSettledValue);
 JSC_DECLARE_HOST_FUNCTION(jsBunPokePromiseAsHandled);
 JSC_DECLARE_HOST_FUNCTION(jsWebStreamClosedPromise);
+JSC_DECLARE_HOST_FUNCTION(jsWebStreamControllerError);
 
 JSC_DEFINE_HOST_FUNCTION(makeGetterTypeErrorForBuiltins, (JSGlobalObject * globalObject, CallFrame* callFrame))
 {
@@ -1838,6 +1866,27 @@ JSC_DEFINE_HOST_FUNCTION(jsWebStreamClosedPromise, (JSGlobalObject * globalObjec
         return JSValue::encode(Bun::WebStreams::webStreamClosedPromise(globalObject, writable));
 
     auto scope = DECLARE_THROW_SCOPE(getVM(globalObject));
+    return JSValue::encode(throwTypeError(globalObject, scope, "Expected a ReadableStream or WritableStream"_s));
+}
+
+// node:stream's addAbortSignal() errors a WHATWG stream when the signal fires. Its isWebStream()
+// gate also admits TransformStream, which has no controller to error — node throws there too (it
+// never sets kControllerErrorFunction on one), so the throw below is reachable, not dead code.
+JSC_DEFINE_HOST_FUNCTION(jsWebStreamControllerError, (JSGlobalObject * globalObject, CallFrame* callFrame))
+{
+    auto scope = DECLARE_THROW_SCOPE(getVM(globalObject));
+    JSValue streamValue = callFrame->argument(0);
+    JSValue error = callFrame->argument(1);
+    if (auto* readable = dynamicDowncast<WebCore::JSReadableStream>(streamValue)) {
+        Bun::WebStreams::webStreamControllerError(globalObject, readable, error);
+        RETURN_IF_EXCEPTION(scope, {});
+        return JSValue::encode(jsUndefined());
+    }
+    if (auto* writable = dynamicDowncast<WebCore::JSWritableStream>(streamValue)) {
+        Bun::WebStreams::webStreamControllerError(globalObject, writable, error);
+        RETURN_IF_EXCEPTION(scope, {});
+        return JSValue::encode(jsUndefined());
+    }
     return JSValue::encode(throwTypeError(globalObject, scope, "Expected a ReadableStream or WritableStream"_s));
 }
 
@@ -2073,11 +2122,14 @@ void GlobalObject::finishCreation(VM& vm)
         [](const Initializer<JSObject>& init) {
             JSC::JSGlobalObject* globalObject = init.owner;
             JSObject* crypto = JSValue::decode(CryptoObject__create(globalObject)).getObject();
-            crypto->putDirectCustomAccessor(
+            // Node defines `subtle` on Crypto.prototype with a brand check, not on
+            // the instance; the getter above enforces the brand.
+            JSObject* prototype = crypto->getPrototypeDirect().getObject();
+            prototype->putDirectCustomAccessor(
                 init.vm,
                 Identifier::fromString(init.vm, "subtle"_s),
                 JSC::CustomGetterSetter::create(init.vm, getterSubtleCrypto, setterSubtleCrypto),
-                PropertyAttribute::DontDelete | 0);
+                PropertyAttribute::DontDelete | PropertyAttribute::CustomAccessor);
 
             init.set(crypto);
         });
@@ -3035,6 +3087,7 @@ void GlobalObject::addBuiltinGlobals(JSC::VM& vm)
         GlobalPropertyInfo(builtinNames.peekPromiseSettledValuePrivateName(), JSFunction::create(vm, this, 1, String(), jsBunPeekPromiseSettledValue, ImplementationVisibility::Public), PropertyAttribute::DontDelete | PropertyAttribute::ReadOnly),
         GlobalPropertyInfo(builtinNames.pokePromiseAsHandledPrivateName(), JSFunction::create(vm, this, 1, String(), jsBunPokePromiseAsHandled, ImplementationVisibility::Public), PropertyAttribute::DontDelete | PropertyAttribute::ReadOnly),
         GlobalPropertyInfo(builtinNames.webStreamClosedPromisePrivateName(), JSFunction::create(vm, this, 1, String(), jsWebStreamClosedPromise, ImplementationVisibility::Public), PropertyAttribute::DontDelete | PropertyAttribute::ReadOnly),
+        GlobalPropertyInfo(builtinNames.webStreamControllerErrorPrivateName(), JSFunction::create(vm, this, 2, String(), jsWebStreamControllerError, ImplementationVisibility::Public), PropertyAttribute::DontDelete | PropertyAttribute::ReadOnly),
         GlobalPropertyInfo(builtinNames.fulfillModuleSyncPrivateName(), JSFunction::create(vm, this, 1, String(), functionFulfillModuleSync, ImplementationVisibility::Public), PropertyAttribute::DontDelete | PropertyAttribute::ReadOnly),
         GlobalPropertyInfo(builtinNames.esmNamespaceForCjsPrivateName(), JSFunction::create(vm, this, 1, String(), functionEsmNamespaceForCjs, ImplementationVisibility::Public), PropertyAttribute::DontDelete | PropertyAttribute::ReadOnly),
         GlobalPropertyInfo(builtinNames.esmRegistryDeletePrivateName(), JSFunction::create(vm, this, 1, String(), functionEsmRegistryDelete, ImplementationVisibility::Public), PropertyAttribute::DontDelete | PropertyAttribute::ReadOnly),
@@ -3301,7 +3354,8 @@ extern "C" bool JSGlobalObject__setTimeZone(JSC::JSGlobalObject* globalObject, c
     auto& vm = JSC::getVM(globalObject);
 
     if (WTF::setTimeZoneOverride(Zig::toString(*timeZone))) {
-        vm.dateCache.resetIfNecessarySlow();
+        WTF::timeZoneDidChange();
+        vm.dateCache.clearForTimeZoneChange();
         return true;
     }
 
@@ -4132,7 +4186,17 @@ extern "C" void Zig__GlobalObject__destructOnExit(Zig::GlobalObject* globalObjec
     gcUnprotect(globalObject);
     globalObject = nullptr;
     vm.heap.collectNow(JSC::Sync, JSC::CollectionScope::Full);
-    vm.derefSuppressingSaferCPPChecking();
+    // The two refs that exist when this runs at event-loop top level are
+    // Zig__GlobalObject__create's manual ref and the boot-scope JSLockHolder.
+    // When process.exit() is called from inside a JS callback, every nested
+    // JSLockHolder still on the native stack (e.g. JSEventListener::handleEvent)
+    // holds a RefPtr<VM>, so a fixed two derefs leave the count > 0 and ~VM
+    // (and with it Heap::lastChanceToFinalize, which clears all marks and
+    // sweeps every cell) is skipped. Those holders never destruct because this
+    // path never returns, so release on their behalf.
+    for (uint32_t n = vm.refCount(); n > 1; --n)
+        vm.derefSuppressingSaferCPPChecking();
+    // refCount 1 -> 0 runs ~VM; `vm` is dead past this line.
     vm.derefSuppressingSaferCPPChecking();
     runLoop->threadWillExit();
 }
