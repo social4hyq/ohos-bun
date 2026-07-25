@@ -177,11 +177,19 @@ jobs:
       # stripANSI.test.ts failed with "Cannot find package" until this step
       # was added. Root package.json is unrelated — its deps are for
       # building Bun itself, not for the test suite.
+      #
+      # --ignore-scripts: also found by running it for real — plain `bun
+      # install` here dies on puppeteer's postinstall (tries to download a
+      # Chromium build, throws "The current platform is not supported" for
+      # openharmony). scripts/bootstrap.sh (this repo's own canonical CI
+      # bootstrap, line ~2210) installs test/'s deps with --ignore-scripts
+      # for exactly this reason — not an OHOS-specific workaround, the same
+      # flag upstream always uses here.
       - name: Install test/ npm dependencies
         run: |
           docker exec "$CONTAINER" bash -lc '
             cd /root/bun-src/test &&
-            "$(brew --prefix bun)/bin/bun" install
+            "$(brew --prefix bun)/bin/bun" install --ignore-scripts
           '
 
       # No --parallel (see header note) and no --retries override — CI
