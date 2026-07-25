@@ -2416,6 +2416,12 @@ fn ohos_sign_native_binaries(pkg_dir: &[u8]) {
         Err(_) => return,
     };
     let mut w = w;
+    // Some filesystems (hmdfs, and others) return DT_UNKNOWN for every dirent,
+    // which leaves `entry.kind` as `Unknown` unless the walker falls back to
+    // `lstatat`. Every other `walker_skippable::walk` caller in this codebase
+    // sets this; without it here, native binaries silently never match
+    // `EntryKind::File` below and this scan signs nothing.
+    w.resolve_unknown_entry_types = true;
     while let Ok(Some(entry)) = w.next() {
         if entry.kind != Syscall::EntryKind::File {
             continue;
