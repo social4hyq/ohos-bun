@@ -38,16 +38,23 @@ run-name: "ohos-full-test (filter=${{ inputs.test-filter || 'none' }})"
 #      adding it, it multiplies container-setup cost by shard count.)
 #
 #      Also not reinvented: retry/flake handling. runner.node.mjs already
-#      retries a failing file up to --retries times (default "3" under CI —
-#      maxAttempts = 1 + retries) before counting it as failed; a file that
-#      passes on retry is tracked as "flaky", not "failed", and is excluded
-#      from the exit-code-determining result set (see the
+#      retries a failing file up to --retries times (maxAttempts = 1 +
+#      retries) before counting it as failed; a file that passes on retry is
+#      tracked as "flaky", not "failed", and is excluded from the
+#      exit-code-determining result set (see the
 #      `[...okResults, ...failedResults]` return in runTests(), flaky
 #      omitted on purpose). test/expectations.txt's `[ OPENHARMONY ]`
 #      entries are excluded from the run entirely before any test executes
 #      (getRelevantTests()). So the plain process exit code already means
 #      "failed after retries, and not a known/accepted OHOS limitation" —
 #      no separate rerun-and-diff pass needed on top of that.
+#
+#      We pass --retries=1 rather than taking the CI default of 3: the
+#      slowest remaining failures are minutes long on their own
+#      (cli/run/run-crash-handler.test.ts measured 411s in run 30150421934),
+#      so 4 attempts each would cost more wall clock than the entire rest of
+#      the suite. One retry still separates a hard failure from a flake,
+#      which is all the exit code needs.
 #
 # What's NOT borrowed from Buildkite: the platform matrix (testPlatforms in
 # ci.mjs). We only have one target — arm64_ohos — so there's exactly one
@@ -57,16 +64,21 @@ on:
   workflow_dispatch:
     inputs:
       test-filter:
-        description: 'Optional --include substring filter (e.g. "js/node/test/parallel"), for a quick partial run instead of the full ~4700-file suite'
+        description: 'Optional --include substring filter (e.g. "js/node/test/parallel"), for a quick partial run instead of the full ~5200-file suite'
         required: false
         type: string
         default: ''
   schedule:
     # Weekly, Sunday 21:00 UTC. This runs serially (see the no-`--parallel`
-    # note above), single job, no sharding — the historical local baseline
-    # of ~54min was WITH --parallel on a 20-core box, so expect this to run
-    # considerably longer. Watch the first few runs and adjust cadence, or
-    # switch to a sharded matrix, if it's not finishing comfortably inside
+    # note above), single job, no sharding. Measured shape of the suite on
+    # this runner (run 30150421934, after subtracting the css-fuzz stall the
+    # CI= fix below removes): ~5min container/dependency setup, ~46min for
+    # the first ~300 files (bake/ bundler/ cli/ integration/ — of which
+    # bake/dev, now excluded, was ~27min), and under a minute for the
+    # remaining ~4900, since the 3251-file parallel-safe phase already runs
+    # 4-wide. So the cost is concentrated in a few dozen slow files, and a
+    # sharded matrix would have to beat a ~5min per-shard setup tax to be
+    # worth it. Revisit that only if a real baseline stops fitting inside
     # timeout-minutes below.
     - cron: '0 21 * * 0'
 
@@ -108,6 +120,37 @@ jobs:
             mkdir -p /data/local/tmp /system/bin /system/lib &&
             ln -sf /bin/sh /system/bin/sh &&
             ln -sf /lib/ld-musl-aarch64.so.1 /system/lib/ld-musl-aarch64.so.1
+          '
+
+          # There is no docker/podman inside this container, and there never
+          # will be — but test/harness.ts:1051 turns that into a hard error
+          # rather than a skip once CI is set (see the Run test suite step):
+          #
+          #   dockerExe() -> which("docker") || which("podman") -> null
+          #   -> if (isCI && isLinux) throw "A functional `docker` is required"
+          #
+          # and harness.ts:21 counts openharmony as isLinux. That throw is at
+          # module scope in ~20 files (js/sql/*, js/bun/s3, cli/install/
+          # bun-install-proxy, js/bun/test/parallel/test-docker-build-*,
+          # regression/issue/26063 + 28632, …), so they would go from
+          # "loads, skips its docker describes, passes" to "fails to load".
+          #
+          # The very next branch in isDockerEnabled() is
+          # `if (isLinux && process.arch === "arm64") return false` — upstream
+          # already disables docker tests on this architecture. It is simply
+          # ordered after the presence check. A stub on PATH satisfies the
+          # presence check and lets that arm64 rule answer, which is the
+          # behaviour we get today with CI unset. It stays correct even if the
+          # `docker info` probe is reached: /bin/true prints nothing, so the
+          # "Server Version:" match fails and isDockerEnabled() returns false.
+          #
+          # Remove this once harness.ts orders the arm64 return before the
+          # throw AND a bun bottle is cut from a revision containing that fix
+          # — the test tree is checked out at the bottle's pinned revision
+          # (see the checkout step), not at this workflow's ref, so fixing
+          # harness.ts alone does not change what this job runs.
+          docker exec "$CONTAINER" bash -lc '
+            mkdir -p /usr/local/bin && ln -sf /bin/true /usr/local/bin/docker
           '
 
       - name: Install node (Harmonybrew default core tap) + bun bottle (social4hyq/core)
@@ -198,10 +241,10 @@ jobs:
             "$(brew --prefix bun)/bin/bun" install --ignore-scripts
           '
 
-      # No --parallel (see header note) and no --retries override — CI
-      # defaults to 3 retries same as Buildkite. --quiet keeps the log from
-      # ballooning over a run this long; --results-json is the artifact for
-      # any follow-up triage, not for gating (the exit code IS the gate).
+      # No --parallel (see header note); --retries=1 instead of the CI
+      # default of 3 (see header note). --quiet keeps the log from ballooning
+      # over a run this long; --results-json is the artifact for any
+      # follow-up triage, not for gating (the exit code IS the gate).
       #
       # --exclude=bake/dev: found by running the first full run for real (43
       # real failures, 9 of them here). Root cause has nothing to do with
@@ -239,12 +282,32 @@ jobs:
       # different and genuine error ("include file 'bits/alltypes.h' not
       # found" resolving the OHOS SDK sysroot's stdint.h) — a real
       # device-affecting gap that belongs in test/expectations.txt, not here.
+      #
+      # CI/GITHUB_ACTIONS are passed explicitly because `docker exec` inherits
+      # nothing from the runner's environment, and both the harness and the
+      # runner branch on them:
+      #
+      #  - test/harness.ts's `isCI` (`process.env.CI !== undefined`) gates
+      #    whole test bodies. Without it, js/bun/css/css-fuzz.test.ts runs its
+      #    `if (!isCI)` fuzz loops — 2600 iterations over deliberately
+      #    degenerate inputs (300-deep @media nesting, 100k-long selectors,
+      #    10k-property rules). Upstream's own x64 lane records this file at
+      #    57ms in test/expected-durations.json because CI skips all of it; in
+      #    run 30150421934 it took 3h28m, 81.5% of a 4h15m suite. Same flag
+      #    also drives harness's isFlaky/isBroken.
+      #  - scripts/utils.mjs's `isCI`/`isGithubAction` drive the runner's own
+      #    ::group:: folding and its --retries default.
+      #
+      # Whether the runner should treat itself as running under Actions is a
+      # separate question from whether the *tests* do, but both answers are
+      # yes here: the log is read in the Actions UI, and the tests are meant
+      # to behave exactly as they do on upstream's lanes.
       - name: Run test suite
         env:
           TEST_FILTER: ${{ inputs.test-filter }}
         run: |
           set +e
-          docker exec -e TEST_FILTER "$CONTAINER" bash -lc '
+          docker exec -e TEST_FILTER -e CI=true -e GITHUB_ACTIONS=true "$CONTAINER" bash -lc '
             cd /root/bun-src
             INCLUDE_ARGS=()
             if [ -n "$TEST_FILTER" ]; then
@@ -253,6 +316,7 @@ jobs:
             node scripts/runner.node.mjs \
               --exec-path="$(brew --prefix bun)/bin/bun" \
               --quiet \
+              --retries=1 \
               --results-json=/root/results.json \
               --exclude=integration/bun-types \
               --exclude=internal/source-lints \
