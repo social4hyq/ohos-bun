@@ -1808,20 +1808,22 @@ impl<'a> PackageInstaller<'a> {
             #[cfg(target_env = "ohos")]
             if let package_install::InstallResult::Success = &install_result {
                 // Resolve `destination_dir`'s real path via `/proc/self/fd`
-                // instead of re-deriving it from `self.node_modules.path` +
-                // `alias`: that reconstruction assumes a flat, non-isolated
+                // instead of re-deriving it from `self.node_modules.path`:
+                // that reconstruction assumes a flat, non-isolated
                 // node_modules layout, but bun falls back to isolated
                 // installs (packages materialized once under the `.bun`
                 // store, referenced by symlinks) whenever hoisting hits a
                 // conflict. In that mode the guessed path doesn't match
                 // where the package actually landed, so the scan below
                 // would open the wrong directory (or none) and silently
-                // leave native bindings unsigned. `destination_dir` is the
-                // exact directory this package was just installed into,
-                // regardless of layout.
+                // leave native bindings unsigned.
+                //
+                // Note this is the node_modules root for the current tree,
+                // NOT this package's own directory — the scan is recursive
+                // and must join each entry's relative path accordingly.
                 let mut fd_path_buf = PathBuffer::uninit();
-                if let Ok(pkg_path) = Syscall::get_fd_path(destination_dir.fd(), &mut fd_path_buf) {
-                    ohos_sign_native_binaries(pkg_path);
+                if let Ok(nm_path) = Syscall::get_fd_path(destination_dir.fd(), &mut fd_path_buf) {
+                    ohos_sign_native_binaries(nm_path);
                 }
             }
 
@@ -2402,25 +2404,35 @@ impl<'a> PackageInstaller<'a> {
 
 // ───────────────────────────── OHOS install-time signing ─────────────────────────────
 
-/// On OHOS, scan a package directory for native binaries (.so, .node) and
+/// On OHOS, recursively scan `root_dir` for native binaries (.so, .node) and
 /// sign any that are not already signed. Called after a package is installed
 /// into node_modules, before lifecycle scripts run.
+///
+/// Set `OHOS_SIGN_DEBUG` to trace what this scan finds and signs. Signing
+/// failures are otherwise non-fatal and silent — the reason the two path bugs
+/// fixed here (see below) went unnoticed through several releases.
 #[cfg(target_env = "ohos")]
-fn ohos_sign_native_binaries(pkg_dir: &[u8]) {
-    let dir = match Dir::open(pkg_dir) {
+fn ohos_sign_native_binaries(root_dir: &[u8]) {
+    let debug = std::env::var_os("OHOS_SIGN_DEBUG").is_some();
+    let dir = match Dir::open(root_dir) {
         Ok(d) => d,
-        Err(_) => return,
+        Err(e) => {
+            if debug {
+                eprintln!("[ohos-sign] open {:?} failed: {e:?}", bstr::BStr::new(root_dir));
+            }
+            return;
+        }
     };
-    let w = match Syscall::walker_skippable::walk(dir.fd(), &[], &[]) {
+    let mut w = match Syscall::walker_skippable::walk(dir.fd(), &[], &[]) {
         Ok(w) => w,
         Err(_) => return,
     };
-    let mut w = w;
-    // Some filesystems (hmdfs, and others) return DT_UNKNOWN for every dirent,
-    // which leaves `entry.kind` as `Unknown` unless the walker falls back to
-    // `lstatat`. Every other `walker_skippable::walk` caller in this codebase
-    // sets this; without it here, native binaries silently never match
-    // `EntryKind::File` below and this scan signs nothing.
+    // hmdfs — the filesystem backing user directories on HarmonyOS — reports
+    // DT_UNKNOWN for every dirent. The walker then leaves `entry.kind` as
+    // `Unknown` (and does not recurse into directories) unless it is told to
+    // fall back to `lstatat`, so without this the scan below matches nothing
+    // and silently signs nothing. Every other `walker_skippable::walk` caller
+    // in this codebase sets this too.
     w.resolve_unknown_entry_types = true;
     while let Ok(Some(entry)) = w.next() {
         if entry.kind != Syscall::EntryKind::File {
@@ -2435,16 +2447,32 @@ fn ohos_sign_native_binaries(pkg_dir: &[u8]) {
         if !needs_sign {
             continue;
         }
-        let mut full = Vec::with_capacity(pkg_dir.len() + 1 + name.len());
-        full.extend_from_slice(pkg_dir);
+        // Join `entry.path` (relative to the walk root), not `entry.basename`:
+        // this walk is recursive and `root_dir` is the node_modules root, so
+        // native binaries live at `<scope>/<pkg>/…`. Joining the basename
+        // drops those intermediate components and yields a path that does not
+        // exist, which `std::fs::read` below turns into an empty buffer and
+        // `sign_selfsign_inplace` into a swallowed ENOENT.
+        let rel = entry.path.as_bytes();
+        let mut full = Vec::with_capacity(root_dir.len() + 1 + rel.len());
+        full.extend_from_slice(root_dir);
         full.push(b'/');
-        full.extend_from_slice(name);
+        full.extend_from_slice(rel);
         let full_str = unsafe { core::str::from_utf8_unchecked(&full) };
         let p = std::path::Path::new(full_str);
         if ohos_sign::has_codesign(&std::fs::read(p).unwrap_or_default()) {
+            if debug {
+                eprintln!("[ohos-sign] {full_str}: already signed");
+            }
             continue;
         }
-        let _ = ohos_sign::sign_selfsign_inplace(p);
+        let result = ohos_sign::sign_selfsign_inplace(p);
+        if debug {
+            match &result {
+                Ok(()) => eprintln!("[ohos-sign] {full_str}: signed"),
+                Err(e) => eprintln!("[ohos-sign] {full_str}: sign failed: {e}"),
+            }
+        }
     }
 }
 
