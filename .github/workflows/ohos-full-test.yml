@@ -170,25 +170,31 @@ jobs:
       - name: Copy test tree into the container
         run: docker cp . "$CONTAINER":/root/bun-src
 
-      # test/ is its own package (test/package.json + test/bun.lock, ~110
-      # deps: string-width, strip-ansi, esbuild, etc. — fixtures for tests
-      # that compare Bun's behavior against the real npm package). Found by
-      # running this workflow for real: stringWidth.test.ts and
-      # stripANSI.test.ts failed with "Cannot find package" until this step
-      # was added. Root package.json is unrelated — its deps are for
-      # building Bun itself, not for the test suite.
+      # scripts/bootstrap.sh (this repo's own canonical CI bootstrap,
+      # ~line 2210) runs `bun install --ignore-scripts` in BOTH the repo
+      # root and test/ before any test runs, on every platform — not an
+      # OHOS-specific step. Skipping either one breaks real test files:
       #
-      # --ignore-scripts: also found by running it for real — plain `bun
-      # install` here dies on puppeteer's postinstall (tries to download a
-      # Chromium build, throws "The current platform is not supported" for
-      # openharmony). scripts/bootstrap.sh (this repo's own canonical CI
-      # bootstrap, line ~2210) installs test/'s deps with --ignore-scripts
-      # for exactly this reason — not an OHOS-specific workaround, the same
-      # flag upstream always uses here.
-      - name: Install test/ npm dependencies
+      #  - test/ alone: found by running this workflow for real.
+      #    stringWidth.test.ts / stripANSI.test.ts import string-width /
+      #    strip-ansi, declared only in test/package.json (root's
+      #    package.json is Bun's own build deps, unrelated).
+      #  - root before test/: also found by running it for real. test/'s
+      #    own lockfile pins react as `file:../node_modules/react` — a
+      #    relative reference to the ROOT node_modules, so `cd test && bun
+      #    install` alone 404s on it ("failed to link package:
+      #    react@../node_modules/react") unless root has already been
+      #    installed first.
+      #  - --ignore-scripts on both: also found by running it for real.
+      #    Without it, test/'s puppeteer postinstall tries to download a
+      #    Chromium build and throws "The current platform is not
+      #    supported" for openharmony, aborting the whole install.
+      - name: Install npm dependencies (root, then test/)
         run: |
           docker exec "$CONTAINER" bash -lc '
-            cd /root/bun-src/test &&
+            cd /root/bun-src &&
+            "$(brew --prefix bun)/bin/bun" install --ignore-scripts &&
+            cd test &&
             "$(brew --prefix bun)/bin/bun" install --ignore-scripts
           '
 
