@@ -1046,16 +1046,23 @@ export function dockerExe(): string | null {
 }
 
 export function isDockerEnabled(): boolean {
+  // TODO: investigate why Docker tests are not working on Linux arm64
+  //
+  // Checked before the presence/health probes below, not after: those raise a
+  // hard error under CI, but docker tests are disabled on this architecture
+  // whether or not docker works, so requiring one is never correct here.
+  // Callers run this at module scope, so the error failed whole files that
+  // would otherwise just skip their docker suites — which is what OpenHarmony
+  // (counted as isLinux above, and with no docker in its CI container) hit.
+  if (isLinux && process.arch === "arm64") {
+    return false;
+  }
+
   const dockerCLI = dockerExe();
   if (!dockerCLI) {
     if (isCI && isLinux) {
       throw new Error("A functional `docker` is required in CI for some tests.");
     }
-    return false;
-  }
-
-  // TODO: investigate why Docker tests are not working on Linux arm64
-  if (isLinux && process.arch === "arm64") {
     return false;
   }
 
