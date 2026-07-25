@@ -216,6 +216,29 @@ jobs:
       # anywhere before this workflow tested an actual stable bottle. Would
       # fail identically on a stable macOS/Linux/Windows build; not an
       # OHOS-specific expectations.txt entry.
+      #
+      # The three cc.test/20144/26249 excludes: bun:ffi's cc() (the in-memory
+      # TCC compiler) segfaults at address 0x48 *inside this container image*,
+      # and the process then hangs instead of exiting, burning the whole test
+      # timeout. Scoped precisely — exactly the 4 test files in the tree that
+      # call cc() were the ones failing, and no others. Verified on a real
+      # HarmonyOS device against the very same published bottle (adb57a212)
+      # that CI pours: cc.test.ts 17 pass/0 fail, 20144 1 pass, 26249 2 pass.
+      # So this is a container-environment artifact, not a defect in what
+      # ships — and per this workspace's standing rule, real-device results,
+      # not container results, decide shippability. Ruled out by direct
+      # experiment (not assumed): OHOS_SYSROOT presence (segfaults either
+      # way in-container) and /usr/lib64/libc.so -> ld-musl, which the
+      # container has and the device lacks (feeding the device's TCC that
+      # exact ld-musl as libc compiles fine). The faulting line itself is
+      # still unidentified; excluding costs us cc() coverage in CI, which is
+      # accepted because the device is the target and does pass.
+      #
+      # Deliberately NOT excluded, though it also calls cc() and also fails:
+      # napi/napi-value-ffi.test.ts. It fails on the real device too, with a
+      # different and genuine error ("include file 'bits/alltypes.h' not
+      # found" resolving the OHOS SDK sysroot's stdint.h) — a real
+      # device-affecting gap that belongs in test/expectations.txt, not here.
       - name: Run test suite
         env:
           TEST_FILTER: ${{ inputs.test-filter }}
@@ -234,6 +257,9 @@ jobs:
               --exclude=integration/bun-types \
               --exclude=internal/source-lints \
               --exclude=bake/dev \
+              --exclude=js/bun/ffi/cc.test.ts \
+              --exclude=regression/issue/20144 \
+              --exclude=regression/issue/26249 \
               "${INCLUDE_ARGS[@]}"
           '
           RUNNER_EXIT=$?
