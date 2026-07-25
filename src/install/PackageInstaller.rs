@@ -1807,23 +1807,36 @@ impl<'a> PackageInstaller<'a> {
 
             #[cfg(target_env = "ohos")]
             if let package_install::InstallResult::Success = &install_result {
-                // Resolve `destination_dir`'s real path via `/proc/self/fd`
-                // instead of re-deriving it from `self.node_modules.path`:
-                // that reconstruction assumes a flat, non-isolated
-                // node_modules layout, but bun falls back to isolated
-                // installs (packages materialized once under the `.bun`
-                // store, referenced by symlinks) whenever hoisting hits a
-                // conflict. In that mode the guessed path doesn't match
-                // where the package actually landed, so the scan below
-                // would open the wrong directory (or none) and silently
-                // leave native bindings unsigned.
+                // Scan only the package that was just installed. This runs
+                // once per package, so scanning from the node_modules root
+                // made the work quadratic in package count and re-read every
+                // already-signed binary each time — a 47-package install
+                // re-read the 17MB rolldown binding ~47 times.
                 //
-                // Note this is the node_modules root for the current tree,
-                // NOT this package's own directory — the scan is recursive
-                // and must join each entry's relative path accordingly.
-                let mut fd_path_buf = PathBuffer::uninit();
-                if let Ok(nm_path) = Syscall::get_fd_path(destination_dir.fd(), &mut fd_path_buf) {
-                    ohos_sign_native_binaries(nm_path);
+                // `destination_dir_subpath` is where the installer actually
+                // put this package, relative to `destination_dir`, so this
+                // needs no assumption about the node_modules layout (bun
+                // falls back to isolated installs whenever hoisting hits a
+                // conflict, and a path reconstructed from
+                // `self.node_modules.path` would be wrong there).
+                //
+                // O_NOFOLLOW preserves the previous behaviour of never
+                // signing through a symlinked package: the recursive walk
+                // treated symlinks as `SymLink`, not `File`, so `file:` and
+                // workspace deps — which point at the user's own sources,
+                // and which bun must not rewrite — were skipped. They fail
+                // here with ELOOP instead. Isolated-store entries are also
+                // symlinks and are signed where they are materialized, in
+                // `isolated_install::Installer`.
+                let subpath = installer.destination_dir_subpath.as_bytes();
+                if let Ok(pkg_dir) = destination_dir.open_at_with(
+                    subpath,
+                    Syscall::O::NOFOLLOW | Syscall::O::CLOEXEC | Syscall::O::RDONLY,
+                ) {
+                    let mut fd_path_buf = PathBuffer::uninit();
+                    if let Ok(pkg_path) = pkg_dir.get_fd_path(&mut fd_path_buf) {
+                        ohos_sign_native_binaries(pkg_path);
+                    }
                 }
             }
 
@@ -2405,14 +2418,20 @@ impl<'a> PackageInstaller<'a> {
 // ───────────────────────────── OHOS install-time signing ─────────────────────────────
 
 /// On OHOS, recursively scan `root_dir` for native binaries (.so, .node) and
-/// sign any that are not already signed. Called after a package is installed
-/// into node_modules, before lifecycle scripts run.
+/// sign any that are not already signed. The OHOS kernel refuses to `dlopen`
+/// an ELF with no `.codesign` section, so an unsigned binding is unusable.
+///
+/// Called with a single package's directory once that package is materialized
+/// and before its lifecycle scripts run — from the hoisted path above, and
+/// from `isolated_install::Installer` for store entries, which the hoisted
+/// scan cannot reach (they are symlinked, and signing must not follow
+/// symlinks).
 ///
 /// Set `OHOS_SIGN_DEBUG` to trace what this scan finds and signs. Signing
-/// failures are otherwise non-fatal and silent — the reason the two path bugs
+/// failures are otherwise non-fatal and silent — the reason the path bugs
 /// fixed here (see below) went unnoticed through several releases.
 #[cfg(target_env = "ohos")]
-fn ohos_sign_native_binaries(root_dir: &[u8]) {
+pub(crate) fn ohos_sign_native_binaries(root_dir: &[u8]) {
     let debug = std::env::var_os("OHOS_SIGN_DEBUG").is_some();
     let dir = match Dir::open(root_dir) {
         Ok(d) => d,

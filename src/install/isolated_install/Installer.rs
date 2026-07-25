@@ -1441,6 +1441,37 @@ impl Task {
                     let string_buf = lockfile.buffers.string_bytes.as_slice();
                     let dependencies = lockfile.buffers.dependencies.as_slice();
 
+                    // The entry's package tree is fully materialized by
+                    // `LinkPackage` (which has five success exits, hence
+                    // signing here at the single entry point of the next
+                    // step, still ahead of `RunPreinstall`).
+                    //
+                    // The isolated linker materializes each package once in
+                    // the store and points node_modules at it with symlinks.
+                    // The hoisted scan in `package_installer` must not follow
+                    // symlinks — `file:` and workspace deps resolve to the
+                    // user's own sources — so it never reaches these files,
+                    // and every native binary in an isolated install was
+                    // left unsigned and unloadable.
+                    //
+                    // `Which::Staging` is correct for both layouts: global
+                    // entries are still staged here (the rename to the final
+                    // path happens in a later step), and for local `.bun`
+                    // entries `append_real_store_path` ignores it. Seeding
+                    // with the top-level dir absolutizes the relative local
+                    // path; the global branch clears the buffer and appends
+                    // an already-absolute cache path.
+                    #[cfg(target_env = "ohos")]
+                    {
+                        let mut store_path = AutoAbsPath::init_top_level_dir();
+                        installer.append_real_store_path(
+                            &mut store_path,
+                            self.entry_id,
+                            Which::Staging,
+                        );
+                        crate::package_installer::ohos_sign_native_binaries(store_path.slice());
+                    }
+
                     for dep in entry_dependencies[self.entry_id.get() as usize].slice() {
                         let dep_name = dependencies[dep.dep_id as usize].name.slice(string_buf);
 
