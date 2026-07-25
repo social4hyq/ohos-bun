@@ -112,6 +112,17 @@ jobs:
 
       - name: Install node (Harmonybrew default core tap) + bun bottle (social4hyq/core)
         run: |
+          # The container image is a snapshot baked on a fixed date (see
+          # IMAGE above) — its default-tap formula index can reference a
+          # node version whose bottle has since been superseded/removed from
+          # the CDN (hit exactly this: baked index said 26.4.0, live tap is
+          # 26.5.0, the 26.4.0 bottle 404s). $BREW_ENV sets
+          # HOMEBREW_NO_AUTO_UPDATE=1 (intentional for the social4hyq/core
+          # tap below — we want exactly what we just tapped, not whatever
+          # else `brew update` might touch), so it never self-heals unless
+          # asked. `brew update` here, without that flag, refreshes the
+          # default tap's index before we resolve node's bottle URL from it.
+          docker exec "$CONTAINER" bash -lc "brew update"
           docker exec "$CONTAINER" bash -lc "$BREW_ENV brew install node"
           docker exec "$CONTAINER" bash -lc "
             $BREW_ENV brew tap social4hyq/core https://atomgit.com/social4hyq/homebrew-core.git &&
