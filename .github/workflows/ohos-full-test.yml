@@ -122,38 +122,15 @@ jobs:
             ln -sf /lib/ld-musl-aarch64.so.1 /system/lib/ld-musl-aarch64.so.1
           '
 
-          # There is no docker/podman inside this container, and there never
-          # will be — but test/harness.ts:1051 turns that into a hard error
-          # rather than a skip once CI is set (see the Run test suite step):
-          #
-          #   dockerExe() -> which("docker") || which("podman") -> null
-          #   -> if (isCI && isLinux) throw "A functional `docker` is required"
-          #
-          # and harness.ts:21 counts openharmony as isLinux. That throw is at
-          # module scope in ~20 files (js/sql/*, js/bun/s3, cli/install/
-          # bun-install-proxy, js/bun/test/parallel/test-docker-build-*,
-          # regression/issue/26063 + 28632, …), so they would go from
-          # "loads, skips its docker describes, passes" to "fails to load".
-          #
-          # The very next branch in isDockerEnabled() is
-          # `if (isLinux && process.arch === "arm64") return false` — upstream
-          # already disables docker tests on this architecture. It is simply
-          # ordered after the presence check. A stub on PATH satisfies the
-          # presence check and lets that arm64 rule answer, which is the
-          # behaviour we get today with CI unset. It stays correct even if the
-          # `docker info` probe is reached: /bin/true prints nothing, so the
-          # "Server Version:" match fails and isDockerEnabled() returns false.
-          #
-          # Remove this once harness.ts orders the arm64 return before the
-          # throw AND a bun bottle is cut from a revision containing that fix
-          # — the test tree is checked out at the bottle's pinned revision
-          # (see the checkout step), not at this workflow's ref, so fixing
-          # harness.ts alone does not change what this job runs.
-          docker exec "$CONTAINER" bash -lc '
-            mkdir -p /usr/local/bin && ln -sf /bin/true /usr/local/bin/docker
-          '
+          # No docker/podman stub is installed here any more. There is no
+          # docker in this container and never will be, and harness.ts:1051
+          # used to turn that into a hard error rather than a skip once CI was
+          # set — but that ordering bug is fixed in-tree now (isDockerEnabled()
+          # checks the `isLinux && arm64` opt-out before the presence probe),
+          # and the checkout step below takes this workflow's own ref, so the
+          # fix is live without waiting on a rebottle.
 
-      - name: Install node (Harmonybrew default core tap) + bun bottle (social4hyq/core)
+      - name: Install node (Harmonybrew default core tap) + bun and llvm@21 bottles (social4hyq/core)
         run: |
           # The container image is a snapshot baked on a fixed date (see
           # IMAGE above) — its default-tap formula index can reference a
@@ -167,10 +144,28 @@ jobs:
           # default tap's index before we resolve node's bottle URL from it.
           docker exec "$CONTAINER" bash -lc "brew update"
           docker exec "$CONTAINER" bash -lc "$BREW_ENV brew install node"
+          # llvm@21: the node-gyp tests (test/napi/*, and any test that builds a
+          # native addon) need a C++ toolchain whose libc++ has the C++20
+          # headers node's own headers include. Without it the addon build dies
+          # at:
+          #
+          #   .cache/node-gyp/26.3.0/include/node/v8-source-location.h:9:10:
+          #     fatal error: 'source_location' file not found
+          #
+          # which is what sank napi.test.ts / uv_stub.test.ts /
+          # napi-value-ffi.test.ts in run 30175507434. The keg ships that header
+          # at include/aarch64-linux-ohos/c++/v1/source_location (verified), and
+          # its arm64_ohos bottle pours in seconds, so this is not the ~62min
+          # source build the formula is otherwise known for.
+          #
+          # Bare name, not social4hyq/core-qualified: nothing else in the tap
+          # search path provides llvm@21 (checked), and this repo only
+          # fully-qualifies formulae that collide with a default-tap name.
           docker exec "$CONTAINER" bash -lc "
             $BREW_ENV brew tap social4hyq/core https://atomgit.com/social4hyq/homebrew-core.git &&
             $BREW_ENV brew trust social4hyq/core &&
-            $BREW_ENV brew install social4hyq/core/bun
+            $BREW_ENV brew install social4hyq/core/bun &&
+            $BREW_ENV brew install llvm@21
           "
 
       - name: Smoke check
@@ -200,14 +195,25 @@ jobs:
           docker exec "$CONTAINER" bash -lc \
             'for f in /root/.cache/Homebrew/Logs/*/*; do echo "--- $f"; tail -30 "$f"; done' || true
 
-      # Check out test/ + scripts/ (and everything else) at the EXACT commit
-      # the bottle was built from — not this workflow's own triggering ref.
-      # A drifted formula pin vs. checked-out source would silently test the
-      # wrong test/expectations.txt against the running binary.
+      # Check out test/ + scripts/ at this workflow's own ref, NOT at the
+      # bottle's pinned revision.
+      #
+      # This used to pin to steps.pin.outputs.sha, reasoning that a drifted
+      # formula pin would silently test the wrong test/expectations.txt against
+      # the running binary. The cost of that was not worth it: the harness, the
+      # runner and the expectations file are the parts we iterate on, and
+      # pinning meant every one-line expectations entry had to wait for a full
+      # bun rebuild and rebottle before it could even be tried. Changing the
+      # test tree does not change the binary under test, so making test-only
+      # work depend on rebuilding that binary is backwards.
+      #
+      # The provenance the pin protected is still reported: the step above
+      # prints the revision the bottle was built from, so any log tells you
+      # exactly which binary these tests ran against. Drift is now visible
+      # rather than prevented — read that line before trusting a run whose
+      # results hinge on a recent src/ change.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: social4hyq/ohos-bun
-          ref: ${{ steps.pin.outputs.sha }}
           fetch-depth: 1
 
       - name: Copy test tree into the container
