@@ -170,6 +170,20 @@ jobs:
       - name: Copy test tree into the container
         run: docker cp . "$CONTAINER":/root/bun-src
 
+      # test/ is its own package (test/package.json + test/bun.lock, ~110
+      # deps: string-width, strip-ansi, esbuild, etc. — fixtures for tests
+      # that compare Bun's behavior against the real npm package). Found by
+      # running this workflow for real: stringWidth.test.ts and
+      # stripANSI.test.ts failed with "Cannot find package" until this step
+      # was added. Root package.json is unrelated — its deps are for
+      # building Bun itself, not for the test suite.
+      - name: Install test/ npm dependencies
+        run: |
+          docker exec "$CONTAINER" bash -lc '
+            cd /root/bun-src/test &&
+            "$(brew --prefix bun)/bin/bun" install
+          '
+
       # No --parallel (see header note) and no --retries override — CI
       # defaults to 3 retries same as Buildkite. --quiet keeps the log from
       # ballooning over a run this long; --results-json is the artifact for
