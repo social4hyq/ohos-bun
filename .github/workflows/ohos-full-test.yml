@@ -202,6 +202,20 @@ jobs:
       # defaults to 3 retries same as Buildkite. --quiet keeps the log from
       # ballooning over a run this long; --results-json is the artifact for
       # any follow-up triage, not for gating (the exit code IS the gate).
+      #
+      # --exclude=bake/dev: found by running the first full run for real (43
+      # real failures, 9 of them here). Root cause has nothing to do with
+      # OHOS: bake.DevServer's `--app` / dev-server feature set is gated by
+      # `IS_CANARY || IS_DEBUG || BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE`
+      # (src/bun_core/feature_flags.rs) — harmonybrew-core's bun.rb builds a
+      # genuine stable release (version "1.4.0", no canary flag), so `bake()`
+      # is compiled off. Buildkite never surfaces this because its own
+      # isCanary defaults true for every non-[release]-tagged build
+      # (.buildkite/ci.mjs, getPipelineOptions()) — this repo's own CI is
+      # effectively always testing canary, so this gap was never exercised
+      # anywhere before this workflow tested an actual stable bottle. Would
+      # fail identically on a stable macOS/Linux/Windows build; not an
+      # OHOS-specific expectations.txt entry.
       - name: Run test suite
         env:
           TEST_FILTER: ${{ inputs.test-filter }}
@@ -219,6 +233,7 @@ jobs:
               --results-json=/root/results.json \
               --exclude=integration/bun-types \
               --exclude=internal/source-lints \
+              --exclude=bake/dev \
               "${INCLUDE_ARGS[@]}"
           '
           RUNNER_EXIT=$?
