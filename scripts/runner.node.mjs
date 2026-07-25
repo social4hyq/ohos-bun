@@ -2013,6 +2013,8 @@ function getTests(cwd) {
  * @property {string} [testRunner]
  * @property {string[]} [testExtensions]
  * @property {boolean | Record<string, boolean | string>} [skipTests]
+ * @property {Record<string, string>} [overrides]
+ * @property {Record<string, string>} [overridesReason] documentation only; unused here
  */
 
 /**
@@ -2055,7 +2057,17 @@ async function getVendorTests(cwd) {
 
   return Promise.all(
     relevantVendors.map(
-      async ({ package: name, repository, tag, testPath, testExtensions, testRunner, packageManager, skipTests }) => {
+      async ({
+        package: name,
+        repository,
+        tag,
+        testPath,
+        testExtensions,
+        testRunner,
+        packageManager,
+        skipTests,
+        overrides,
+      }) => {
         const vendorPath = join(cwd, "vendor", name);
 
         if (!existsSync(vendorPath)) {
@@ -2087,6 +2099,24 @@ async function getVendorTests(cwd) {
         const packageJsonPath = join(vendorPath, "package.json");
         if (!existsSync(packageJsonPath)) {
           throw new Error(`Vendor '${name}' does not have a package.json: ${packageJsonPath}`);
+        }
+
+        // Merge vendor.json's `overrides` into the checked-out package.json
+        // before `bun install` runs, for vendors whose pinned dependency
+        // versions cannot install on a platform we test. Written after the
+        // checkout above, so it survives; idempotent, so a reused clone that
+        // no-op checks out the same tag stays correct.
+        //
+        // Note this only takes effect when the range cannot be satisfied by
+        // the vendor's committed lockfile: an override the lockfile already
+        // satisfies changes nothing, which matters because the reason for
+        // overriding may be the lockfile itself rather than the version (see
+        // vendor.json for a case of each).
+        if (overrides && Object.keys(overrides).length) {
+          const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
+          packageJson.overrides = { ...packageJson.overrides, ...overrides };
+          writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2));
+          !isQuiet && console.log(`Overriding vendor '${name}' dependencies:`, overrides);
         }
 
         const testPathPrefix = testPath || "test";
