@@ -283,31 +283,40 @@ jobs:
       # found" resolving the OHOS SDK sysroot's stdint.h) — a real
       # device-affecting gap that belongs in test/expectations.txt, not here.
       #
-      # CI/GITHUB_ACTIONS are passed explicitly because `docker exec` inherits
-      # nothing from the runner's environment, and both the harness and the
-      # runner branch on them:
+      # CI is passed explicitly because `docker exec` inherits nothing from the
+      # runner's environment. test/harness.ts:28 (`process.env.CI !== undefined`)
+      # gates whole test bodies on it: without it, js/bun/css/css-fuzz.test.ts
+      # runs its `if (!isCI)` fuzz loops — 2600 iterations over deliberately
+      # degenerate inputs (300-deep @media nesting, 100k-long selectors,
+      # 10k-property rules). Upstream's own x64 lane records that file at 57ms
+      # in test/expected-durations.json because CI skips all of it; in run
+      # 30150421934 it took 3h28m, 81.5% of a 4h15m suite. The same flag drives
+      # harness's isFlaky/isBroken, and satisfies scripts/utils.mjs:47 so the
+      # runner also considers itself under CI.
       #
-      #  - test/harness.ts's `isCI` (`process.env.CI !== undefined`) gates
-      #    whole test bodies. Without it, js/bun/css/css-fuzz.test.ts runs its
-      #    `if (!isCI)` fuzz loops — 2600 iterations over deliberately
-      #    degenerate inputs (300-deep @media nesting, 100k-long selectors,
-      #    10k-property rules). Upstream's own x64 lane records this file at
-      #    57ms in test/expected-durations.json because CI skips all of it; in
-      #    run 30150421934 it took 3h28m, 81.5% of a 4h15m suite. Same flag
-      #    also drives harness's isFlaky/isBroken.
-      #  - scripts/utils.mjs's `isCI`/`isGithubAction` drive the runner's own
-      #    ::group:: folding and its --retries default.
+      # GITHUB_ACTIONS is deliberately NOT passed, though it would additionally
+      # buy ::group:: folding in the log. It sets scripts/utils.mjs:46's
+      # isGithubAction, which unlocks ~20 code paths that assume the rest of
+      # the Actions environment came with it — and inside `docker exec` none of
+      # it did. Run 30165171805 died on the first hard failure this way:
       #
-      # Whether the runner should treat itself as running under Actions is a
-      # separate question from whether the *tests* do, but both answers are
-      # yes here: the log is read in the Actions UI, and the tests are meant
-      # to behave exactly as they do on upstream's lanes.
+      #   runTest -> formatTestToMarkdown -> getBuildUrl
+      #     -> getEnv("GITHUB_REPOSITORY")   # required=true
+      #     -> Error: Environment variable is missing: GITHUB_REPOSITORY
+      #
+      # which is an uncaught throw in the runner itself, not a test failure: it
+      # killed the whole process at file 174 of 5281, 8 minutes in, with no
+      # results.json written. Forwarding GITHUB_REPOSITORY/GITHUB_RUN_ID alone
+      # would clear that one call site and leave the other paths (step
+      # summaries, comment.md, artifact upload) waiting to trip on the next
+      # thing they expect. Folding is not worth that surface; CI alone is the
+      # flag that actually changes what the tests do.
       - name: Run test suite
         env:
           TEST_FILTER: ${{ inputs.test-filter }}
         run: |
           set +e
-          docker exec -e TEST_FILTER -e CI=true -e GITHUB_ACTIONS=true "$CONTAINER" bash -lc '
+          docker exec -e TEST_FILTER -e CI=true "$CONTAINER" bash -lc '
             cd /root/bun-src
             INCLUDE_ARGS=()
             if [ -n "$TEST_FILTER" ]; then
