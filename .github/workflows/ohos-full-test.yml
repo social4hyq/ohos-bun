@@ -104,6 +104,31 @@ jobs:
   test:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 360
+    strategy:
+      # A red shard must not cancel the others: the point of the run is the
+      # full failure list, and losing three quarters of it to one failure
+      # would defeat that.
+      fail-fast: false
+      matrix:
+        # Four, because that is where splitting stops paying. Measured from
+        # run 30179934099 (63.0 min of test work, LPT-packed by the ohos lane
+        # in expected-durations.json), heaviest shard by shard count:
+        #
+        #   2 -> 31.5 min   3 -> 21.0 min   4 -> 15.8 min
+        #   5 -> 15.7 min   6 -> 15.7 min  12 -> 15.7 min
+        #
+        # Sharding cannot split a file, and cli/run/run-crash-handler.test.ts
+        # alone is 15.7 min — a quarter of the suite. 63/4 lands almost exactly
+        # on that floor, so a fifth shard buys nothing while still paying its
+        # own ~5 min of container setup: 83 machine-minutes at 4 shards, 248 at
+        # 12, for identical wall clock. If that file is ever fixed or excluded
+        # the floor drops to 3.1 min and 8-12 shards become worth revisiting.
+        #
+        # A single shard when --include is in play: runner.node.mjs applies
+        # filters *instead of* sharding (`if (filters?.length) ... else if
+        # (maxShards > 1)`), so four shards would each run the whole filtered
+        # set rather than a quarter of it.
+        shard: ${{ fromJSON(inputs.test-filter && '[0]' || '[0, 1, 2, 3]') }}
     steps:
       # Run 30187374849 died at file 1596 of 5272 with "No space left on
       # device", 69 minutes in, taking results.json with it. Nothing in the
@@ -346,6 +371,12 @@ jobs:
       - name: Run test suite
         env:
           TEST_FILTER: ${{ inputs.test-filter }}
+          SHARD: ${{ matrix.shard }}
+          # Must track the matrix above: one shard when filtering, four
+          # otherwise. The runner packs by test/expected-durations.json's ohos
+          # lane, which is what makes the split even — packed by the default
+          # lane the heaviest shard is 30.1 min instead of 16.0.
+          MAX_SHARDS: ${{ inputs.test-filter && 1 || 4 }}
         run: |
           # Free space every 30s for the life of the suite, timestamped so it
           # lines up with the runner's own log timestamps and therefore with
@@ -363,7 +394,7 @@ jobs:
           trap 'kill "$SAMPLER" 2>/dev/null || true' EXIT
 
           set +e
-          docker exec -e TEST_FILTER -e CI=true "$CONTAINER" bash -lc '
+          docker exec -e TEST_FILTER -e SHARD -e MAX_SHARDS -e CI=true "$CONTAINER" bash -lc '
             cd /root/bun-src
             INCLUDE_ARGS=()
             if [ -n "$TEST_FILTER" ]; then
@@ -372,6 +403,8 @@ jobs:
             node scripts/runner.node.mjs \
               --exec-path="$(brew --prefix bun)/bin/bun" \
               --quiet \
+              --shard="$SHARD" \
+              --max-shards="$MAX_SHARDS" \
               --retries=1 \
               --results-json=/root/results.json \
               --exclude=integration/bun-types \
@@ -416,7 +449,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ohos-full-test-results-${{ github.run_number }}
+          name: ohos-full-test-results-${{ github.run_number }}-shard${{ matrix.shard }}
           path: results.json
           retention-days: 30
           if-no-files-found: ignore
@@ -424,3 +457,53 @@ jobs:
       - name: Stop OHOS container
         if: always()
         run: docker rm -f "$CONTAINER" || true
+
+  # Every consumer of this artifact wants one file, not four, and no consumer
+  # cares which shard a result came from — the shard assignment is an artefact
+  # of scheduling, not of the test. Merge on the way out so the published
+  # artifact keeps the shape it had before sharding.
+  collect:
+    needs: test
+    if: always()
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: ohos-full-test-results-${{ github.run_number }}-shard*
+          path: shards
+          merge-multiple: false
+
+      - name: Merge shard results
+        run: |
+          shopt -s nullglob
+          files=(shards/*/results.json)
+          echo "found ${#files[@]} shard result files"
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::warning::no shard produced a results.json"
+            exit 0
+          fi
+          # A shard that died without writing results.json (see run
+          # 30187374849) simply contributes nothing; the count above is the
+          # signal that happened, and the merge still publishes what the other
+          # shards found rather than nothing at all.
+          node -e '
+            const fs = require("fs");
+            const out = [];
+            for (const f of process.argv.slice(1)) {
+              const rows = JSON.parse(fs.readFileSync(f, "utf8"));
+              console.error(`${f}: ${rows.length} entries`);
+              out.push(...rows);
+            }
+            out.sort((a, b) => a.testPath.localeCompare(b.testPath));
+            fs.writeFileSync("results.json", JSON.stringify(out));
+            const fail = out.filter(r => !r.ok).length;
+            console.error(`merged ${out.length} entries, ${fail} failing`);
+          ' "${files[@]}"
+
+      - name: Upload merged results
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ohos-full-test-results-${{ github.run_number }}
+          path: results.json
+          retention-days: 30
+          if-no-files-found: ignore
