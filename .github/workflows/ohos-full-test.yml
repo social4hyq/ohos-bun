@@ -105,6 +105,32 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 360
     steps:
+      # Run 30187374849 died at file 1596 of 5272 with "No space left on
+      # device", 69 minutes in, taking results.json with it. Nothing in the
+      # log says what filled the disk — the only evidence is the fatal error
+      # itself, so the first job here is to stop guessing: report what the
+      # runner starts with, reclaim the preinstalled toolchains this job has
+      # no use for, and (in the test step) sample free space throughout so a
+      # future exhaustion can be pinned to a point in the suite.
+      #
+      # The removals are the usual hosted-runner ballast — none of it is
+      # reachable from anything this job does, which runs inside the OHOS
+      # container. Each is guarded: the set present on ubuntu-24.04-arm is
+      # not identical to the x64 images these lists are usually written for.
+      - name: Reclaim runner disk space
+        run: |
+          echo "--- before"
+          df -h /
+          for d in /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                   /usr/local/share/powershell /usr/share/swift \
+                   /usr/local/.ghcup /opt/hostedtoolcache/CodeQL; do
+            [ -e "$d" ] || continue
+            echo "removing $d ($(du -sh "$d" 2>/dev/null | cut -f1))"
+            sudo rm -rf "$d" || true
+          done
+          echo "--- after"
+          df -h /
+
       - name: Start OHOS container
         run: |
           docker pull "$IMAGE"
@@ -321,6 +347,21 @@ jobs:
         env:
           TEST_FILTER: ${{ inputs.test-filter }}
         run: |
+          # Free space every 30s for the life of the suite, timestamped so it
+          # lines up with the runner's own log timestamps and therefore with
+          # the [N/M] progress markers. Reported by the step below whether or
+          # not the suite finishes — the point is to have this when it does
+          # not.
+          # No -P: GNU df rejects it alongside --output ("options -P and
+          # --output are mutually exclusive"), and with stderr swallowed that
+          # would leave an empty file and nothing to read afterwards.
+          ( while :; do
+              printf '%s %s\n' "$(date -u +%H:%M:%S)" "$(df -B1 --output=avail / | tail -1)"
+              sleep 30
+            done ) > "$RUNNER_TEMP/disk-samples.txt" &
+          SAMPLER=$!
+          trap 'kill "$SAMPLER" 2>/dev/null || true' EXIT
+
           set +e
           docker exec -e TEST_FILTER -e CI=true "$CONTAINER" bash -lc '
             cd /root/bun-src
@@ -346,6 +387,30 @@ jobs:
           docker cp "$CONTAINER":/root/results.json results.json || true
           echo "runner exit code: $RUNNER_EXIT"
           exit $RUNNER_EXIT
+
+      # Deliberately a separate always() step: when the suite dies the way run
+      # 30187374849 did, the step above never reaches its own last line.
+      - name: Disk usage report
+        if: always()
+        run: |
+          SAMPLES="$RUNNER_TEMP/disk-samples.txt"
+          echo "--- final"
+          df -h /
+          echo "--- docker"
+          docker system df || true
+          if [ -s "$SAMPLES" ]; then
+            echo "--- free space over the suite (GiB), first / min / last"
+            awk '{ gib = $2 / 1073741824
+                   if (NR == 1) { first = gib; ft = $1 }
+                   if (NR == 1 || gib < min) { min = gib; mt = $1 }
+                   last = gib; lt = $1 }
+                 END { printf "  first %s  %.2f\n  min   %s  %.2f\n  last  %s  %.2f\n",
+                              ft, first, mt, min, lt, last }' "$SAMPLES"
+            echo "--- full series"
+            awk '{ printf "  %s  %.2f GiB\n", $1, $2 / 1073741824 }' "$SAMPLES"
+          else
+            echo "no samples recorded"
+          fi
 
       - name: Upload results
         if: always()
