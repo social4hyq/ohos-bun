@@ -178,6 +178,25 @@ const { values: options, positionals: filters } = parseArgs({
       type: "string",
       default: undefined,
     },
+    /**
+     * Local triage escape hatch: `test/expectations.txt` entries remove a
+     * file from the run entirely (see getRelevantTests), so a file quarantined
+     * there never shows up as pass OR fail — it just vanishes from the
+     * denominator. That's the opposite of what you want when the goal is to
+     * find out whether the quarantine is still earning its keep. This flag
+     * puts matching files back into the run without touching the file.
+     *
+     * Value is a modifier name (e.g. "OPENHARMONY") to un-quarantine only
+     * entries gated to that modifier (bare, unmodifiered entries always stay
+     * excluded — those are cross-platform "this file cannot run" cases, not
+     * OHOS-specific judgment calls), or "all" to ignore expectations.txt
+     * entirely regardless of modifier. Default: unset, so CI's behavior
+     * (every entry enforced) is unchanged.
+     */
+    ["ignore-expectations"]: {
+      type: "string",
+      default: undefined,
+    },
   },
 });
 
@@ -2218,12 +2237,32 @@ function getRelevantTests(cwd, testModifiers, testExpectations) {
     }
   }
 
-  const skipExpectations = testExpectations
-    .filter(
-      ({ modifiers, expectations }) =>
-        !modifiers?.length || testModifiers.some(modifier => modifiers?.includes(modifier)),
-    )
-    .map(({ filename }) => filename.replace("test/", ""));
+  const ignoreExpectations = options["ignore-expectations"];
+  const matchingExpectations = testExpectations.filter(
+    ({ modifiers, expectations }) =>
+      !modifiers?.length || testModifiers.some(modifier => modifiers?.includes(modifier)),
+  );
+  // Bare (unmodifiered) entries are "this file cannot run anywhere" and stay
+  // enforced regardless of --ignore-expectations; only modifier-gated entries
+  // (e.g. `[ OPENHARMONY ]`) are eligible to be put back into the run.
+  const unignoredExpectations = ignoreExpectations
+    ? matchingExpectations.filter(({ modifiers }) => {
+        if (!modifiers?.length) return true;
+        if (ignoreExpectations === "all") return false;
+        return !modifiers.includes(ignoreExpectations);
+      })
+    : matchingExpectations;
+  if (ignoreExpectations) {
+    const restored = matchingExpectations.filter(entry => !unignoredExpectations.includes(entry));
+    !isQuiet &&
+      console.log(
+        `Ignoring expectations (--ignore-expectations=${ignoreExpectations}):`,
+        restored.length,
+        "entries restored to the run:",
+        restored.map(({ filename }) => filename),
+      );
+  }
+  const skipExpectations = unignoredExpectations.map(({ filename }) => filename.replace("test/", ""));
   if (skipExpectations.length) {
     const skippedTests = availableTests.filter(testPath => skipExpectations.some(filter => isMatch(testPath, filter)));
     if (skippedTests.length) {

@@ -182,44 +182,39 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # and tries to download it; that artifact does not exist for this version.
 [ OPENHARMONY ] test/bundler/bun-build-compile.test.ts [ Failure ] # compile with current platform target string — bun-linux-aarch64-musl-v1.4.0 not available for download
 
-# --- bun:internal-for-testing not available in release build ---
-# sigaction-layout lazily requires bun:internal-for-testing; intentionally
-# fails (not skips) when the binding is absent so junit reporters surface it.
-# On OHOS this is always a release bun, so the module is never present.
-[ OPENHARMONY ] test/internal/sigaction-layout.test.ts [ Failure ] # bun.sys.Sigaction — bun:internal-for-testing unavailable in release build
+# --- bun:internal-for-testing: the "unavailable in release build" premise
+# below was disproven 2026-07-26. scripts/runner.node.mjs's spawnBun() always
+# sets BOTH BUN_FEATURE_FLAG_INTERNAL_FOR_TESTING=1 AND
+# BUN_GARBAGE_COLLECTOR_LEVEL=1 for every test process, and the Rust gate
+# (src/jsc/VirtualMachine.rs, configure_from_env) only checks the feature flag
+# inside the GC-level branch — so under the real runner (not a bare `bun test`)
+# the module has always been reachable. Full real-machine reruns via
+# `node scripts/runner.node.mjs --ignore-expectations=OPENHARMONY` confirmed
+# every file below now passes; entries removed. See OHOS_TEST_TODO.md
+# ("陈旧 quarantine 确认") for the evidence trail. `test/js/node/fs/fs-oom.test.ts`
+# carried the same (wrong) label but is NOT in this list — it fails for an
+# unrelated, still-real reason (memfd_create + readFileSync EACCES vs the
+# expected ENOMEM; see OHOS_TEST_TODO.md T22) and keeps its own entry below.
+[ OPENHARMONY ] test/js/node/fs/fs-oom.test.ts [ Skip ] # memfd_create + readFileSync: OHOS reports EACCES on fstat instead of the expected ENOMEM (real platform difference, not a bun:internal-for-testing gate — see OHOS_TEST_TODO.md T22)
 
-# top-level bun:internal-for-testing imports produce unhandled errors (not test
-# failures) on OHOS; recorded here for discoverability.
-[ OPENHARMONY ] test/internal/bindgen.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
-[ OPENHARMONY ] test/internal/fifo.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
-[ OPENHARMONY ] test/internal/highlighter.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
-[ OPENHARMONY ] test/internal/linear-fifo.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
-[ OPENHARMONY ] test/internal/powershell-escape.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
-[ OPENHARMONY ] test/js/node/fs/fs-oom.test.ts [ Skip ] # top-level `import { memfd_create, ... } from "bun:internal-for-testing"` — ENOENT in release build, whole file unloadable
+# The following cli/install/lifecycle-scripts, bun-workspaces, bun-pack,
+# bun-install-registry, migrate-bun-lockb-v2, bun-upgrade, and
+# integration/next-pages entries carried the same disproven
+# "bun:internal-for-testing unavailable" label but are NOT stale — they still
+# fail on real-machine reruns, just for different, still-uninvestigated-or-
+# tracked reasons (see OHOS_TEST_TODO.md T01/T14/T21). Left in place with the
+# old label until their real root cause lands here; do not read the label on
+# those entries as accurate.
+[ OPENHARMONY ] test/cli/install/bun-install-lifecycle-scripts.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build — SUPERSEDED, see OHOS_TEST_TODO.md T01
+[ OPENHARMONY ] test/cli/install/bun-workspaces.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build — SUPERSEDED, see OHOS_TEST_TODO.md T01
+[ OPENHARMONY ] test/cli/install/bun-pack.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build — SUPERSEDED, see OHOS_TEST_TODO.md T01
+[ OPENHARMONY ] test/cli/install/bun-install-registry.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build — SUPERSEDED, see OHOS_TEST_TODO.md T21
+[ OPENHARMONY ] test/cli/install/migrate-bun-lockb-v2.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build — SUPERSEDED, see OHOS_TEST_TODO.md T21
+[ OPENHARMONY ] test/cli/install/bun-upgrade.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build — SUPERSEDED, see OHOS_TEST_TODO.md T14
 
-# --- cli/install lifecycle-scripts: uses bun:internal-for-testing ---
-# All lifecycle-scripts tests require bun:internal-for-testing for the lifecycle
-# script watcher thread; unavailable in release bun on OHOS.
-[ OPENHARMONY ] test/cli/install/bun-install-lifecycle-scripts.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
-
-# --- cli/install architecture-match: uses bun:internal-for-testing ---
-[ OPENHARMONY ] test/cli/install/architecture-match.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
-
-# --- cli/install tests with bun:internal-for-testing top-level import ---
-# These produce unhandled errors (not test failures) on OHOS.
-[ OPENHARMONY ] test/cli/install/bun-workspaces.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
-[ OPENHARMONY ] test/cli/install/bun-pack.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
-[ OPENHARMONY ] test/cli/install/hosted-git-info/from-url.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
-[ OPENHARMONY ] test/cli/install/hosted-git-info/parse-url.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
-[ OPENHARMONY ] test/cli/install/bun-install-registry.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
-[ OPENHARMONY ] test/cli/install/migrate-bun-lockb-v2.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
-[ OPENHARMONY ] test/cli/install/npmrc.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
-[ OPENHARMONY ] test/cli/install/bun-upgrade.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
-
-# --- integration/next-pages: all 3 files top-level import bun:internal-for-testing ---
-[ OPENHARMONY ] test/integration/next-pages/test/dev-server.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
-[ OPENHARMONY ] test/integration/next-pages/test/dev-server-ssr-100.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
-[ OPENHARMONY ] test/integration/next-pages/test/next-build.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
+[ OPENHARMONY ] test/integration/next-pages/test/dev-server.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build — SUPERSEDED, see OHOS_TEST_TODO.md T14
+[ OPENHARMONY ] test/integration/next-pages/test/dev-server-ssr-100.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build — SUPERSEDED, see OHOS_TEST_TODO.md T14
+[ OPENHARMONY ] test/integration/next-pages/test/next-build.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build — SUPERSEDED, see OHOS_TEST_TODO.md T14
 
 # --- cli/install migration: network-dependent tests ---
 # "bun pm migrate -f" and "bun install --lockfile-only" resolve from npm registry;
@@ -258,10 +253,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # 2/13 tests fetch github templates over HTTPS and hit UNKNOWN_CERTIFICATE_VERIFICATION_ERROR
 # (OHOS system CA store not in standard path). setDefaultTimeout(5min) applied for the rest.
 [ OPENHARMONY ] test/cli/install/bun-create.test.ts [ Flaky ] # github template download hits OHOS TLS cert verification error (2/13 tests)
-
-# --- first_party/ws: bun:internal-for-testing ---
-# ws-syscall-fault.test.ts uses fault injection via internal testing module.
-[ OPENHARMONY ] test/js/first_party/ws/ws-syscall-fault.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build
 
 # ─────────────────────────────────────────────────────────────
 # P3 batch (2026-07-08): regression + js/web + js/node + js/third_party
