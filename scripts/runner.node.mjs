@@ -2264,13 +2264,22 @@ function getRelevantTests(cwd, testModifiers, testExpectations) {
     try {
       const raw = JSON.parse(readFileSync(join(cwd, "expected-durations.json"), "utf8"));
       const step = options["step"] || "";
-      const lane = step.includes("asan")
-        ? "asan"
-        : step.includes("musl")
-          ? "musl"
-          : isWindows || step.includes("windows")
-            ? "windows"
-            : "default";
+      // OpenHarmony is keyed off the platform, not --step: it does not run on
+      // Buildkite, so there is no step name to match on. It needs its own lane
+      // because its costs do not resemble the x64 ones — run-crash-handler is
+      // 2268ms on the default lane and 519s here — and packing OHOS shards
+      // with default-lane numbers leaves one shard doing several times the
+      // work of another. See scripts/update-ohos-test-durations.mjs.
+      const lane =
+        process.platform === "openharmony"
+          ? "ohos"
+          : step.includes("asan")
+            ? "asan"
+            : step.includes("musl")
+              ? "musl"
+              : isWindows || step.includes("windows")
+                ? "windows"
+                : "default";
       for (const [path, entry] of Object.entries(raw)) {
         if (path === "_meta") continue;
         const ms = entry[lane] ?? entry.default ?? entry.asan ?? entry.musl ?? entry.windows;
