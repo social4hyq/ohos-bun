@@ -376,17 +376,22 @@ extern "C" ssize_t posix_spawn_bun(
         // deliberate anyway, matching the rest of this function's
         // async-signal-safety discipline post-fork.
         char pwdBuf[PATH_MAX + 5]; // "PWD=" + PATH_MAX + NUL
+        constexpr size_t kMaxEnvEntries = 1024;
+        // Declared here (not inside the `if` blocks below) so the array
+        // outlives the assignment to `envp` all the way to execve() --
+        // nesting it inside a block that closes before execve() would leave
+        // `envp` dangling into reused stack space the instant anything else
+        // (e.g. closeRangeOrLoop() below) pushes its own locals.
+        char* newEnvp[kMaxEnvEntries + 2];
         if (request->chdir) {
             int n = snprintf(pwdBuf, sizeof(pwdBuf), "PWD=%s", request->chdir);
             if (n > 0 && static_cast<size_t>(n) < sizeof(pwdBuf)) {
-                constexpr size_t kMaxEnvEntries = 1024;
                 size_t count = 0;
                 while (envp[count] && count < kMaxEnvEntries) count++;
                 // Bails out (leaving the stale-$PWD bug in place rather than
                 // risking anything) only past ~1024 env vars, far beyond any
                 // real process; every ordinary caller is covered.
                 if (envp[count] == nullptr) {
-                    char* newEnvp[kMaxEnvEntries + 2];
                     size_t out = 0;
                     for (size_t i = 0; i < count; i++) {
                         // Drop any existing PWD -- it's either stale (the
