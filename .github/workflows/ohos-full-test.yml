@@ -496,8 +496,9 @@ jobs:
             }
             out.sort((a, b) => a.testPath.localeCompare(b.testPath));
             fs.writeFileSync("results.json", JSON.stringify(out));
-            const fail = out.filter(r => !r.ok).length;
-            console.error(`merged ${out.length} entries, ${fail} failing`);
+            const failed = out.filter(r => !r.ok);
+            console.error(`merged ${out.length} entries, ${failed.length} failing`);
+            for (const r of failed) console.error(`  FAIL ${r.testPath}`);
           ' "${files[@]}"
 
       - name: Upload merged results
