@@ -730,6 +730,24 @@ impl CompileC {
                         bun_output::scoped_log!(TCC, "TinyCC failed to add OHOS SDK library path");
                     }
                 }
+                // The sysroot is multiarch: the generic headers sit in
+                // usr/include, but everything arch-dependent lives under
+                // usr/include/<triple>. usr/include/stdint.h is generic and
+                // does `#include <bits/alltypes.h>`, which only exists as
+                // usr/include/aarch64-linux-ohos/bits/alltypes.h — so adding
+                // usr/include alone cannot compile a translation unit that
+                // includes anything as ordinary as <stdint.h>. The SDK's own
+                // clang searches both, arch first; match that order.
+                let sdk_include_arch = format!("{sysroot}/usr/include/aarch64-linux-ohos");
+                if dir_exists(sdk_include_arch.as_bytes()) {
+                    let path_z = bun_core::ZBox::from_bytes(sdk_include_arch.as_bytes());
+                    if state.add_sys_include_path(&path_z).is_err() {
+                        bun_output::scoped_log!(
+                            TCC,
+                            "TinyCC failed to add OHOS SDK arch include path"
+                        );
+                    }
+                }
                 let sdk_include = format!("{sysroot}/usr/include");
                 if dir_exists(sdk_include.as_bytes()) {
                     let path_z = bun_core::ZBox::from_bytes(sdk_include.as_bytes());
