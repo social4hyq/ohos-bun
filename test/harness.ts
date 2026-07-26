@@ -39,6 +39,9 @@ export const libcFamily: "glibc" | "musl" =
 export const isMusl = isLinux && libcFamily === "musl";
 export const isGlibc = isLinux && libcFamily === "glibc";
 export const isBuildKite = process.env.BUILDKITE === "true";
+// Set by a CI lane that has no secret store to ask at all, as opposed to one
+// where a missing secret means somebody forgot to provision it. See getSecret.
+export const hasNoSecrets = process.env.BUN_TEST_NO_SECRETS !== undefined;
 export const isVerbose = process.env.DEBUG === "1";
 
 // Use these to mark a test as flaky or broken.
@@ -1726,8 +1729,11 @@ export function fileDescriptorLeakChecker() {
 export function getSecret(name: string): string | undefined {
   let value = process.env[name]?.trim();
 
-  // When not running in CI, allow the secret to be missing.
-  if (!isCI) {
+  // When not running in CI, allow the secret to be missing. Same for a CI lane
+  // that has no secret store: throwing here happens at module scope, which
+  // takes the whole file down instead of letting its own `skipIf(!secret)`
+  // guard skip the cases that need the credential.
+  if (!isCI || hasNoSecrets) {
     return value;
   }
 

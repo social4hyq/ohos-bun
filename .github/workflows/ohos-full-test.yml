@@ -394,7 +394,11 @@ jobs:
           trap 'kill "$SAMPLER" 2>/dev/null || true' EXIT
 
           set +e
-          docker exec -e TEST_FILTER -e SHARD -e MAX_SHARDS -e CI=true "$CONTAINER" bash -lc '
+          # BUN_TEST_NO_SECRETS: this lane has no secret store, so harness.ts's
+          # getSecret() returns undefined instead of throwing at module scope.
+          # The throw takes whole files down; undefined lets each file's own
+          # `skipIf(!secret)` skip just the cases that need the credential.
+          docker exec -e TEST_FILTER -e SHARD -e MAX_SHARDS -e CI=true -e BUN_TEST_NO_SECRETS=1 "$CONTAINER" bash -lc '
             cd /root/bun-src
             INCLUDE_ARGS=()
             if [ -n "$TEST_FILTER" ]; then
