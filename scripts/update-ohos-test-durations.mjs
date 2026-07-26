@@ -71,7 +71,10 @@ function parseLog(raw) {
     out.push([path, indented ? Math.min(ts - start, 500) : ts - start]);
   };
   for (const line of lines) {
-    const m = /^(\d{4}-\d\d-\d\dT[\d:.]+Z)\s+(\s*)(?:##\[group\])?\s*\[\d+\/\d+\]\s+(.+)$/.exec(line);
+    // The separator after the timestamp is one literal space; `\s+` here would
+    // be greedy and swallow the indentation the next group has to capture,
+    // leaving it empty on every line and the clamp below permanently off.
+    const m = /^(\d{4}-\d\d-\d\dT[\d:.]+Z) (\s*)(?:##\[group\])?\s*\[\d+\/\d+\]\s+(.+)$/.exec(line);
     if (!m) continue;
     const ts = Date.parse(m[1]);
     emit(ts);

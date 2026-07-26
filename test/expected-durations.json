@@ -8545,7 +8545,7 @@
     "asan": 352,
     "musl": 57,
     "windows": 113,
-    "ohos": 984
+    "ohos": 500
   },
   "js/node/test/parallel/test-child-process-exec-timeout-kill.js": {
     "default": 29,
@@ -10927,7 +10927,7 @@
     "asan": 188,
     "musl": 8,
     "windows": 26,
-    "ohos": 611
+    "ohos": 500
   },
   "js/node/test/parallel/test-dgram-udp4.js": {
     "default": 43,
@@ -11242,7 +11242,7 @@
     "asan": 38,
     "musl": 26,
     "windows": 60,
-    "ohos": 722
+    "ohos": 500
   },
   "js/node/test/parallel/test-dns-default-order-ipv4.js": {
     "default": 500,
@@ -11367,7 +11367,7 @@
     "asan": 500,
     "musl": 37,
     "windows": 55,
-    "ohos": 4164
+    "ohos": 500
   },
   "js/node/test/parallel/test-dns-setservers-type-check.js": {
     "default": 44,
@@ -11381,7 +11381,7 @@
     "asan": 236,
     "musl": 51,
     "windows": 63,
-    "ohos": 1099
+    "ohos": 500
   },
   "js/node/test/parallel/test-domain-crypto.js": {
     "default": 35,
@@ -11963,7 +11963,7 @@
     "ohos": 148
   },
   "js/node/test/parallel/test-fastutf8stream-periodicflush.js": {
-    "ohos": 1644
+    "ohos": 500
   },
   "js/node/test/parallel/test-fastutf8stream-reopen.js": {
     "ohos": 110
@@ -16588,14 +16588,14 @@
     "asan": 500,
     "musl": 61,
     "windows": 500,
-    "ohos": 1038
+    "ohos": 500
   },
   "js/node/test/parallel/test-http-server-connection-list-when-close.js": {
     "default": 500,
     "asan": 500,
     "musl": 500,
     "windows": 74,
-    "ohos": 1107
+    "ohos": 500
   },
   "js/node/test/parallel/test-http-server-connections-checking-leak.js": {
     "default": 69,
@@ -16609,7 +16609,7 @@
     "asan": 500,
     "musl": 500,
     "windows": 21,
-    "ohos": 1842
+    "ohos": 500
   },
   "js/node/test/parallel/test-http-server-de-chunked-trailer.js": {
     "default": 47,
@@ -16637,14 +16637,14 @@
     "asan": 500,
     "musl": 41,
     "windows": 500,
-    "ohos": 805
+    "ohos": 500
   },
   "js/node/test/parallel/test-http-server-headers-timeout-interrupted-headers.js": {
     "default": 34,
     "asan": 89,
     "musl": 31,
     "windows": 500,
-    "ohos": 2582
+    "ohos": 500
   },
   "js/node/test/parallel/test-http-server-headers-timeout-keepalive.js": {
     "default": 20,
@@ -16658,7 +16658,7 @@
     "asan": 500,
     "musl": 33,
     "windows": 500,
-    "ohos": 604
+    "ohos": 500
   },
   "js/node/test/parallel/test-http-server-incomingmessage-destroy.js": {
     "default": 104,
@@ -16686,7 +16686,7 @@
     "asan": 500,
     "musl": 53,
     "windows": 30,
-    "ohos": 1652
+    "ohos": 500
   },
   "js/node/test/parallel/test-http-server-keepalive-end.js": {
     "default": 152,
@@ -16784,21 +16784,21 @@
     "asan": 500,
     "musl": 500,
     "windows": 500,
-    "ohos": 949
+    "ohos": 500
   },
   "js/node/test/parallel/test-http-server-request-timeout-interrupted-body.js": {
     "default": 6,
     "asan": 500,
     "musl": 26,
     "windows": 500,
-    "ohos": 1568
+    "ohos": 500
   },
   "js/node/test/parallel/test-http-server-request-timeout-interrupted-headers.js": {
     "default": 500,
     "asan": 500,
     "musl": 500,
     "windows": 500,
-    "ohos": 1019
+    "ohos": 500
   },
   "js/node/test/parallel/test-http-server-request-timeout-keepalive.js": {
     "default": 58,
@@ -16812,14 +16812,14 @@
     "asan": 500,
     "musl": 500,
     "windows": 500,
-    "ohos": 1508
+    "ohos": 500
   },
   "js/node/test/parallel/test-http-server-request-timeout-upgrade.js": {
     "default": 500,
     "asan": 500,
     "musl": 500,
     "windows": 500,
-    "ohos": 1076
+    "ohos": 500
   },
   "js/node/test/parallel/test-http-server-response-standalone.js": {
     "default": 50,
@@ -16980,7 +16980,7 @@
     "asan": 500,
     "musl": 500,
     "windows": 500,
-    "ohos": 593
+    "ohos": 500
   },
   "js/node/test/parallel/test-http-set-trailers.js": {
     "default": 68,
@@ -17008,7 +17008,7 @@
     "asan": 500,
     "musl": 500,
     "windows": 21,
-    "ohos": 1584
+    "ohos": 500
   },
   "js/node/test/parallel/test-http-status-code.js": {
     "default": 73,
@@ -21903,7 +21903,7 @@
     "asan": 114,
     "musl": 500,
     "windows": 451,
-    "ohos": 731
+    "ohos": 500
   },
   "js/node/test/parallel/test-promises-unhandled-symbol-rejections.js": {
     "default": 76,
@@ -22579,7 +22579,7 @@
     "asan": 138,
     "musl": 500,
     "windows": 110,
-    "ohos": 830
+    "ohos": 500
   },
   "js/node/test/parallel/test-shadow-realm-module.js": {
     "default": 82,
