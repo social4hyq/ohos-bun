@@ -50,7 +50,7 @@ fn t04_debug_fd_checkpoint(label: &str) {
     for fd in [1i32, 2i32] {
         // SAFETY: `st` is a plain-old-data struct fully written by a
         // successful fstat(); on failure we only read `errno`, not `st`.
-        let mut st: libc::stat = unsafe { core::mem::zeroed() };
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
         let rc = unsafe { libc::fstat(fd, &mut st) };
         if rc == 0 {
             line.push_str(&format!("fd{fd}=OK(mode={:o}) ", st.st_mode));
