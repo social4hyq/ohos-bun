@@ -125,7 +125,26 @@ execlp("bash", "bash", "-c", "pwd", (char*)NULL);
 | `test/regression/issue/tui-app-tty-pattern.test.ts` | 读 piped stdin 后 reopen `/dev/tty` | A | rust | 待查（可能同根因）|
 | `test/cli/run/no-orphans.test.ts` | Ctrl-Z stop 桥接 + `setsid` 场景 30s 超时（历史记录过 tpgid=0 异常,本轮换了新症状）| A | rust | 待查 |
 
-**建议**：先在容器/真机上单独探测 `ioctl(TIOCSETA/TCSETS)` 或等价 termios 调用在 OHOS 上的行为,这可能是一个共享的、影响面较大的 PTY 层 gap。
+### 根因已定位：OHOS 拒绝在 PTY **master** 上做「排空/冲刷」型 `tcsetattr`（`738701916` 已修，验证中）
+
+按上面"建议"做了独立 C 探针（完全脱离 bun），结论非常干净：
+
+| fd 类型 | `TCSANOW` | `TCSADRAIN` | `TCSAFLUSH` |
+|---|---|---|---|
+| **PTY master** | ✅ rc=0 | ❌ `EACCES` | ❌ `EACCES` |
+| PTY slave | ✅ | ✅ | ✅ |
+
+**同一个 master fd 上 `TCSANOW` 完全成功**，且回读确认新 termios 真的生效（`ICANON=0`/`ECHO=0`）。所以不是"OHOS 不让配置 master"，而是**专门卡住了 drain/flush 那一步**——推测沙箱拦的是这两个变体内部发的 `TCSBRK`/`TIOCDRAIN` ioctl。
+
+`ttySetMode()`（`src/jsc/bindings/wtf-bindings.cpp`，libuv `uv_tty_set_mode` 的移植）硬编码 `TCSADRAIN`，而 `Bun.Terminal` 正是拿 PTY master 调进来的 —— 于是真机上每一次 `setRawMode()` 必抛 `Failed to set raw mode`。
+
+**修复**：只在 `TCSADRAIN` 返回 `EACCES` 时回退到 `TCSANOW`，而不是直接改成 `TCSANOW`——内核允许的地方保留 drain-then-apply 语义，只在本来就会彻底失败的 fd 上放弃它。代价是待发送输出可能被新设置重新解释，相比 `setRawMode` 完全不可用是划算的，而且这就是这个平台的 PTY master 唯一允许的做法。限定 `__OHOS__`，不动其他平台。
+
+### 修复前基线（`5c2a44ef9`，10 个文件）
+
+**4 通过 / 6 失败**。失败：`no-orphans` / `repl` / `terminal-platform-gaps` / `terminal-spawn` / `terminal` / `18239`。
+
+注意 **`tty-reopen-after-stdin-eof` 和 `tui-app-tty-pattern` 这两个已经是通过的** —— 上面表格里原先把它们列为"可能同根因"，实测要么是 T24 修复的连带效果、要么当初归类偏了，本轮之后应从 T03 簇移出。
 
 ---
 
