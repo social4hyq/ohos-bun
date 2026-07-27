@@ -47,11 +47,11 @@ bun_output::declare_scope!(Terminal, hidden);
 mod t03_debug {
     use std::io::Write;
 
-    pub fn enabled() -> bool {
+    fn enabled() -> bool {
         std::env::var_os("BUN_OHOS_T03_DEBUG").is_some()
     }
 
-    pub fn log(line: &str) {
+    pub(super) fn log(line: &str) {
         if !enabled() {
             return;
         }
@@ -67,7 +67,7 @@ mod t03_debug {
 }
 #[cfg(not(target_env = "ohos"))]
 mod t03_debug {
-    pub fn log(_line: &str) {}
+    pub(super) fn log(_line: &str) {}
 }
 
 // Generated bindings — `jsc.Codegen.JSTerminal`. The `.classes.ts` codegen
