@@ -621,7 +621,16 @@ impl Terminal {
         // instrumentation showed the final terminal entering close_internal
         // with READER_DONE already true and zero dispatches for the whole
         // run. See OHOS_TEST_TODO.md T03.
+        t03_debug::log(&format!(
+            "T@{:x} init: callbacks registered, calling read()",
+            parent_ptr as usize,
+        ));
         terminal.reader.with_mut(|r| r.read());
+        t03_debug::log(&format!(
+            "T@{:x} init: read() returned, READER_DONE={}",
+            parent_ptr as usize,
+            terminal.flags.get().contains(Flags::READER_DONE),
+        ));
 
         Ok(CreateResult {
             // SAFETY: `parent_ptr` is the heap-allocated allocation above with
@@ -1789,7 +1798,8 @@ impl Terminal {
 
     pub(crate) fn close_internal(&self) {
         t03_debug::log(&format!(
-            "close_internal: CLOSED={} READER_STARTED={} READER_DONE={}",
+            "T@{:x} close_internal: CLOSED={} READER_STARTED={} READER_DONE={}",
+            std::ptr::from_ref(self) as usize,
             self.flags.get().contains(Flags::CLOSED),
             self.flags.get().contains(Flags::READER_STARTED),
             self.flags.get().contains(Flags::READER_DONE),
@@ -1910,12 +1920,18 @@ impl Terminal {
     /// callback) sees the flag and no-ops, then release the reader's +1.
     fn on_reader_finished(&self, exit_code: i32) {
         t03_debug::log(&format!(
-            "on_reader_finished(exit_code={}) finalized={} jsref={}",
+            "T@{:x} on_reader_finished(exit_code={}) finalized={} jsref={} READER_DONE={}",
+            std::ptr::from_ref(self) as usize,
             exit_code,
             self.flags.get().contains(Flags::FINALIZED),
             self.this_value.get().debug_state(),
+            self.flags.get().contains(Flags::READER_DONE),
         ));
         if self.flags.get().contains(Flags::READER_DONE) {
+            t03_debug::log(&format!(
+                "T@{:x}   -> EARLY RETURN (READER_DONE already set)",
+                std::ptr::from_ref(self) as usize,
+            ));
             return;
         }
         self.update_flags(|f| {
@@ -1936,17 +1952,18 @@ impl Terminal {
     /// The signal parameter is only populated if a signal caused the PTY close.
     fn call_exit_callback(&self, exit_code: i32, signal: Option<SignalCode>) {
         let Some(this_jsvalue) = self.this_value.get().try_get() else {
-            t03_debug::log("call_exit_callback: DROP at try_get (JS wrapper gone)");
+            t03_debug::log(&format!("T@{:x} call_exit_callback: DROP at try_get", std::ptr::from_ref(self) as usize));
             return;
         };
         let Some(callback) = js::gc::get(js::GcValue::Exit, this_jsvalue) else {
-            t03_debug::log("call_exit_callback: DROP at gc::get(Exit) (callback entry missing)");
+            t03_debug::log(&format!("T@{:x} call_exit_callback: DROP at gc::get(Exit)", std::ptr::from_ref(self) as usize));
             return;
         };
         {
             let global_for_check = self.global();
             t03_debug::log(&format!(
-                "call_exit_callback: dispatching exit_code={} has_exception={}",
+                "T@{:x} call_exit_callback: DISPATCHING exit_code={} has_exception={}",
+                std::ptr::from_ref(self) as usize,
                 exit_code,
                 global_for_check.has_exception(),
             ));
