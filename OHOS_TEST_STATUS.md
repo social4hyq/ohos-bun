@@ -963,6 +963,17 @@ node scripts/runner.node.mjs --exec-path=<bun> --results-json=logs/refail-serial
 - **runner 注入 `BUN_JSC_randomIntegrityAuditRate=1.0`**：审计开销随堆大小增长，隔离下无害，大文件后半段可拖垮写死的 `Bun.sleep(100)`。为此试过加 OHOS 超时倍数，A/B 各跑 4 遍均值 93.2 vs 93.0（噪声内），**假设不成立已撤销**，不往上游测试文件加无效改动。
 - **长任务会被环境回收**：`run_in_background`、`setsid`、分块 560s 三种方式都被杀过。可靠做法是逐文件复测 + 断点续跑。
 
+### 收尾补充：vendored node `common.isLinux` 未识别 openharmony
+
+`test/js/node/test/common/index.js` 的 `isLinux` 是 `process.platform === 'linux'`，OHOS 上为 false，导致 Linux 条件分支全部走错边。OHOS 跑的就是 Linux 内核，本仓库 `test/harness.ts` 早已按 `linux || openharmony` 判定，且 `common/index.js` 第 343 行已有 openharmony 特例——改这里是既有惯例而非新开先例。
+
+18 个消费 `common.isLinux` 的 vendored 测试 A/B 实测：**11 pass/7 fail → 14 pass/4 fail，零回归**。但三个转绿里只有一个是真修复，必须分清：
+
+- **`test-process-constants-noatime.js`——真实修复**。OHOS 定义了 `O_NOATIME`、bun 也正确暴露（实测 262144 == 0x40000），但 `isLinux` 为 false 时测试走 else 分支断言"该常量不应存在"，**断言方向本身就是错的**。现在断言正确内容并凭实力通过。
+- **两个 `*-bind-privileged-port.js`——变成了跳过，不是修复**。它们转绿只是因为命中了 bun 既有的 `if (common.isLinux) return; // TODO: BUN`（第 24 行），即真 Linux 本来就享有的跳过。待遇一致，但**不应计入通过率改善**。
+
+`localIPv6Hosts` 同样依赖 `isLinux`，但无任何测试消费，无连带影响。
+
 ### 下一轮优先级
 
 1. **T03 剩余的 exit 回调偶发丢失**——`await promise` 无固定 sleep，超时放宽到 30s 仍不触发；单独跑 0ms 立即触发，先造 N 个 Terminal 后间歇失败（非单调，排除耗尽；GC 假设亦已证伪）。真实竞争，未定位。
