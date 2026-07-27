@@ -291,14 +291,14 @@ RangeError: The value of "err" is out of range. It must be a negative integer. R
 
 ---
 
-## T15 — 深路径 / 长路径缓冲区问题（怀疑与历史 shebang-buffer bug 同类，优先级建议提高）
+## T15 — 深路径 / 长路径缓冲区问题（复查完毕：一个是 T01 的连带受益者，另一个是独立的测试算术问题）
 
-这台沙盒的 `TMPDIR` 路径本身异常深（`/data/storage/el2/base/tmp/claude-<session>/...`），`OHOS_TEST_STATUS.md` 第七轮记录过一个几乎一模一样的模式：固定大小缓冲区（128 字节）在这种深路径下截断，产生看似无关的错误（`run-extensionless.test.ts` 的 shebang bug）。以下两个文件的症状形状很像同一类问题,建议优先复查。
+最初怀疑两个文件是同一类"固定缓冲区在深 TMPDIR 下截断"的 Rust bug（类比历史上的 128 字节 shebang 缓冲区 bug）。用 `e39db04d6`（T01 修复后的二进制）复查,结论分岔：
 
-| 文件 | 症状 | 分类 | 层级 | 状态 |
+| 文件 | 结论 | 分类 | 层级 | 状态 |
 |---|---|---|---|---|
-| `test/js/bun/glob/path-length.test.ts` | "deep directory tree does not overflow path buffer"、"...with absolute:true does not overflow the join buffer"、"matched file whose absolute path exceeds the join buffer" — 3 个用例名字本身就在断言"不溢出",但都失败了 | A | rust | **优先查**：疑似真实缓冲区溢出/截断，测试本来就是为这类 bug 写的 |
-| `test/js/bun/net/unix-socket-long-path.test.ts` | 108 字节 `sockaddr_un.sun_path` 长路径 workaround 全部失败（3 个子用例）| A | rust | 值得和上面一起查,这台机器深 TMPDIR 天然放大这类 bug |
+| `test/js/bun/glob/path-length.test.ts` | **已修复（T01 的连带副作用）**：`buildDeepTree()` 用 `Bun.spawn({cmd:["bash",...], cwd: root})` 建深目录树,`root` 落在 EL2——这正是 T01 的触发模式。真机复测（`e39db04d6`）：**6 pass, 0 fail**。之前的失败根本不是"缓冲区溢出",是 T01 的 getcwd 噪音污染了 `buildDeepTree` 内部 bash 循环的 stderr,间接搞乱了后续断言。 | — | — | 已随 T01 一起修复 |
+| `test/js/bun/net/unix-socket-long-path.test.ts` | **不是同一类 bug，是测试自身的路径长度算术假设**：`makeSockPath()` 用 `pad = total - 60` 反推需要填多少字节让 `tempDir()` 产出的目录名凑到 `total` 长度,这个"60"是针对其他平台/更浅 TMPDIR 校准的常量。这台环境里 runner 给每个测试文件套了一层 `TMPDIR=.../buntmp-XXXXXX/` 嵌套,实际 `tempDir()` 产出的绝对路径比假设的深,导致 `total=150` 时 `basenameLen = total - dir.length - 1` 算出负数,`Buffer.alloc(-2, ...)` 直接抛 `RangeError`（真机复测确认：`total=108` 正常,`total=150` 才炸)。分类改判 C（测试算术脆弱,不是 Rust 层 bug），层级 test | C | test | 待修（低成本：把硬编码的 padding 常量换成先量出 `tempDir()` 实际长度再反推,而不是假设固定 60）|
 
 ---
 
@@ -443,7 +443,7 @@ test/napi/node-napi-tests/**（60 个子文件）
 ## 下一轮优先级建议
 
 1. ~~T01~~ —— **已修复并真机验证**（`e39db04d6`，9/9 文件转绿）。陈旧 quarantine 已清（class E 11 个文件删除）。
-2. **T15（深路径缓冲区）**——历史上这类 bug（shebang 128 字节）修复成本低、收益是通用 Rust 层修复,值得复用同一手法排查。
+2. ~~T15~~ —— **已复查完毕**：`path-length.test.ts` 随 T01 一起修复（连带副作用,6/6 转绿）；`unix-socket-long-path.test.ts` 改判为独立的测试算术脆弱（class C，低成本 test 层修复,未动手）。
 3. **T04（spawn fd 所有权）**——已知最大真实 bug 簇，仍需 Rust 层插桩。
 4. **T03（PTY/Terminal）**——新发现的规模较大的簇,建议先摸底根因（可能一次修复解决 7 个文件）。
 5. **T18（bake dev）**——投入产出比需要产品层面先拍板要不要投入。
