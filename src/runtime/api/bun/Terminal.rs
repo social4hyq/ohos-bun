@@ -38,6 +38,38 @@ use bun_sys::windows;
 
 bun_output::declare_scope!(Terminal, hidden);
 
+// TEMPORARY debug instrumentation for OHOS_TEST_TODO.md T03 (exit callback
+// occasionally never delivered after close()). Logs each silent-drop branch
+// in call_exit_callback plus the delivery points leading up to it. Gated
+// behind BUN_OHOS_T03_DEBUG=1; no-op otherwise. Remove once the drop branch
+// is pinned down.
+#[cfg(target_env = "ohos")]
+mod t03_debug {
+    use std::io::Write;
+
+    pub fn enabled() -> bool {
+        std::env::var_os("BUN_OHOS_T03_DEBUG").is_some()
+    }
+
+    pub fn log(line: &str) {
+        if !enabled() {
+            return;
+        }
+        let tid = std::thread::current().id();
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/data/storage/el2/base/tmp/bun-t03-debug.log")
+        {
+            let _ = writeln!(f, "[tid={tid:?}] {line}");
+        }
+    }
+}
+#[cfg(not(target_env = "ohos"))]
+mod t03_debug {
+    pub fn log(_line: &str) {}
+}
+
 // Generated bindings — `jsc.Codegen.JSTerminal`. The `.classes.ts` codegen
 // emits `crate::generated_classes::js_Terminal` with `from_js`/`to_js` and the
 // cached-value accessors; re-export here so callers continue to spell `js::*`.
@@ -1736,6 +1768,12 @@ impl Terminal {
     }
 
     pub(crate) fn close_internal(&self) {
+        t03_debug::log(&format!(
+            "close_internal: CLOSED={} READER_STARTED={} READER_DONE={}",
+            self.flags.get().contains(Flags::CLOSED),
+            self.flags.get().contains(Flags::READER_STARTED),
+            self.flags.get().contains(Flags::READER_DONE),
+        ));
         if self.flags.get().contains(Flags::CLOSED) {
             return;
         }
@@ -1851,6 +1889,11 @@ impl Terminal {
     /// before the exit callback so re-entry (`terminal.close()` from the
     /// callback) sees the flag and no-ops, then release the reader's +1.
     fn on_reader_finished(&self, exit_code: i32) {
+        t03_debug::log(&format!(
+            "on_reader_finished(exit_code={}) finalized={}",
+            exit_code,
+            self.flags.get().contains(Flags::FINALIZED),
+        ));
         if self.flags.get().contains(Flags::READER_DONE) {
             return;
         }
@@ -1872,11 +1915,21 @@ impl Terminal {
     /// The signal parameter is only populated if a signal caused the PTY close.
     fn call_exit_callback(&self, exit_code: i32, signal: Option<SignalCode>) {
         let Some(this_jsvalue) = self.this_value.get().try_get() else {
+            t03_debug::log("call_exit_callback: DROP at try_get (JS wrapper gone)");
             return;
         };
         let Some(callback) = js::gc::get(js::GcValue::Exit, this_jsvalue) else {
+            t03_debug::log("call_exit_callback: DROP at gc::get(Exit) (callback entry missing)");
             return;
         };
+        {
+            let global_for_check = self.global();
+            t03_debug::log(&format!(
+                "call_exit_callback: dispatching exit_code={} has_exception={}",
+                exit_code,
+                global_for_check.has_exception(),
+            ));
+        }
 
         let global_this = self.global();
         let signal_value: JSValue = if let Some(s) = signal {
