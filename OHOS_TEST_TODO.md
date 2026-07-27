@@ -508,6 +508,7 @@ test/js/node/child_process/child-process-rlimit-nofile.test.ts
 | `test/regression/issue/07500/07500.test.ts` | `Bun.stdin.text() doesn't read all data`,100s 超时 |
 | `test/regression/issue/24364.test.ts` | `react-tailwind template passes tsc --noEmit`（可能依赖 T14 网络类模板拉取,未核实）|
 | `test/js/bun/spawn/spawn-pipe-read-error-leak.test.ts` | T04 复核确认非同根因：`cat` 读坏掉的 FIFO 时产生的 `Broken pipe` stderr 输出未被吞掉/预期到,导致断言的空数组不成立 |
+| `test/js/node/test/parallel/test-fs-link.js` + `test/js/node/test/parallel/test-fs-promises.js` | **已修复并真机验证（ade348ec6）**：OHOS 内核拒绝裸 SYS_linkat（EACCES），硬链接唯一可用途径是 ohos-compat-shim 对 linkat libc 符号的拦截（EACCES→字节拷贝回退）。musl 把 link() 实现为直发裸 SYS_linkat，绕过符号拦截；而 node_fs.rs::link() 又直接调 libc::link()，完全碰不到拦截器。改走 libc::linkat(AT_FDCWD,...)（语义等价）。第一轮修错了函数（改了无人走的 sys::link()，18 分钟重编白烧） |
 | `test/js/bun/spawn/spawn_waiter_thread.test.ts` | T04 复核确认非同根因：issue #9404 的 `resourceUsage().cpuTime.total` 阈值断言,真机实测比 `750_000n` 阈值高约 83%（`1374480n`），疑似 waiter 线程 CPU 时间统计口径与阈值假设不匹配 |
 
 ---
