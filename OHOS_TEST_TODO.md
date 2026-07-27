@@ -431,7 +431,7 @@ test/js/node/child_process/child-process-rlimit-nofile.test.ts
 
 ---
 
-## T24 — 子进程读 stdin 时两个线程并发 `recv()` 同一个 fd,数据组装丢失（**根因基本定位：`ReadFile`/WorkPool 调度竞争，不是写端问题**）
+## T24 — `ReadFile` 读循环被多个 worker 线程并发执行，大 buffer 随机丢数据（**根因已确认，修复已写（`04518175b`），验证中**）
 
 `test/js/bun/spawn/spawn-stdin-large-buffer.test.ts`（阈值 1MB~2MB 之间开始出现,文件自带注释猜的方向是错的）复核后，用脱离测试框架的最小复现脚本 + 改造过的 `ohos-trace-shim` 做 syscall 级追踪，**推翻了最初"写端过早关闭/write 返回 0 被误判 EOF"的假设**，定位到真正的机制在**子进程读 stdin 的一侧**。
 
@@ -456,15 +456,38 @@ test/js/node/child_process/child-process-rlimit-nofile.test.ts
 
 即：**在坏的运行里，两个操作系统线程同时对同一个 stdin fd 调用 `recv()`。** `Bun.stdin.arrayBuffer()` 的读取实现（`src/runtime/webcore/blob/read_file.rs` 的 `ReadFile`）显然假设只有一个线程在跑这段读循环、往同一个 `self.buffer`/`self.read_off` 累加——一旦两个线程同时进场，谁的分片先到、`buffer.extend_from_slice`/`commit_spare` 的顺序、最终 `on_finish()` 判定"读完了"的时机全部失去保证，观测到的"随机丢失不同数量的字节"正是这种无同步并发访问的典型症状。
 
-### 目前定位到的机制（尚未 100% 钉死触发条件）
+### 根因确认（第二轮容器重编 + Rust 层插桩，`f75eba150`）
 
-`ReadFile` 的调度分工：专门的 **"IO Watcher" 线程**（`src/io/lib.rs::IoRequestLoop::tick_epoll()`，唯一一个跑 `epoll_wait` 的线程）负责监听 fd 可读事件，可读时调用 `on_ready()` 把一个 `WorkPoolTask` 扔进 `WorkPool`；`WorkPool` 的某个 worker 线程实际执行 `do_read_loop()`（真正调 `recv()`、往 `self.buffer` 追加数据的地方，`read_file.rs:789`）。`do_read_loop` 内部在遇到"这次读不到更多了"时（`is_readable()==NotReady`）调用 `self.wait_for_readable()` 重新武装 epoll 通知然后 `return`——**这整套设计里没有看到任何"当前是否已经有一个 worker 正在跑这个 `ReadFile` 的读循环"的显式互斥标记**（`self.state` 这个 `AtomicU8` 只表示 `Running`/`Closing`，不是"in-flight"锁)。`register_for_epoll` 确实带了 `EPOLLONESHOT`（`one_shot=true`），理论上应该防止同一次事件被重复投递触发两次调度——但既然实测确实抓到了两个线程同时读同一个 fd，说明要么这个 oneshot-rearm 的时序本身有窗口（比如 rearm 发生在 `wait_for_readable()` 里，如果这次 `epoll_ctl` 调用之前，恰好又有一次独立的可读事件触发了另一次调度），要么是别的路径（重复的 fd 注册、或另一个独立的读入口）绕开了这层保护——**这一层的精确触发条件还没有钉死**，需要进一步的手段（在 `on_ready()`/`do_read_loop` 入口加原子计数器/日志，做一轮容器重编验证）来最终确认。
+给 `ReadFile` 加了 env-gated（`BUN_OHOS_T24_DEBUG=1`）插桩：一个全局 `Mutex<Vec<usize>>` 记录哪些 `ReadFile` 实例当前有 `do_read_loop` 在跑（按实例地址索引），`on_ready()` 和 `do_read_loop` 入口各打一条日志。**假设被 100% 证实**，日志直接给出：
 
-### 结论与建议
+```
+[tid=2] [ReadFile::run_async_with_fd -> do_read_loop (immediately readable)]
+[tid=2] enter do_read_loop for ReadFile@0x5bbab70600
+[tid=2] exit  do_read_loop for ReadFile@0x5bbab70600
+[tid=4] on_ready() for ReadFile@0x5bbab70600      ← IO Watcher 线程连发约 50 次
+[tid=4] on_ready() ... （×50）
+[tid=5] enter do_read_loop for ReadFile@0x5bbab70600
+[tid=3] *** CONCURRENT RE-ENTRY into do_read_loop -- already in flight! ***
+[tid=4] on_ready() ... -- ALREADY IN FLIGHT, scheduling a concurrent do_read_loop run!
+[tid=2] *** CONCURRENT RE-ENTRY ***
+[tid=6] *** CONCURRENT RE-ENTRY ***
+```
 
-分类 A（真实 bun 缺陷，非 OHOS 平台限制——虽然 OHOS 上因为 stdio 走 socketpair 而不是走 pipe 更容易撞见这条竞争，但竞争本身在 `ReadFile`/`WorkPool` 调度逻辑里，不是 OHOS 专属代码）,层级 rust,状态：**根因基本定位（并发 `recv()`），精确触发条件待确认**。
+第二次运行里更夸张，**tid 2/3/5/6/7/8/9 共 6 个 worker 线程同时在同一个 `ReadFile` 实例上跑 `do_read_loop`**。
 
-修复方向候选：给 `ReadFile` 加一个"in-flight"原子标记，`on_ready()`/`on_io_error()` 在已有一次 `do_read_loop` 在跑时不应该再排一次新的 `WorkPoolTask`（应该合并/延后到当前这次跑完再检查一次），而不是无条件 `WorkPool::schedule`。
+机制完全清楚了：`on_ready()`（`src/io/lib.rs::IoRequestLoop::tick_epoll()` 所在的专用 IO Watcher 线程调用）**无条件** `WorkPool::schedule(&raw mut self.task)`，没有任何"是否已经有 worker 在跑这个 `ReadFile` 的读循环"的检查（`self.state` 那个 `AtomicU8` 只表示 `Running`/`Closing`，不是 in-flight 锁）。第一次 `do_read_loop` 退出后 IO 线程连发几十次 `on_ready`，每次都排一个新任务，多个 worker 同时抢到并进入同一个读循环，各自 `recv()` 同一个 fd、各自往同一个 `self.buffer`/`read_off` 追加——完全无同步。之前怀疑的 `EPOLLONESHOT` 并不能挡住这个，因为问题不在于单次事件被重复投递，而在于**每一次合法的可读事件都会无条件再排一个并发任务**。
+
+### 修复（`04518175b`，已提交，容器重编验证中）
+
+给 `ReadFile` 加 `read_loop_state: AtomicU8` 三态所有权握手：
+
+- `IDLE` → 没有 worker 拥有读循环
+- `RUNNING` → 某个 worker 已排队/正在跑
+- `RUNNING_PENDING` → 同上，且跑的期间又来了可读唤醒（不能丢）
+
+`on_ready()` 只在 CAS `IDLE→RUNNING` 成功时才 `schedule`；跑的期间来的唤醒把状态推到 `RUNNING_PENDING` 而不是排并发任务；持有者退出时（`wait_for_readable()` 之后的 early return 处）如果发现是 `RUNNING_PENDING` 就保留所有权再排一次，从而**既不并发也不丢唤醒**。`run_async_with_fd` 里第一次直接调 `do_read_loop` 的路径也先取所有权（因为它一旦 `wait_for_readable()` 武装了 epoll，`on_ready` 就可能并发进来）。`on_finish()` 路径故意保持 `RUNNING` 不释放——读已经结束，本就不该再排任何任务，而且那之后对象可能已被释放，不能再碰。
+
+分类 A（真实 bun 缺陷，**不是** OHOS 平台限制：OHOS 上因为 stdio 走 socketpair 更容易撞见，但竞争本身在 `ReadFile`/`WorkPool` 共享调度逻辑里，与平台无关）,层级 rust,状态：**根因已确认 + 修复已写，等容器重编后真机验证**。
 
 **改动过的调试工具**：`../Software/ohos-trace-shim` 加了 `send()`/`recv()` 拦截（之前的 `net` 组只包了 `sendto`/`recvfrom`/`sendmsg`/`recvmsg`），已编译签名，这是这次能突破"rustix 不可见"限制的关键——以后排查任何 socketpair-based stdio 的问题都可以复用。
 
