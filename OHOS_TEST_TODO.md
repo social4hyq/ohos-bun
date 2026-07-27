@@ -426,10 +426,23 @@ test/js/node/child_process/child-process-rlimit-nofile.test.ts
 | `test/js/node/test/parallel/test-net-error-twice.js` | `assert.strictEqual(0, 1)` — 错误只应触发一次的断言,实际触发次数不对 |
 | `test/regression/issue/07500/07500.test.ts` | `Bun.stdin.text() doesn't read all data`,100s 超时 |
 | `test/regression/issue/24364.test.ts` | `react-tailwind template passes tsc --noEmit`（可能依赖 T14 网络类模板拉取,未核实）|
-| `test/js/bun/spawn/spawn-stdin-large-buffer.test.ts` | **优先级建议提高**：2048/4096/8192 KB 级别 stdin 通过 socketpair 传输给子进程时数据丢失（`spawnSync`/`Bun.spawn` 两条路径都中招,部分组合收到 `0` 字节）。T04 复核时排除了 statx/EBADF 同根因,是独立的数据完整性问题,不是断言脆弱。**Task 14 追加发现**：`test/cli/install/bun-install-security-provider.test.ts` 的 "Large payload via ipc pipe > handles packages JSON larger than max arg length (>1MB)" 用例 100% 复现 `SIGSEGV`（security scanner 子进程收 >1MB JSON 通过 IPC pipe 时崩溃）——症状级别比这里的截断更严重（是崩溃不是丢数据），但触发条件同款（子进程 pipe 传大 payload）,值得合并排查,可能是同一个 pipe 缓冲区处理缺陷的两种表现形式 |
 | `test/js/bun/spawn/spawn-pipe-read-error-leak.test.ts` | T04 复核确认非同根因：`cat` 读坏掉的 FIFO 时产生的 `Broken pipe` stderr 输出未被吞掉/预期到,导致断言的空数组不成立 |
 | `test/js/bun/spawn/spawn_waiter_thread.test.ts` | T04 复核确认非同根因：issue #9404 的 `resourceUsage().cpuTime.total` 阈值断言,真机实测比 `750_000n` 阈值高约 83%（`1374480n`），疑似 waiter 线程 CPU 时间统计口径与阈值假设不匹配 |
-| `test/cli/install/bun-install-security-provider.test.ts` | Task 14 新发现：大 payload (>1MB JSON) 经 IPC pipe 传给 security scanner 子进程时 100% 复现 `SIGSEGV`（"multiple threads are crashing" 连环崩溃日志）。同一簇候选,见上一行 `spawn-stdin-large-buffer.test.ts` |
+
+---
+
+## T24 — `Bun.spawn`/`spawnSync` 大 stdin buffer 经 pipe 传输时随机丢数据（**确认为真正的 race，非确定性 bug；已排除 pwritev2/RWF_NOWAIT 路径**）
+
+`test/js/bun/spawn/spawn-stdin-large-buffer.test.ts`（阈值 1MB~2MB 之间开始出现,文件自带注释已经猜到方向）复核后，用脱离测试框架的最小复现脚本确认了几个关键事实：
+
+1. **是真正的 race，不是确定性阈值**：同一个 1280KB 输入,连续跑 8 次,结果是 `131072`/`1310720`(完整!)/`196864`/`1245184`/`1113856`/`196864`/`1310720`(完整!)/`0`/`0`——同一份代码、同一个输入,有时完全正确,有时部分丢失,有时收到 `0` 字节。这排除了"某个固定 buffer 容量硬限制"的假设,是纯粹的时序竞争。
+2. **不是 `pwritev2`/`RWF_NOWAIT` 路径的问题**：`BUN_FEATURE_FLAG_DISABLE_RWF_NONBLOCK=1`（强制走 `src/sys/lib.rs::write_nonblocking()` 里 `ESPIPE` 触发的降级分支,直接用 poll+`write()`）复现率不变,bug 依旧。用独立 C 程序验证了这台设备上：① 非阻塞 pipe fd 写满后 `write()` 正确返回 `-1/EAGAIN`,不是 `0`；② `pwritev2(..., RWF_NOWAIT)` 在这台设备上对 pipe fd **第一次调用就返回 `ESPIPE`**（不是等到写满才报错）,触发 `RWFFlagSupport::disable()` 后全程走 fallback,和上面 ① 的结论一致。这两点合起来说明 `write()`/`pwritev2` 系统调用本身的返回值语义在这台设备上是标准的,原始猜测"write() 返回 0 被误判为 EOF"这条路径已经被证伪。
+3. **子进程读到的是"提前结束"而不是"损坏数据"**：所有失败案例里 `a`（有效字节计数）始终等于 `total`（收到的总字节数）,`other` 恒为 0——即收到的字节里没有垃圾数据混入,只是收得比预期少。说明是**写端过早发出了 EOF 信号**（管道写端被过早关闭）,不是数据在传输中损坏。
+4. `spawnSync`（走 `SpawnSyncEventLoop` 专用同步小事件循环）和 `Bun.spawn`（走主事件循环的 `StaticPipeWriter`）**两条路径都会触发**,说明竞争点在两者共享的更底层代码（`src/io/PipeWriter.rs` 的 `PosixPipeWriter`/`PosixBufferedWriter` 写循环,或更上层调用这些循环的公共逻辑）,而不是某条事件循环自己的独有 bug。
+
+**尚未定位到具体的竞争点**——需要用 `ohos-trace-shim`（LD_PRELOAD 系统调用追踪垫片,见 `project_ohos_strace_infeasible_trace_shim` 记忆）对触发时和不触发时的两次运行做 syscall 级 diff,才能抓到"谁在什么条件下提前关闭/判定完成"。分类 A（真实 bun 缺陷),层级 rust,状态：**已确认是真实 race,根因未定位**。
+
+**关联但独立的发现**：`test/cli/install/bun-install-security-provider.test.ts` 的 "Large payload via ipc pipe > handles packages JSON larger than max arg length (>1MB)" 用例传大 JSON（>1MB）给 security scanner 子进程时，**100% 确定性复现 `SIGSEGV`**（连续 3 次隔离单跑,每次都崩,"multiple threads are crashing" 连环崩溃日志）——注意这个是**确定性**崩溃，和上面 T24 的**非确定性**丢数据不是同一种表现（一个必现、一个随机),暂不确定是否同根因,只是触发条件相似（子进程经 pipe/IPC 传大 payload），仍值得放在一起排查但不应假设是同一个 bug。分类 A,层级 rust,状态：待查。
 
 ---
 
