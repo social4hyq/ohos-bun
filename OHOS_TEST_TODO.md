@@ -510,7 +510,7 @@ test/js/node/child_process/child-process-rlimit-nofile.test.ts
 
 分类 A（真实 bun 缺陷，**不是** OHOS 平台限制：OHOS 上因为 stdio 走 socketpair 更容易撞见，但竞争本身在 `ReadFile`/`WorkPool` 共享调度逻辑里，与平台无关）,层级 rust,状态：**已修复并真机验证**。
 
-**遗留**：`read_file.rs`/`Blob.rs` 里的 `t24_debug` 插桩（env-gated `BUN_OHOS_T24_DEBUG=1`，默认零开销）在验证完成后应当移除。
+**插桩已移除**（`5c2a44ef9`）。移除后重编的干净版（`5c2a44ef9`）复验：1280KB 复现脚本 ×10 全部完整；`spawn-stdin-large-buffer` 5/5、`bun-install-security-provider` 43/43 —— 与带插桩版本结果一致，确认删除插桩没有影响修复本身。
 
 **改动过的调试工具**：`../Software/ohos-trace-shim` 加了 `send()`/`recv()` 拦截（之前的 `net` 组只包了 `sendto`/`recvfrom`/`sendmsg`/`recvmsg`），已编译签名，这是这次能突破"rustix 不可见"限制的关键——以后排查任何 socketpair-based stdio 的问题都可以复用。
 
