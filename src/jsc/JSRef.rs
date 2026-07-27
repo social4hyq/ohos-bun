@@ -199,6 +199,30 @@ impl JsRef {
         }
     }
 
+    /// Debug-only state label for tracing callback-delivery bugs
+    /// (OHOS_TEST_TODO.md T03). Distinguishes "Strong whose handle slot
+    /// lost its value" from "Weak holding an empty value" — the two states
+    /// that make `try_get()` silently return None.
+    pub fn debug_state(&self) -> &'static str {
+        match self {
+            JsRef::Weak(weak) => {
+                if weak.is_empty_or_undefined_or_null() {
+                    "Weak(empty)"
+                } else {
+                    "Weak(value)"
+                }
+            }
+            JsRef::Strong(strong) => {
+                if strong.has() {
+                    "Strong(has-value)"
+                } else {
+                    "Strong(empty-slot)"
+                }
+            }
+            JsRef::Finalized => "Finalized",
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         match self {
             JsRef::Weak(weak) => weak.is_empty_or_undefined_or_null(),

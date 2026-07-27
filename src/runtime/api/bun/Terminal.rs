@@ -1890,9 +1890,10 @@ impl Terminal {
     /// callback) sees the flag and no-ops, then release the reader's +1.
     fn on_reader_finished(&self, exit_code: i32) {
         t03_debug::log(&format!(
-            "on_reader_finished(exit_code={}) finalized={}",
+            "on_reader_finished(exit_code={}) finalized={} jsref={}",
             exit_code,
             self.flags.get().contains(Flags::FINALIZED),
+            self.this_value.get().debug_state(),
         ));
         if self.flags.get().contains(Flags::READER_DONE) {
             return;
