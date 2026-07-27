@@ -177,7 +177,23 @@ write(slave)  -> poll(master) = POLLIN,  read(master) = 37 字节（含内核回
 close(slave)  -> poll(master) = 0x10 (POLLHUP)
 ```
 
-回显、窗口大小 ioctl、EOF/HUP 通知——失败用例依赖的每一条 PTY 能力都验证可用。**所以这第二个根因是 bun 侧的缺陷，不是平台硬限制**（分类 A，不是 B）：数据通路本身通畅，是 bun 没能正确驱动它。症状（回调永不触发导致 90s 超时、收不到回显）指向 bun 把 PTY master fd 接入事件循环 / 读路径的那一段，具体位置待定位。
+回显、窗口大小 ioctl、EOF/HUP 通知——失败用例依赖的每一条 PTY 能力都验证可用。平台限制（class B）排除。
+
+**继续深挖后又推翻了一次自己的判断**（先记为 class A"bun 缺陷"，实测证明是 class C"测试预算"）：
+
+| 条件 | 结果 |
+|---|---|
+| OS 层 PTY（独立 C 探针） | 完全正常 |
+| `bun test` 整文件，**不带** runner 的注入变量 | **95 pass / 1 fail**（只 `handles Unicode characters` 挂）|
+| 单独跑 `-t "receives echoed output"` | **通过** |
+| 最小脚本，审计 ON，只等 100ms | **通过**（7 字节 `"hello\r\n"`）|
+| 整文件 + `BUN_JSC_randomIntegrityAuditRate=1.0` | **精确复现 runner 报的那两个失败** |
+
+决定性变量是 `scripts/runner.node.mjs::spawnBun()` 注入的 **`BUN_JSC_randomIntegrityAuditRate: "1.0"`**（100% 概率跑 JSC 完整性审计，代价极高，且**开销随堆大小增长**）。单独跑没事，跑到 96 个用例的大文件后半段时堆已经很大，单次审计慢到把测试里写死的 `Bun.sleep(100)` 撑爆。
+
+**所以这一批的正确归类是 class C（测试自身预算），不是 bun 运行时缺陷。** 注意这不等于"方法学错误、可以忽略"——真实 CI 同样设这个变量，所以在 CI 上它们确实会失败；只是根因在"固定 100ms 预算对这个平台 + 审计开销不够"，而不是 PTY 功能坏了。
+
+**修复方向**：给这些用例加 OHOS 超时倍数，仓库里已有先例（`expectations.txt` 里 `hot.test.ts` 就注过 "OHOS timeout multipliers applied (6x/3x)"）。属于低成本 test 层改动，不需要容器重编。
 
 **另外**：`tty-reopen-after-stdin-eof` 和 `tui-app-tty-pattern` 实测**已经通过**——上面表格里原先列为"可能同根因"，应从 T03 簇移出。
 
