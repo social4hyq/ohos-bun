@@ -431,16 +431,42 @@ test/js/node/child_process/child-process-rlimit-nofile.test.ts
 
 ---
 
-## T24 — `Bun.spawn`/`spawnSync` 大 stdin buffer 经 pipe 传输时随机丢数据（**确认为真正的 race，非确定性 bug；已排除 pwritev2/RWF_NOWAIT 路径**）
+## T24 — 子进程读 stdin 时两个线程并发 `recv()` 同一个 fd,数据组装丢失（**根因基本定位：`ReadFile`/WorkPool 调度竞争，不是写端问题**）
 
-`test/js/bun/spawn/spawn-stdin-large-buffer.test.ts`（阈值 1MB~2MB 之间开始出现,文件自带注释已经猜到方向）复核后，用脱离测试框架的最小复现脚本确认了几个关键事实：
+`test/js/bun/spawn/spawn-stdin-large-buffer.test.ts`（阈值 1MB~2MB 之间开始出现,文件自带注释猜的方向是错的）复核后，用脱离测试框架的最小复现脚本 + 改造过的 `ohos-trace-shim` 做 syscall 级追踪，**推翻了最初"写端过早关闭/write 返回 0 被误判 EOF"的假设**，定位到真正的机制在**子进程读 stdin 的一侧**。
 
-1. **是真正的 race，不是确定性阈值**：同一个 1280KB 输入,连续跑 8 次,结果是 `131072`/`1310720`(完整!)/`196864`/`1245184`/`1113856`/`196864`/`1310720`(完整!)/`0`/`0`——同一份代码、同一个输入,有时完全正确,有时部分丢失,有时收到 `0` 字节。这排除了"某个固定 buffer 容量硬限制"的假设,是纯粹的时序竞争。
-2. **不是 `pwritev2`/`RWF_NOWAIT` 路径的问题**：`BUN_FEATURE_FLAG_DISABLE_RWF_NONBLOCK=1`（强制走 `src/sys/lib.rs::write_nonblocking()` 里 `ESPIPE` 触发的降级分支,直接用 poll+`write()`）复现率不变,bug 依旧。用独立 C 程序验证了这台设备上：① 非阻塞 pipe fd 写满后 `write()` 正确返回 `-1/EAGAIN`,不是 `0`；② `pwritev2(..., RWF_NOWAIT)` 在这台设备上对 pipe fd **第一次调用就返回 `ESPIPE`**（不是等到写满才报错）,触发 `RWFFlagSupport::disable()` 后全程走 fallback,和上面 ① 的结论一致。这两点合起来说明 `write()`/`pwritev2` 系统调用本身的返回值语义在这台设备上是标准的,原始猜测"write() 返回 0 被误判为 EOF"这条路径已经被证伪。
-3. **子进程读到的是"提前结束"而不是"损坏数据"**：所有失败案例里 `a`（有效字节计数）始终等于 `total`（收到的总字节数）,`other` 恒为 0——即收到的字节里没有垃圾数据混入,只是收得比预期少。说明是**写端过早发出了 EOF 信号**（管道写端被过早关闭）,不是数据在传输中损坏。
-4. `spawnSync`（走 `SpawnSyncEventLoop` 专用同步小事件循环）和 `Bun.spawn`（走主事件循环的 `StaticPipeWriter`）**两条路径都会触发**,说明竞争点在两者共享的更底层代码（`src/io/PipeWriter.rs` 的 `PosixPipeWriter`/`PosixBufferedWriter` 写循环,或更上层调用这些循环的公共逻辑）,而不是某条事件循环自己的独有 bug。
+### 排查历程（关键转折点）
 
-**尚未定位到具体的竞争点**——需要用 `ohos-trace-shim`（LD_PRELOAD 系统调用追踪垫片,见 `project_ohos_strace_infeasible_trace_shim` 记忆）对触发时和不触发时的两次运行做 syscall 级 diff,才能抓到"谁在什么条件下提前关闭/判定完成"。分类 A（真实 bun 缺陷),层级 rust,状态：**已确认是真实 race,根因未定位**。
+1. **确认是真正的 race，不是确定性阈值**：同一个 1280KB 输入连续跑 8 次，结果是 `131072`/`1310720`(完整!)/`196864`/`1245184`/`1113856`/`196864`/`1310720`(完整!)/`0`/`0`——有时完全正确,有时部分丢失,有时收到 `0` 字节。排除了"固定 buffer 容量硬限制"的假设。
+2. **排除了 `pwritev2`/`RWF_NOWAIT` 路径**：`BUN_FEATURE_FLAG_DISABLE_RWF_NONBLOCK=1` 复现率不变。独立 C 程序验证：非阻塞 pipe fd 写满后 `write()` 正确返回 `-1/EAGAIN`（不是 `0`）；`pwritev2(RWF_NOWAIT)` 在这台设备上对 pipe fd 第一次调用就 `ESPIPE`（走 fallback，和上面结论一致）。`write()`/`pwritev2` 本身语义标准，原始"write 返回 0"猜测已证伪。
+3. **`ohos-trace-shim` 第一轮追踪（`fd,proc,raw` 组）扑空**：bun 的 `write()`/`read()` 在 Linux/OHOS 上通过 `src/sys/linux_syscall.rs` 走 **rustix 的 `linux_raw` 后端**（内联汇编直接发系统调用，从不经过任何动态链接的 libc 符号）——这正是该工具自己文档里写明的已知局限（"Bun's rustix linux_raw backend... never touches a dynamically-linked libc symbol"）。8 次追踪运行里所有 `write()` 都只有 8 字节（事件循环唤醒用的 eventfd 写入），从未出现兆字节级的 stdin 写入，证实这条路径确实不可见。
+4. **关键突破：stdio 在这个平台上全部是 `socketpair`，不是 pipe(2)**——`src/spawn_sys/spawn_process.rs:812-826`：`PosixStdio::Buffer`（`"pipe"` stdio 的实现）统一用 `socketpair(AF_UNIX, SOCK_STREAM, 0, ...)`，**所有平台都这样，不是 OHOS 专属 fallback**。socket 路径的读写走 `sys::send_non_block`/`sys::recv_non_block`（`src/sys/lib.rs` 里 `sys_send`/`sys_recv` 直接调用 **`libc::send`/`libc::recv`**，不是 rustix）——这两个函数**没有**走 rustix，是真正可以被 LD_PRELOAD 拦截的！
+5. **给 `ohos-trace-shim` 加装 `send`/`recv` 拦截**（原来的 `net` 组只包了 `sendto`/`recvfrom`/`sendmsg`/`recvmsg`，漏了最基础的 `send`/`recv`）,重新编译签名,重新追踪,同时抓到一次"好"（完整 1310720）和三次"坏"（截断 196864）的运行。
+
+### 追踪结果（决定性证据）
+
+**父进程（driver）视角**：`send(13, n=1310720, ...)` 起手，经过若干次 `EAGAIN` 重试穿插子进程的 `recv()` 排空缓冲区，**最终把全部 1,310,720 字节成功发送完毕**（逐条 `send()` 返回值相加 = 1,310,720，完全正确，没有任何异常）。
+
+**子进程（reader）视角——这才是真正出问题的地方**：把"坏"运行里子进程对 `fd 0` 的全部 `recv()` 调用返回值相加，同样等于 **1,310,720**（全部数据确实通过 socket 到达了子进程内核缓冲区并被 `recv()` 取走）。但测试报告的 `bytes.length` 却只有 `196864`。**数据在传输层完整无损，丢失发生在子进程把收到的字节组装进最终 `ArrayBuffer` 的逻辑里。**
+
+决定性的一条线索：对比"好"运行和"坏"运行里子进程对 `fd 0` 调 `recv()` 的线程号——
+
+- 好运行：全程只有 **一个** `tid` 调用 `recv(0, ...)`。
+- 坏运行：出现 **两个不同的 `tid`** 交替调用 `recv(0, ...)`（例如 `tid=15833` 和 `tid=15834`）。
+
+即：**在坏的运行里，两个操作系统线程同时对同一个 stdin fd 调用 `recv()`。** `Bun.stdin.arrayBuffer()` 的读取实现（`src/runtime/webcore/blob/read_file.rs` 的 `ReadFile`）显然假设只有一个线程在跑这段读循环、往同一个 `self.buffer`/`self.read_off` 累加——一旦两个线程同时进场，谁的分片先到、`buffer.extend_from_slice`/`commit_spare` 的顺序、最终 `on_finish()` 判定"读完了"的时机全部失去保证，观测到的"随机丢失不同数量的字节"正是这种无同步并发访问的典型症状。
+
+### 目前定位到的机制（尚未 100% 钉死触发条件）
+
+`ReadFile` 的调度分工：专门的 **"IO Watcher" 线程**（`src/io/lib.rs::IoRequestLoop::tick_epoll()`，唯一一个跑 `epoll_wait` 的线程）负责监听 fd 可读事件，可读时调用 `on_ready()` 把一个 `WorkPoolTask` 扔进 `WorkPool`；`WorkPool` 的某个 worker 线程实际执行 `do_read_loop()`（真正调 `recv()`、往 `self.buffer` 追加数据的地方，`read_file.rs:789`）。`do_read_loop` 内部在遇到"这次读不到更多了"时（`is_readable()==NotReady`）调用 `self.wait_for_readable()` 重新武装 epoll 通知然后 `return`——**这整套设计里没有看到任何"当前是否已经有一个 worker 正在跑这个 `ReadFile` 的读循环"的显式互斥标记**（`self.state` 这个 `AtomicU8` 只表示 `Running`/`Closing`，不是"in-flight"锁)。`register_for_epoll` 确实带了 `EPOLLONESHOT`（`one_shot=true`），理论上应该防止同一次事件被重复投递触发两次调度——但既然实测确实抓到了两个线程同时读同一个 fd，说明要么这个 oneshot-rearm 的时序本身有窗口（比如 rearm 发生在 `wait_for_readable()` 里，如果这次 `epoll_ctl` 调用之前，恰好又有一次独立的可读事件触发了另一次调度），要么是别的路径（重复的 fd 注册、或另一个独立的读入口）绕开了这层保护——**这一层的精确触发条件还没有钉死**，需要进一步的手段（在 `on_ready()`/`do_read_loop` 入口加原子计数器/日志，做一轮容器重编验证）来最终确认。
+
+### 结论与建议
+
+分类 A（真实 bun 缺陷，非 OHOS 平台限制——虽然 OHOS 上因为 stdio 走 socketpair 而不是走 pipe 更容易撞见这条竞争，但竞争本身在 `ReadFile`/`WorkPool` 调度逻辑里，不是 OHOS 专属代码）,层级 rust,状态：**根因基本定位（并发 `recv()`），精确触发条件待确认**。
+
+修复方向候选：给 `ReadFile` 加一个"in-flight"原子标记，`on_ready()`/`on_io_error()` 在已有一次 `do_read_loop` 在跑时不应该再排一次新的 `WorkPoolTask`（应该合并/延后到当前这次跑完再检查一次），而不是无条件 `WorkPool::schedule`。
+
+**改动过的调试工具**：`../Software/ohos-trace-shim` 加了 `send()`/`recv()` 拦截（之前的 `net` 组只包了 `sendto`/`recvfrom`/`sendmsg`/`recvmsg`），已编译签名，这是这次能突破"rustix 不可见"限制的关键——以后排查任何 socketpair-based stdio 的问题都可以复用。
 
 **关联但独立的发现**：`test/cli/install/bun-install-security-provider.test.ts` 的 "Large payload via ipc pipe > handles packages JSON larger than max arg length (>1MB)" 用例传大 JSON（>1MB）给 security scanner 子进程时，**100% 确定性复现 `SIGSEGV`**（连续 3 次隔离单跑,每次都崩,"multiple threads are crashing" 连环崩溃日志）——注意这个是**确定性**崩溃，和上面 T24 的**非确定性**丢数据不是同一种表现（一个必现、一个随机),暂不确定是否同根因,只是触发条件相似（子进程经 pipe/IPC 传大 payload），仍值得放在一起排查但不应假设是同一个 bug。分类 A,层级 rust,状态：待查。
 
