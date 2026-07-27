@@ -497,6 +497,15 @@ test/js/node/child_process/child-process-rlimit-nofile.test.ts
 | `spawn-stdin-large-buffer.test.ts` | 0 pass / 5 fail | **5 pass / 0 fail** |
 | `bun-install-security-provider.test.ts` | 42 pass / 1 fail（100% 必现 SIGSEGV）| **43 pass / 0 fail，连跑 3 次稳定** |
 
+**整个 `js/bun/spawn` 目录回归（45 个文件，跑两遍交叉验证）**：
+
+| 运行 | 通过 | 失败 |
+|---|---|---|
+| 第一遍 | 44/45 | `spawn-pipe-read-error-leak` |
+| 第二遍 | 43/45 | 同上 + `spawn_waiter_thread` |
+
+这两个失败**正是修复前就已归类为「非 T24 同根因」的那两个**（见上面 T04 表格）：`spawn-pipe-read-error-leak` 是 `cat` 读坏掉的 FIFO 时 stderr 未被吞掉,稳定失败；`spawn_waiter_thread` 是 `resourceUsage().cpuTime` 阈值断言,两遍一好一坏,正是时序敏感断言的典型表现。**本次修复零回归**，且 T24 直接相关的文件（`spawn-stdin-large-buffer` 5/5、`spawn-pipe-stale-fd-unregister` 1/1、`spawn.test.ts`）全绿。
+
 **意外收获：那个"确定性 SIGSEGV"其实是同一个 bug。** 之前把它和 T24 的非确定性丢数据分开记录（理由是"一个必现、一个随机，不应假设同源"）——这个谨慎是对的，但结论错了：它们确实是同一个并发缺陷的两种表现。security scanner 那条路径传的 payload 更大、时序更稳定，于是每次都必然踩中同一个并发窗口，表现成确定性崩溃；而 stdin 那条路径的时序更松散，表现成随机截断。修好并发以后两者同时消失。
 
 分类 A（真实 bun 缺陷，**不是** OHOS 平台限制：OHOS 上因为 stdio 走 socketpair 更容易撞见，但竞争本身在 `ReadFile`/`WorkPool` 共享调度逻辑里，与平台无关）,层级 rust,状态：**已修复并真机验证**。
