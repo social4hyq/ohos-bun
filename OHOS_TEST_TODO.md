@@ -111,19 +111,19 @@ execlp("bash", "bash", "-c", "pwd", (char*)NULL);
 
 ---
 
-## T03 — PTY / TTY 簇：raw mode 已修（`738701916`），剩余"数据不流动"为第二个独立根因（待查）
+## T03 — PTY / TTY 簇：两个独立根因，均已修复（`738701916` raw mode + `4c3bee75b` exit 回调竞争）
 
 `terminal-*.test.ts` 是全新文件（历史 `OHOS_TEST_STATUS.md` 里从未出现过 `Bun.Terminal` 相关记录），说明这是本轮首次覆盖到。核心症状：`setRawMode` 抛 `Failed to set raw mode`,以及依赖 raw mode/SIGWINCH/作业控制信号的场景全部超时。`no-orphans.test.ts`/`tty-reopen-after-stdin-eof`/`tui-app-tty-pattern`/`18239` 症状不同但都在 TTY/PTY 子系统,怀疑共享底层 termios/PTY 分配逻辑,值得一起排查。
 
 | 文件 | 症状 | 分类 | 层级 | 状态 |
 |---|---|---|---|---|
-| `test/js/bun/terminal/terminal.test.ts` | `setRawMode` can enable/disable/toggle 全部抛 `Failed to set raw mode` | A | rust | 待查（根因定位） |
-| `test/js/bun/terminal/terminal-spawn.test.ts` | 同样 `Failed to set raw mode`；`exit callback fires after close`/`pipeline producer exit...`超时或挂 | A | rust | 待查 |
-| `test/js/bun/terminal/terminal-platform-gaps.test.ts` | `setRawMode is a no-op on Windows` 断言在这台机器上抛错（预期不抛）；`SIGWINCH`/CRLF 用例 90s 超时 | A | rust | 待查 |
-| `test/regression/issue/18239/18239.test.ts` | `TTY stdin buffering should work correctly` | A | rust | 待查（可能同根因）|
-| `test/regression/issue/tty-reopen-after-stdin-eof.test.ts` | 2 个子用例：reopen `/dev/tty`、`position` for char devices | A | rust | 待查（可能同根因）|
-| `test/regression/issue/tui-app-tty-pattern.test.ts` | 读 piped stdin 后 reopen `/dev/tty` | A | rust | 待查（可能同根因）|
-| `test/cli/run/no-orphans.test.ts` | Ctrl-Z stop 桥接 + `setsid` 场景 30s 超时（历史记录过 tpgid=0 异常,本轮换了新症状）| A | rust | 待查 |
+| `test/js/bun/terminal/terminal.test.ts` | `setRawMode` can enable/disable/toggle 全部抛 `Failed to set raw mode` | A | rust | **已修**（T03a `738701916`）；文件剩 2 个审计摇摆用例 |
+| `test/js/bun/terminal/terminal-spawn.test.ts` | 同样 `Failed to set raw mode`；`exit callback fires after close`/`pipeline producer exit...`超时或挂 | A | rust | **已修**（T03a + T03b `4c3bee75b`）|
+| `test/js/bun/terminal/terminal-platform-gaps.test.ts` | `setRawMode is a no-op on Windows` 断言在这台机器上抛错（预期不抛）；`SIGWINCH`/CRLF 用例 90s 超时 | A | rust | **已修**（T03a）|
+| `test/regression/issue/18239/18239.test.ts` | `TTY stdin buffering should work correctly` | A | rust | 待复测（T03a/b 后是否顺带转绿）|
+| `test/regression/issue/tty-reopen-after-stdin-eof.test.ts` | 2 个子用例：reopen `/dev/tty`、`position` for char devices | — | — | **实测已通过**，移出 T03 簇 |
+| `test/regression/issue/tui-app-tty-pattern.test.ts` | 读 piped stdin 后 reopen `/dev/tty` | — | — | **实测已通过**，移出 T03 簇 |
+| `test/cli/run/no-orphans.test.ts` | Ctrl-Z stop 桥接 + `setsid` 场景 30s 超时（历史记录过 tpgid=0 异常,本轮换了新症状）| A | rust | 待复测（T03a/b 后是否顺带转绿）|
 
 ### 根因已定位：OHOS 拒绝在 PTY **master** 上做「排空/冲刷」型 `tcsetattr`（`738701916` 已修，验证中）
 
@@ -202,9 +202,41 @@ close(slave)  -> poll(master) = 0x10 (POLLHUP)
 
 差异完全落在噪声内，且**失败项每次都在换**（`receives echoed output` / `can write ANSI color codes` / `creates subprocess with terminal attached` / `handles Unicode characters` 轮流出现）。所以"等待预算不够"这个解释本身也不完整——真实情况是这批用例在审计开销下整体变成了**摇摆**，不是差那几十毫秒。既然没证明收益，改动已撤销，不往上游测试文件里加无效 churn。
 
-**另有一个不是时序的真实问题**：`exit callback is called on close` 用的是 `await promise`（无固定 sleep），把测试超时放宽到 30s 仍然跑满 30s 不触发。单独跑是 0ms 立即触发；先造 N 个 Terminal 再测则**间歇性**丢失（N=30 四次里三次 OK 一次超时，非单调，排除资源耗尽）。GC 假设也已证伪（显式丢引用 + 强制 `Bun.gc(true)` 后回调照常触发）。这是 exit 回调投递路径上的一个偶发竞争，根因未定位，需要单独立项。
+**另有一个不是时序的真实问题**：`exit callback is called on close` 用的是 `await promise`（无固定 sleep），把测试超时放宽到 30s 仍然跑满 30s 不触发。单独跑是 0ms 立即触发；先造 N 个 Terminal 再测则**间歇性**丢失（N=30 四次里三次 OK 一次超时，非单调，排除资源耗尽）。GC 假设也已证伪（显式丢引用 + 强制 `Bun.gc(true)` 后回调照常触发）。这是 exit 回调投递路径上的一个偶发竞争 —— **已定位并修复，见下节 T03b**。
 
-**结论**：T03 的 raw-mode 部分已真修（见上），剩余部分**不是**一个可以靠调预算解决的问题，需要针对"审计开销放大下的 PTY 事件投递竞争"单独深挖。在那之前这些条目应保留 quarantine。
+### T03b 根因已定位并修复：exit 通知在 `init_terminal` 期间触发就被永久丢弃（`4c3bee75b`）
+
+**定位过程中先推翻了自己的一个结论。** 最初用 `grep "call_exit_callback" | tail -1` 看日志，读到 `DROP at try_get`，据此判断"JS wrapper 已经没了"，并提出 `js::to_js` 在 GC 压力下返回空值的假设。**这是错的** —— `tail -1` 取到的是**上一个** terminal 的记录。改成给每条日志打上 `T@<地址>` 标签、按地址分组之后，真实的生命周期才显出来：
+
+```
+T@5b2f182bc0 on_reader_finished(exit_code=1) finalized=false jsref=Weak(empty) READER_DONE=false
+T@5b2f182bc0 call_exit_callback: DROP at try_get
+T@5b2f182bc0 init: callbacks registered, calling read()      ← 注意顺序
+T@5b2f182bc0 on_reader_finished(exit_code=1) ... READER_DONE=true
+T@5b2f182bc0   -> EARLY RETURN (READER_DONE already set)
+```
+
+第一行出现在 `init: callbacks registered` **之前**：reader 在 `init_terminal` 还没建出 JS wrapper 时就已经以 `exit_code=1`（错误路径）完成了。此时 `this_value` 是空的 → `try_get()` 返回 `None` → 回调被静默丢弃；而 `on_reader_finished` 会置 `READER_DONE`，**这条路径是一次性的**，后面真正的 exit 通知全部走 EARLY RETURN。用户的 `exit` 回调于是永远不会触发。`jsref=Weak(empty)` 也顺带证伪了之前的 GC 假设：不是 wrapper 被回收，是它**还没被创建**。
+
+**第一次修复不完整，被自己的数据打回。** 把 `terminal.reader.with_mut(|r| r.read())` 从 wrapper 创建之前挪到回调注册之后，复现率从 ~50% 降到 25% —— 降了但没归零，说明触发源不止 `read()`。实际是更早的 `reader.start()`（~line 550）。
+
+**改用第二种思路：不抢时序，改成不丢通知。** 继续往前挪初始化要穿过 `writer.start()`/`reader.start()` 两条失败清理路径，风险高且仍然是在赌窗口位置。改为加一个 `deferred_exit: Cell<Option<i32>>`：`on_reader_finished` 发现 wrapper 未就绪时把 exit code 暂存，`init_terminal` 末尾统一回放。这样天然覆盖 `writer.start()` / `reader.start()` / `read()` **全部三个同步完成源**，不依赖"窗口到底在哪"这个判断。
+
+验证（全部带 `BUN_JSC_randomIntegrityAuditRate=1.0`）：
+
+| 场景 | 结果 |
+|---|---|
+| 最小复现 ×16 | **16/16 通过**（修复前 ~50% 超时，第一次修复后 25%）|
+| 前置 N=30 / N=60 / N=100 个 terminal，各 ×8 | **24/24 通过** |
+| `exit callback` 整组 | 4 pass / 0 fail |
+| `exit callback is called on close`（原先跑满 30s）×5 | **5/5 通过** |
+| `terminal.test.ts` 整文件 | 94 pass / 2 fail，剩余是无关的 `handles Unicode characters` 摇摆 |
+
+分类应从 class C 改回 **class A（真实 bun 缺陷）**，且**不是 OHOS 特有** —— 这段代码是全平台共享的，OHOS 只是通过审计开销把窗口放大到了必现级别。
+
+**收尾踩的坑（记下来防止再犯）**：移除插桩的 commit `7b260119a` 把紧邻插桩块的 `pub mod js { ... }` 一起删了 —— 那是原有的 generated bindings re-export，不是插桩，只是位置挨着。16 个 `cannot find module js` 编译错误，浪费一轮 18min 构建。`4baab5bcb` 恢复。**教训**：声称"diff 是纯删除"不够，还要确认删除的**每一段**都属于插桩本身；`git diff <修复commit> -- <文件> | grep "^+"` 应为空是必要条件而非充分条件。
+
+**结论**：T03 拆成两个独立根因，**两个都已真修** —— T03a raw mode（`738701916`，OHOS 平台特有）、T03b exit 回调竞争（`4c3bee75b`，上游共享缺陷）。剩下的 `handles Unicode characters` 等属于前面记录的"审计开销下整体摇摆"，是 class C 且已证明不是调预算能解决的。
 
 **另外**：`tty-reopen-after-stdin-eof` 和 `tui-app-tty-pattern` 实测**已经通过**——上面表格里原先列为"可能同根因"，应从 T03 簇移出。
 
