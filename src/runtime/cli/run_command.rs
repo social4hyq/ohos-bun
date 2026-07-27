@@ -1139,7 +1139,9 @@ Full documentation is available at <magenta>https://bun.com/docs/cli/run<r>
         // `Transpiler::init`).
         bun_http::async_http::load_env(unsafe { vm.log.unwrap().as_mut() }, vm.env_loader());
 
+        t04_debug_fd_checkpoint("before load_extra_env_and_source_code_printer");
         vm.load_extra_env_and_source_code_printer();
+        t04_debug_fd_checkpoint("after load_extra_env_and_source_code_printer");
         vm.is_main_thread = true;
         bun_jsc::virtual_machine::IS_MAIN_THREAD_VM.set(true);
 
@@ -1410,6 +1412,7 @@ impl Run {
     /// fire `beforeExit`/`exit`, then `globalExit`. Called under the JSC API
     /// lock via `hold_api_lock`.
     fn start(&mut self) -> ! {
+        t04_debug_fd_checkpoint("Run::start() entry");
         // deref the raw VM/ctx pointers once so the rest of this
         // body can borrow `vm` and `ctx` alongside `self.entry_path`.
         // SAFETY: `self.vm` is the boxed-and-leaked main-thread VM; `self.ctx`
@@ -1567,6 +1570,7 @@ impl Run {
             }
         }
 
+        t04_debug_fd_checkpoint("before vm.load_entry_point");
         match vm.load_entry_point(entry) {
             Ok(promise) => {
                 // SAFETY: `promise` is a live GC cell returned by the module loader.
