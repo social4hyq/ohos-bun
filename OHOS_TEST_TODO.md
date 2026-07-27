@@ -452,7 +452,7 @@ test/js/node/test/parallel/test-trace-events-fs-async.js
 test/js/node/test/parallel/test-trace-events-fs-sync.js
 ```
 
-（`child-process-rlimit-nofile.test.ts` **已修复并真机验证**——两个叠加问题：① 沙箱 `/bin/sh` 是 mksh，其 `ulimit` builtin 是**完全 no-op**（设/读皆无效，实测读回为空、子进程看到未变的限制）；② 换能用的 shell 后又暴露 `RealFS::adjust_ulimit` 的真 bug——target 超过当前 hard limit 时它试图连 hard 一起抬，非特权进程 EPERM 整个静默失败，bun 就带着 256 个 fd 的预算跑全程。修复=测试侧换 zsh（`b6e5798e5` 的 test 部分）+ 回退到 Node 语义"soft 抬到 hard 允许的最高"（同 commit 的 rust 部分）。`test-fs-write-sigxfsz.js` 同一个 mksh 根因，测试侧换 zsh 即通过（`631b5664b`）——bun 启动时 `SIGXFSZ→SIG_IGN`，越限写返回 EFBIG 正是 Node 语义。）
+（`child-process-rlimit-nofile.test.ts` **已修复并真机验证**——两个叠加问题：① 沙箱 `/bin/sh` 是 mksh，其 `ulimit` builtin 是**完全 no-op**（设/读皆无效，实测读回为空、子进程看到未变的限制）；② 换能用的 shell 后又暴露 `RealFS::adjust_ulimit` 的真 bug——target 超过当前 hard limit 时它试图连 hard 一起抬，非特权进程 EPERM 整个静默失败，bun 就带着 256 个 fd 的预算跑全程。修复=测试侧换 zsh（`b6e5798e5` 的 test 部分）+ 回退到 Node 语义"soft 抬到 hard 允许的最高"（同 commit 的 rust 部分，**已真机验证**：`ulimit -Sn 256` 后 bun 正确抬到 32768，两个测试 4/4 全过；spawn 簇回归 135/5/1 pass 零影响）。`test-fs-write-sigxfsz.js` 同一个 mksh 根因，测试侧换 zsh 即通过（`631b5664b`）——bun 启动时 `SIGXFSZ→SIG_IGN`，越限写返回 EFBIG 正是 Node 语义。）
 
 （`test-fs-link.js`/`test-fs-promises.js`/`test-fs-stat-date.mjs` 已并入 T06，避免重复计数）
 
