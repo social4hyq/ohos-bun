@@ -76,7 +76,7 @@ mod t24_debug {
     }
 
     /// Call at the very top of `do_read_loop()`, before touching any shared state.
-    pub fn enter_do_read_loop(addr: usize) {
+    pub(super) fn enter_do_read_loop(addr: usize) {
         if !enabled() {
             return;
         }
@@ -93,7 +93,7 @@ mod t24_debug {
 
     /// Call unconditionally on every exit path from `do_read_loop()` (a
     /// `Drop` guard, so early `return`s are covered automatically).
-    pub fn exit_do_read_loop(addr: usize) {
+    pub(super) fn exit_do_read_loop(addr: usize) {
         if !enabled() {
             return;
         }
@@ -105,7 +105,7 @@ mod t24_debug {
     }
 
     /// Call at the top of `on_ready()`, before scheduling the WorkPoolTask.
-    pub fn on_ready(addr: usize) {
+    pub(super) fn on_ready(addr: usize) {
         if !enabled() {
             return;
         }
@@ -123,7 +123,7 @@ mod t24_debug {
 
     /// RAII guard so every `do_read_loop()` return path (there are several)
     /// calls `exit_do_read_loop` exactly once, without touching each one by hand.
-    pub struct ExitGuard(pub usize);
+    pub(super) struct ExitGuard(pub(super) usize);
     impl Drop for ExitGuard {
         fn drop(&mut self) {
             exit_do_read_loop(self.0);
@@ -132,9 +132,9 @@ mod t24_debug {
 }
 #[cfg(not(target_env = "ohos"))]
 mod t24_debug {
-    pub fn enter_do_read_loop(_addr: usize) {}
-    pub fn on_ready(_addr: usize) {}
-    pub struct ExitGuard(pub usize);
+    pub(super) fn enter_do_read_loop(_addr: usize) {}
+    pub(super) fn on_ready(_addr: usize) {}
+    pub(super) struct ExitGuard(pub(super) usize);
     impl Drop for ExitGuard {
         fn drop(&mut self) {}
     }
