@@ -129,13 +129,42 @@ execlp("bash", "bash", "-c", "pwd", (char*)NULL);
 
 ---
 
-## T04 — spawn fd 所有权 bug（历史已记录，本轮复现，仍是最大已知簇）
+## T04 — spawn fd 所有权 bug（历史已记录，本轮找到干净的最小复现，根因缩小到具体代码路径，未修）
 
-对应 `OHOS_TEST_STATUS.md` 第八/九轮记录的"字面 fd 数字作 stdio 导致父进程自身 fd 失效"，一直未修。
+对应 `OHOS_TEST_STATUS.md` 第八/九轮记录的"字面 fd 数字作 stdio 导致父进程自身 fd 失效"，一直未修。本轮（2026-07-27）用 T01 修复后的二进制（`e39db04d6`）重新排查，找到了一个干净、完全脱离 `bun:test` 框架的最小复现，把触发条件缩小到很精确的一点。
+
+### 最小复现（关键：fd1/fd2 必须是「管道」，文件/TTY 都不触发）
+
+```js
+// node 包装脚本：用 stdio:["ignore","pipe","pipe"] 拉起 bun ——
+// 这正是 scripts/runner.node.mjs:1250 起跑每个测试文件时用的确切 stdio 配置。
+import { spawn } from "node:child_process";
+spawn(bunPath, ["repro.ts"], { stdio: ["ignore", "pipe", "pipe"] });
+```
+```js
+// repro.ts —— 在上面的包装器下跑：
+import { fstatSync } from "fs";
+console.log("before:", (()=>{try{fstatSync(1);return "OK"}catch(e){return e.message}})());
+Bun.spawn({ cmd: ["node","-e","1"], stdout: 1, stderr: 2 });
+Bun.spawn({ cmd: ["node","-e","1"], stdout: 1, stderr: 2 });
+// 不需要 await 子进程退出、不需要 Bun.gc()、不需要任何 GC/finalizer 时序——
+// 两个 Bun.spawn() 调用一执行完，父进程自己的 fd 1/2 立刻就坏了：
+console.log("after:", (()=>{try{fstatSync(1);return "OK"}catch(e){return e.message}})());
+// → "EBADF: bad file descriptor, fstat"
+```
+
+**排除过程**（缩小范围用的所有对照，均在 `e39db04d6` 上真机验证）：
+- fd1/fd2 是常规文件（`> out.log 2> err.log`）—— **不复现**。
+- fd1/fd2 是 TTY（直接在终端里跑 `bun -e ...`）—— **不复现**。
+- fd1/fd2 是管道（`node:child_process.spawn(..., {stdio:["ignore","pipe","pipe"]})`)—— **复现**，且是"两次 `Bun.spawn` 调用一返回就立刻坏"，不需要等子进程退出、不需要 `Bun.gc()`、不需要 `bun:test` 框架参与。
+- 加大 `BUN_GARBAGE_COLLECTOR_LEVEL=1`、`BUN_JSC_randomIntegrityAuditRate=1.0` 等 runner 专属 env——单独加都不影响是否复现（确认不是 GC/finalizer 时序问题，是同步发生的）。
+- `bun test -t "..."` 直接跑同一个用例（fd1/2 是调用者终端的 TTY）——**不复现**；只有真正经过 runner 把 fd1/2 换成管道才复现。这也解释了为什么这个 bug 这么多轮都没有被单独用 `bun test <file>` 复测排除掉——裸测必须经过 runner 的确切 stdio 配置才能撞见。
+
+**结论**：`stdout: 1`/`stderr: 2` 会命中 `src/runtime/api/bun/spawn/stdio.rs::extract()` 里的"自然位置"特判（`i==1 && tag==StdOut` / `i==2 && tag==StdErr` → `Stdio::Inherit`），本应该是纯粹的"什么都不做,子进程直接继承这个 fd"语义。但当这个 fd 底层是一个**管道**时，父进程自己的这个 fd 会在 `Bun.spawn()` 调用返回后就被弄坏——暗示 `Stdio::Inherit` 或者更底层的 dup2/cloexec 处理路径对"这个 fd 恰好是个管道"这件事做了额外的、错误的操作（可能是把它当成了需要注册/托管的 pipe 对象，而不是纯粹继承）。具体是哪一步做的还没有继续往下挖（下一步建议看 `stdio.rs` 里 `Fd`→`SpawnOptionsStdio` 的转换、以及 libuv/bun 自己的 pipe 封装是否对"看起来像 pipe 的 fd"做了特殊分支）。
 
 | 文件 | 症状 | 分类 | 层级 | 状态 |
 |---|---|---|---|---|
-| `test/js/bun/spawn/spawn.test.ts` | `close handling > #0/#1...`、`with BUN_FEATURE_FLAG_FORCE_WAITER_THREAD`（`EBADF: bad file descriptor, fstat`）| A | rust | 历史已知,未修 |
+| `test/js/bun/spawn/spawn.test.ts` | `close handling` 描述块 64 个组合里,凡是 `stdout===1` 或 `stderr===2`（不管 stdin/其余参数是什么）全部命中,28/64 全军覆没；另有 `with BUN_FEATURE_FLAG_FORCE_WAITER_THREAD` 一个不相关的慢用例 | A | rust | 根因已缩小到具体代码路径（见上）,待继续查+修 |
 | `test/js/bun/spawn/spawn_waiter_thread.test.ts` | issue #9404 | A | rust | 历史已知,未修 |
 | `test/js/bun/spawn/spawn-pipe-read-error-leak.test.ts` | `PipeReader is freed when a subprocess stdout read fails` | A | rust | 历史已知,未修 |
 | `test/js/bun/spawn/spawn-pipe-stale-fd-unregister.test.ts` | `FilePoll teardown tolerates an fd closed while still registered` | A | rust | 历史已知,未修 |
