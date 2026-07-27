@@ -129,11 +129,11 @@ execlp("bash", "bash", "-c", "pwd", (char*)NULL);
 
 ---
 
-## T04 — spawn fd 所有权 bug（历史已记录，本轮找到干净的最小复现，根因缩小到具体代码路径，未修）
+## T04 — bun 启动阶段就弄坏自己的 fd 1/2（历史记录的"spawn fd 所有权 bug"是误诊，真正根因在启动路径，与 `Bun.spawn` 无关，未修）
 
-对应 `OHOS_TEST_STATUS.md` 第八/九轮记录的"字面 fd 数字作 stdio 导致父进程自身 fd 失效"，一直未修。本轮（2026-07-27）用 T01 修复后的二进制（`e39db04d6`）重新排查，找到了一个干净、完全脱离 `bun:test` 框架的最小复现，把触发条件缩小到很精确的一点。
+对应 `OHOS_TEST_STATUS.md` 第八/九轮记录的"字面 fd 数字作 stdio 导致父进程自身 fd 失效"。本轮（2026-07-27）用 T01 修复后的二进制（`e39db04d6`）深入排查，**推翻了历史上"跟 `Bun.spawn` 的 stdio 处理有关"的假设**——真正根因在 bun 自己的启动路径,在任何用户代码跑起来之前就已经发生,和 `Bun.spawn`/字面 fd 数字完全无关。
 
-### 最小复现（关键：fd1/fd2 必须是「管道」，文件/TTY 都不触发）
+### 决定性复现：不需要 `Bun.spawn`，第一行用户代码执行前 fd1 就已经坏了
 
 ```js
 // node 包装脚本：用 stdio:["ignore","pipe","pipe"] 拉起 bun ——
@@ -142,34 +142,34 @@ import { spawn } from "node:child_process";
 spawn(bunPath, ["repro.ts"], { stdio: ["ignore", "pipe", "pipe"] });
 ```
 ```js
-// repro.ts —— 在上面的包装器下跑：
+// repro.ts —— 全文件只有这一行，不 import Bun.spawn，不做任何 spawn 调用：
 import { fstatSync } from "fs";
 console.log("before:", (()=>{try{fstatSync(1);return "OK"}catch(e){return e.message}})());
-Bun.spawn({ cmd: ["node","-e","1"], stdout: 1, stderr: 2 });
-Bun.spawn({ cmd: ["node","-e","1"], stdout: 1, stderr: 2 });
-// 不需要 await 子进程退出、不需要 Bun.gc()、不需要任何 GC/finalizer 时序——
-// 两个 Bun.spawn() 调用一执行完，父进程自己的 fd 1/2 立刻就坏了：
-console.log("after:", (()=>{try{fstatSync(1);return "OK"}catch(e){return e.message}})());
-// → "EBADF: bad file descriptor, fstat"
+// → "before: EBADF: bad file descriptor, fstat"     ←第一行用户代码就已经坏了！
 ```
 
-**排除过程**（缩小范围用的所有对照，均在 `e39db04d6` 上真机验证）：
-- fd1/fd2 是常规文件（`> out.log 2> err.log`）—— **不复现**。
-- fd1/fd2 是 TTY（直接在终端里跑 `bun -e ...`）—— **不复现**。
-- fd1/fd2 是管道（`node:child_process.spawn(..., {stdio:["ignore","pipe","pipe"]})`)—— **复现**，且是"两次 `Bun.spawn` 调用一返回就立刻坏"，不需要等子进程退出、不需要 `Bun.gc()`、不需要 `bun:test` 框架参与。
-- 加大 `BUN_GARBAGE_COLLECTOR_LEVEL=1`、`BUN_JSC_randomIntegrityAuditRate=1.0` 等 runner 专属 env——单独加都不影响是否复现（确认不是 GC/finalizer 时序问题，是同步发生的）。
-- `bun test -t "..."` 直接跑同一个用例（fd1/2 是调用者终端的 TTY）——**不复现**；只有真正经过 runner 把 fd1/2 换成管道才复现。这也解释了为什么这个 bug 这么多轮都没有被单独用 `bun test <file>` 复测排除掉——裸测必须经过 runner 的确切 stdio 配置才能撞见。
+### 排除过程（均在 `e39db04d6` 上真机验证，按时间顺序）
 
-**结论**：`stdout: 1`/`stderr: 2` 会命中 `src/runtime/api/bun/spawn/stdio.rs::extract()` 里的"自然位置"特判（`i==1 && tag==StdOut` / `i==2 && tag==StdErr` → `Stdio::Inherit`），本应该是纯粹的"什么都不做,子进程直接继承这个 fd"语义。但当这个 fd 底层是一个**管道**时，父进程自己的这个 fd 会在 `Bun.spawn()` 调用返回后就被弄坏——暗示 `Stdio::Inherit` 或者更底层的 dup2/cloexec 处理路径对"这个 fd 恰好是个管道"这件事做了额外的、错误的操作（可能是把它当成了需要注册/托管的 pipe 对象，而不是纯粹继承）。具体是哪一步做的还没有继续往下挖（下一步建议看 `stdio.rs` 里 `Fd`→`SpawnOptionsStdio` 的转换、以及 libuv/bun 自己的 pipe 封装是否对"看起来像 pipe 的 fd"做了特殊分支）。
+1. 最初以为和 `Bun.spawn({stdout:1, stderr:2})` 有关（两次 spawn 调用一返回,父进程 fd 就坏）——这是本轮一开始复现到的现象，但只是**表象**。
+2. 深挖 `src/runtime/api/bun/spawn/stdio.rs::extract()`,确认字面 fd 1/2 命中"自然位置"特判会转成 `Stdio::Inherit`,这个分支只看数字（0/1/2）不看 fd 实际类型,理论上不该有 pipe/file 差异。
+3. **决定性反例**（上面的复现代码）：把 `Bun.spawn` 调用整个删掉,只留 `fstatSync(1)`——**照样坏**！证明和 `Bun.spawn`、和 stdio.rs 的任何逻辑都没有关系。
+4. 排除"OHOS fstat 对 pipe fd 天生不可靠"：写一个完全不经过 bun 的纯 C 二进制,套同样的 `stdio:["ignore","pipe","pipe"]`，`fstat(1)` 完全正常（`mode=0140000` = `S_IFSOCK`——**Node.js 在这个平台上的 `"pipe"` stdio 实际上是用 socket（socketpair）实现的，不是传统匿名管道**）。
+5. 排除"CLI 层面就坏"：`bun --version`、`bun -e ""`（落到打印 help,不真正跑脚本）在同样的管道 stdio 下都完全正常。**只有真正初始化完整 JS VM 去跑一个脚本时才会坏**——把范围缩小到"完整脚本执行路径"上的某处启动逻辑,而不是 CLI 参数解析阶段。
+
+### 结论（比最初的" spawn fd 所有权"假设精确得多，但还没钉死具体代码行）
+
+bun 在真正开始跑用户脚本之前的启动阶段（VM 初始化/模块系统初始化,具体哪一步未定位）,如果自己的 fd 1 和/或 fd 2 底层是一个 **socket 类型**的 fd（OHOS 上 Node.js/libuv 的"pipe" stdio 实际实现），会把这个 fd 弄坏——在任何用户代码执行前就已经发生，和 `Bun.spawn`、字面 fd 数字、GC 时序都无关。这解释了为什么 `spawn.test.ts` 里"close handling"64 个组合中只有 `stdout===1`/`stderr===2` 的 28 个失败——不是因为这两个字面数字触发了什么特殊逻辑，而是因为**测试断言本身用 `typeof stdout === "number"` 做门控**,其余组合（`"ignore"`/`Bun.stdout`/`undefined`）根本没有执行 `fstatSync` 检查，不代表 fd 没坏，只是没人问。真实受损范围可能不止这 28 个用例——任何在 runner（`stdio:["ignore","pipe","pipe"]`）下跑、且用到自己 fd 1/2 的测试理论上都受影响，只是大多数测试不会主动 `fstatSync(1)/(2)` 去暴露它。
+
+**下一步**：需要在 bun 启动路径里找 fstat/isatty/socket 探测相关代码（尝试过 grep `isTTY`/`S_ISSOCK`/`O_NONBLOCK` 等关键词，没能一次定位，需要更系统地过一遍 VM 启动序列，或者插桩重编）。
 
 | 文件 | 症状 | 分类 | 层级 | 状态 |
 |---|---|---|---|---|
-| `test/js/bun/spawn/spawn.test.ts` | `close handling` 描述块 64 个组合里,凡是 `stdout===1` 或 `stderr===2`（不管 stdin/其余参数是什么）全部命中,28/64 全军覆没；另有 `with BUN_FEATURE_FLAG_FORCE_WAITER_THREAD` 一个不相关的慢用例 | A | rust | 根因已缩小到具体代码路径（见上）,待继续查+修 |
-| `test/js/bun/spawn/spawn_waiter_thread.test.ts` | issue #9404 | A | rust | 历史已知,未修 |
+| `test/js/bun/spawn/spawn.test.ts` | `close handling` 描述块 64 个组合里,凡是 `stdout===1` 或 `stderr===2`（不管 stdin/其余参数是什么）全部命中,28/64 全军覆没——**真正根因见上,和 spawn 本身无关**；另有 `with BUN_FEATURE_FLAG_FORCE_WAITER_THREAD` 一个不相关的慢用例 | A | rust | 根因缩小到启动路径,具体代码行待续查+修 |
+| `test/js/bun/spawn/spawn_waiter_thread.test.ts` | issue #9404 | A | rust | 历史已知,未修（本轮未复查,不确定是否同根因）|
 | `test/js/bun/spawn/spawn-pipe-read-error-leak.test.ts` | `PipeReader is freed when a subprocess stdout read fails` | A | rust | 历史已知,未修 |
 | `test/js/bun/spawn/spawn-pipe-stale-fd-unregister.test.ts` | `FilePoll teardown tolerates an fd closed while still registered` | A | rust | 历史已知,未修 |
 | `test/js/bun/spawn/spawn-stdin-large-buffer.test.ts` | 大 stdin buffer 截断（历史记录过隔离时曾 segfault，本轮跑通但仍断言失败）| A | rust | 历史已知,未修 |
-| `test/js/node/test/parallel/test-net-socket-constructor.js` | `cluster.fork({stdio:['pipe','pipe','pipe','ipc','pipe','pipe','pipe']})` 的 worker 退出码 1 而非 0 — 自定义 stdio 数组场景,疑似同一 fd 所有权 bug 的另一种触发形态 | A | rust | 待查（怀疑同根因）|
+| `test/js/node/test/parallel/test-net-socket-constructor.js` | `cluster.fork({stdio:['pipe','pipe','pipe','ipc','pipe','pipe','pipe']})` 的 worker 退出码 1 而非 0 — `cluster.fork()` 会拉起一个新 bun worker 进程,且指定了 pipe stdio,很可能正是 T04 新根因（bun 启动路径遇到 socket 型 fd1/2 时自损）命中的另一个入口 | A | rust | 待查（现在怀疑和 T04 是同一根因,而不是"fd 所有权"）|
 
 ---
 
