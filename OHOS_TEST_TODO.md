@@ -448,8 +448,6 @@ RangeError: The value of "err" is out of range. It must be a negative integer. R
 以下与 `OHOS_TEST_STATUS.md` 第九轮记录的 16 个"E 类 node-vendored 平台差异"文件名对得上，本轮复核确认依然失败，不是陈旧条目：
 
 ```
-test/js/node/test/parallel/test-process-constants-noatime.js
-test/js/node/test/parallel/test-process-getgroups.js
 test/js/node/test/parallel/test-trace-events-fs-async.js
 test/js/node/test/parallel/test-trace-events-fs-sync.js
 test/js/node/child_process/child-process-rlimit-nofile.test.ts
@@ -457,7 +455,12 @@ test/js/node/child_process/child-process-rlimit-nofile.test.ts
 
 （`test-fs-link.js`/`test-fs-promises.js`/`test-fs-stat-date.mjs` 已并入 T06，避免重复计数）
 
-分类 E，层级 n/a，状态：保留。
+**后续修正（同一轮深挖）**：这个清单里原本还有 `test-process-constants-noatime.js` 和 `test-process-getgroups.js`，复核深挖后**两个都不是"平台差异无需管"**：
+
+- `test-process-constants-noatime.js`——vendored `common.isLinux` 是 `process.platform === 'linux'`，openharmony 不算，测试走了"该常量不应存在"的 else 分支，**断言方向本身就是错的**。改 `common/index.js`（OHOS 即 Linux 内核，本仓库 `test/harness.ts` 早就这么判定）修复，`5fb7cf366`，A/B 实测 11/7→14/4 零回归。
+- `test-process-getgroups.js`——**bun 的 `process.getgroups()` 实现就是错的**（对所有平台）：Node 文档明确"POSIX 未规定是否含有效 gid，Node 保证包含"，bun 直接返回裸 `getgroups(2)`（仅附加组）。OHOS 上 egid `20020101` 不在附加组列表，与 `id -G` 必然不等。修 `src/jsc/bindings/BunProcess.cpp`（缺失时追加 egid，**平台无关修复**），`35eaf7a0e`，等容器编译验证。
+
+分类 E，层级 n/a，状态：保留（仅列出的 3 个；trace-events 两个尚未单独深挖，rlimit 的见下方独立条目）。
 
 ---
 
