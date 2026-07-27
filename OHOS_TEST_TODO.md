@@ -193,7 +193,18 @@ close(slave)  -> poll(master) = 0x10 (POLLHUP)
 
 **所以这一批的正确归类是 class C（测试自身预算），不是 bun 运行时缺陷。** 注意这不等于"方法学错误、可以忽略"——真实 CI 同样设这个变量，所以在 CI 上它们确实会失败；只是根因在"固定 100ms 预算对这个平台 + 审计开销不够"，而不是 PTY 功能坏了。
 
-**修复方向**：给这些用例加 OHOS 超时倍数，仓库里已有先例（`expectations.txt` 里 `hot.test.ts` 就注过 "OHOS timeout multipliers applied (6x/3x)"）。属于低成本 test 层改动，不需要容器重编。
+**试过超时倍数，实测无效，已撤销**。按 `hot.test.ts` 先例给 12 处等 PTY 数据的 `Bun.sleep` 加了 6x OHOS 倍数，A/B 各跑 4 遍：
+
+| | run1 | run2 | run3 | run4 | 均值 |
+|---|---|---|---|---|---|
+| 带倍数 | 94/2 | 94/2 | 91/5 | 94/2 | ~93.2 pass |
+| 原版 | 94/2 | 92/4 | 93/3 | 93/3 | ~93.0 pass |
+
+差异完全落在噪声内，且**失败项每次都在换**（`receives echoed output` / `can write ANSI color codes` / `creates subprocess with terminal attached` / `handles Unicode characters` 轮流出现）。所以"等待预算不够"这个解释本身也不完整——真实情况是这批用例在审计开销下整体变成了**摇摆**，不是差那几十毫秒。既然没证明收益，改动已撤销，不往上游测试文件里加无效 churn。
+
+**另有一个不是时序的真实问题**：`exit callback is called on close` 用的是 `await promise`（无固定 sleep），把测试超时放宽到 30s 仍然跑满 30s 不触发。单独跑是 0ms 立即触发；先造 N 个 Terminal 再测则**间歇性**丢失（N=30 四次里三次 OK 一次超时，非单调，排除资源耗尽）。GC 假设也已证伪（显式丢引用 + 强制 `Bun.gc(true)` 后回调照常触发）。这是 exit 回调投递路径上的一个偶发竞争，根因未定位，需要单独立项。
+
+**结论**：T03 的 raw-mode 部分已真修（见上），剩余部分**不是**一个可以靠调预算解决的问题，需要针对"审计开销放大下的 PTY 事件投递竞争"单独深挖。在那之前这些条目应保留 quarantine。
 
 **另外**：`tty-reopen-after-stdin-eof` 和 `tui-app-tty-pattern` 实测**已经通过**——上面表格里原先列为"可能同根因"，应从 T03 簇移出。
 
