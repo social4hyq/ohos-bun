@@ -929,3 +929,42 @@ node scripts/runner.node.mjs --exec-path=<bun> --results-json=logs/refail-serial
 - 平台限制/缺服务 12 个应逐步收窄为 expectations 条目或文件内 skip，从 CI gate 分母里理清。
 
 ---
+
+## 第十轮（2026-07-26/27）：拆掉 quarantine 的真实基线 + 3 个 Rust/C++ 缺陷修复
+
+**动机**：此前几轮的通过率提升有相当部分来自 `test/expectations.txt` 的整文件 quarantine——runner 在任何用例执行前就把这些文件移出运行集（`getRelevantTests()`），它们既不算通过也不算失败，直接从分母消失。本轮目标是拿到**不被 quarantine 遮蔽**的真实分母，再逐个修。
+
+### 三口径通过率（文件级，分母 5515）
+
+| 口径 | 通过/总数 | 通过率 | 失败 |
+|---|---|---|---|
+| ① 基线（修复前，`--ignore-expectations=OPENHARMONY`）| 5397/5515 | **97.86%** | 118 |
+| ② 本轮修复后（同口径，可直接对比）| 5423/5515 | **98.33%** | 92（净减 26）|
+| ③ 扣除 class B/D/E 后（真实可修口径）| 5423/5483 | **98.91%** | 60（含 bake/T18 共 11）|
+
+口径③剔除的 32 个：`fs.watch` 递归内核不支持(8)、网络/包管理器超时(7)、上游未发布 OHOS 原生包(7, sharp/prisma/resvg/canvas/astro/rspack/tsgo)、FUSE 沙箱拦截(2)、特权端口需 root(2)、IPv6 `localhost` 无 hosts 条目(2)、valkey 服务缺失(2)、compile target 不可下载(1)。
+
+工具：新增 `scripts/runner.node.mjs --ignore-expectations`（默认关闭，CI 行为不变）。原始数据 `logs/baseline-2026-07-26/`（基线）与 `logs/delta-2026-07-27/`（修复后逐文件复测）。
+
+### 修复的 3 个真实缺陷（均真机验证、零回归）
+
+1. **T04 — `statx(2)` 对 socket fd 报 `EBADF` 未降级**（`src/sys/lib.rs`）。OHOS 的 `statx` 对 socket 型 fd 返回 `EBADF`，不在 libuv 同款降级白名单里，于是这个本该降级到 `fstat(2)` 的假错误被原样抛给 `fstatSync()`。**推翻了第八/九轮"字面 fd 数字导致 spawn 破坏父进程 fd 所有权"的结论**——fd 从未损坏（`writeSync` 全程可写），坏的是 `fstatSync` 实现本身。`spawn.test.ts` 28 个失败转绿（135 pass/6 skip/0 fail）。
+
+2. **T24 — `ReadFile` 读循环被多个 worker 并发执行**（`src/runtime/webcore/blob/read_file.rs`）。`on_ready()` 每次可读事件都无条件 `WorkPool::schedule`，无任何 in-flight 检查；插桩实测**最多 6 个线程同时**在同一 `ReadFile` 上跑 `do_read_loop`，各自 `recv()` 同一 fd、各自往同一 buffer 追加。修复用三态所有权握手（`IDLE`/`RUNNING`/`RUNNING_PENDING`），既不并发也不丢唤醒。**上游共享代码的并发缺陷，非 OHOS 专属**——OHOS 因 stdio 走 socketpair 更易撞见。附带解决了 `bun-install-security-provider` 那个 100% 必现的 SIGSEGV（原以为是独立问题，实为同源）。
+
+3. **T03 — OHOS 拒绝在 PTY master 上做排空型 `tcsetattr`**（`src/jsc/bindings/wtf-bindings.cpp`）。独立 C 探针测得：master 上 `TCSADRAIN`/`TCSAFLUSH` 均 `EACCES`，`TCSANOW` 正常且新 termios 正确回读；slave 三者皆可。`ttySetMode()`（libuv 移植）硬编码 `TCSADRAIN`，而 `Bun.Terminal` 正是拿 master 调进来的。改为仅在 `EACCES` 时回退 `TCSANOW`。`Failed to set raw mode` 7 次→0 次。
+
+另有 19 条陈旧 quarantine 条目清理，其中最大一批是 `regression/issue/*` 标着 `[Flaky]` 的——**这些标签的年代早于「真实 CI 不用 `--parallel`」这一约定**（`ohos-full-test.yml` 头部注释明写），隔离单跑（即真实 CI 条件）全部 0 fail，从一开始就是并发假阳性。
+
+### 方法论：本轮踩到并记录的陷阱
+
+- **`ohos-trace-shim` 对 bun 的 read/write 不可见**：bun 走 rustix `linux_raw` 内联汇编，不经任何动态链接 libc 符号。但 **stdio 实际是 socketpair**，其 `send`/`recv` 走真 libc 符号——给 shim 补上这两个拦截后才抓到 T24 的关键证据。
+- **文件级计数会骗人**：T03 修复前后都是「4 通过/6 失败」，但底下换了一整批——7 个"新失败"在基线日志里 `grep -c` 为 0，修复前根本没执行到（被 `setRawMode` 抛错挡住），是新暴露的覆盖面而非回归。
+- **runner 注入 `BUN_JSC_randomIntegrityAuditRate=1.0`**：审计开销随堆大小增长，隔离下无害，大文件后半段可拖垮写死的 `Bun.sleep(100)`。为此试过加 OHOS 超时倍数，A/B 各跑 4 遍均值 93.2 vs 93.0（噪声内），**假设不成立已撤销**，不往上游测试文件加无效改动。
+- **长任务会被环境回收**：`run_in_background`、`setsid`、分块 560s 三种方式都被杀过。可靠做法是逐文件复测 + 断点续跑。
+
+### 下一轮优先级
+
+1. **T03 剩余的 exit 回调偶发丢失**——`await promise` 无固定 sleep，超时放宽到 30s 仍不触发；单独跑 0ms 立即触发，先造 N 个 Terminal 后间歇失败（非单调，排除耗尽；GC 假设亦已证伪）。真实竞争，未定位。
+2. **T18（bake dev，11 文件）**——本轮未跑完（每用例 60s 超时，主导耗时），需先拍板是否投入。
+3. 口径③里剩余 49 个真实问题的逐簇排查，详见 `OHOS_TEST_TODO.md`。
