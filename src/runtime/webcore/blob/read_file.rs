@@ -44,114 +44,6 @@ macro_rules! log {
     ($($t:tt)*) => { bun_output::scoped_log!(ReadFile, $($t)*) };
 }
 
-// TEMPORARY debug instrumentation for OHOS_TEST_TODO.md T24 (two OS threads
-// observed calling recv() concurrently on the same child-side stdin fd,
-// truncating/corrupting the assembled ArrayBuffer -- see the ledger for the
-// full trace-shim-based evidence trail). Tracks which `ReadFile` instances
-// (keyed by their own address) currently have a `do_read_loop()` call in
-// flight, and logs whether `on_ready()` ever schedules a new WorkPool task
-// for an instance that's already in flight -- the thing this is meant to
-// either confirm or rule out. Gated behind an env var so it's a no-op
-// otherwise; remove once T24's exact double-schedule trigger is pinned down.
-#[cfg(target_env = "ohos")]
-pub(crate) mod t24_debug {
-    use std::io::Write;
-    use std::sync::Mutex;
-
-    static IN_FLIGHT: Mutex<Vec<usize>> = Mutex::new(Vec::new());
-
-    fn enabled() -> bool {
-        std::env::var_os("BUN_OHOS_T24_DEBUG").is_some()
-    }
-
-    /// Generic one-line checkpoint, for tracing the call chain leading up to
-    /// (or bypassing) `do_read_loop`/`on_ready` -- e.g. from `Blob::do_read_file`
-    /// or `ReadFile::run`/`run_async`/`run_async_with_fd`, to find where a
-    /// socket-backed stdin read diverges from the pipe/regular-file case.
-    pub(crate) fn checkpoint(label: &str, addr: usize) {
-        if !enabled() {
-            return;
-        }
-        log(&format!("[{label}] ReadFile@{addr:#x}"));
-    }
-
-    fn log(line: &str) {
-        let tid = std::thread::current().id();
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/data/storage/el2/base/tmp/bun-t24-debug.log")
-        {
-            let _ = writeln!(f, "[tid={tid:?}] {line}");
-        }
-    }
-
-    /// Call at the very top of `do_read_loop()`, before touching any shared state.
-    pub(super) fn enter_do_read_loop(addr: usize) {
-        if !enabled() {
-            return;
-        }
-        let mut set = IN_FLIGHT.lock().unwrap();
-        if set.contains(&addr) {
-            log(&format!(
-                "*** CONCURRENT RE-ENTRY into do_read_loop for ReadFile@{addr:#x} -- already in flight! ***"
-            ));
-        } else {
-            log(&format!("enter do_read_loop for ReadFile@{addr:#x}"));
-        }
-        set.push(addr);
-    }
-
-    /// Call unconditionally on every exit path from `do_read_loop()` (a
-    /// `Drop` guard, so early `return`s are covered automatically).
-    pub(super) fn exit_do_read_loop(addr: usize) {
-        if !enabled() {
-            return;
-        }
-        let mut set = IN_FLIGHT.lock().unwrap();
-        if let Some(pos) = set.iter().rposition(|&x| x == addr) {
-            set.remove(pos);
-        }
-        log(&format!("exit do_read_loop for ReadFile@{addr:#x}"));
-    }
-
-    /// Call at the top of `on_ready()`, before scheduling the WorkPoolTask.
-    pub(super) fn on_ready(addr: usize) {
-        if !enabled() {
-            return;
-        }
-        let set = IN_FLIGHT.lock().unwrap();
-        let already = set.contains(&addr);
-        log(&format!(
-            "on_ready() for ReadFile@{addr:#x}{}",
-            if already {
-                " -- ALREADY IN FLIGHT, scheduling a concurrent do_read_loop run!"
-            } else {
-                ""
-            }
-        ));
-    }
-
-    /// RAII guard so every `do_read_loop()` return path (there are several)
-    /// calls `exit_do_read_loop` exactly once, without touching each one by hand.
-    pub(super) struct ExitGuard(pub(super) usize);
-    impl Drop for ExitGuard {
-        fn drop(&mut self) {
-            exit_do_read_loop(self.0);
-        }
-    }
-}
-#[cfg(not(target_env = "ohos"))]
-pub(crate) mod t24_debug {
-    pub(super) fn enter_do_read_loop(_addr: usize) {}
-    pub(super) fn on_ready(_addr: usize) {}
-    pub(crate) fn checkpoint(_label: &str, _addr: usize) {}
-    pub(super) struct ExitGuard(pub(super) usize);
-    impl Drop for ExitGuard {
-        fn drop(&mut self) {}
-    }
-}
-
 // ──────────────────────────────────────────────────────────────────────────
 // NewReadFileHandler
 // ──────────────────────────────────────────────────────────────────────────
@@ -617,7 +509,6 @@ impl ReadFile {
 
     pub fn on_ready(&mut self) {
         bloblog!("ReadFile.onReady");
-        t24_debug::on_ready(std::ptr::from_ref(self) as usize);
 
         // On macOS, we use one-shot mode, so:
         // - we don't need to unregister
@@ -840,12 +731,10 @@ impl ReadFile {
     }
 
     pub fn run(&mut self, task: *mut ReadFileTask) {
-        t24_debug::checkpoint("ReadFile::run", std::ptr::from_ref(self) as usize);
         self.run_async(task);
     }
 
     fn run_async(&mut self, task: *mut ReadFileTask) {
-        t24_debug::checkpoint("ReadFile::run_async", std::ptr::from_ref(self) as usize);
         #[cfg(windows)]
         {
             let _ = task;
@@ -943,10 +832,6 @@ impl ReadFile {
 
     #[cfg(not(windows))]
     fn run_async_with_fd(&mut self, fd: Fd) {
-        t24_debug::checkpoint(
-            "ReadFile::run_async_with_fd entry",
-            std::ptr::from_ref(self) as usize,
-        );
         if self.errno.is_some() {
             self.on_finish();
             return;
@@ -1000,19 +885,11 @@ impl ReadFile {
         // readable.
         if self.could_block {
             if bun_core::is_readable(fd) == bun_core::Pollable::NotReady {
-                t24_debug::checkpoint(
-                    "ReadFile::run_async_with_fd -> wait_for_readable (not yet readable)",
-                    std::ptr::from_ref(self) as usize,
-                );
                 self.wait_for_readable();
                 return;
             }
         }
 
-        t24_debug::checkpoint(
-            "ReadFile::run_async_with_fd -> do_read_loop (immediately readable)",
-            std::ptr::from_ref(self) as usize,
-        );
         // Take ownership before the first run: once this loop arms epoll via
         // `wait_for_readable`, `on_ready` can fire on the IO thread and must
         // see the loop as owned rather than scheduling a racing second run.
@@ -1031,9 +908,6 @@ impl ReadFile {
 
     #[cfg(not(windows))]
     fn do_read_loop(&mut self) {
-        let t24_debug_addr = std::ptr::from_ref(self) as usize;
-        t24_debug::enter_do_read_loop(t24_debug_addr);
-        let _t24_debug_guard = t24_debug::ExitGuard(t24_debug_addr);
         #[cfg(not(windows))]
         {
             // we hold a 64 KB stack buffer incase the amount of data to
