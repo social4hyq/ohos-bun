@@ -129,93 +129,38 @@ execlp("bash", "bash", "-c", "pwd", (char*)NULL);
 
 ---
 
-## T04 — bun 启动阶段就弄坏自己的 fd 1/2（历史记录的"spawn fd 所有权 bug"是误诊，真正根因在启动路径，与 `Bun.spawn` 无关，未修）
+## T04 — `statx(2)` 对 socket 型 fd 报 EBADF，bun 的 `fstatSync` 误当真错误抛出（已修复并真机验证）
 
-对应 `OHOS_TEST_STATUS.md` 第八/九轮记录的"字面 fd 数字作 stdio 导致父进程自身 fd 失效"。本轮（2026-07-27）用 T01 修复后的二进制（`e39db04d6`）深入排查，**推翻了历史上"跟 `Bun.spawn` 的 stdio 处理有关"的假设**——真正根因在 bun 自己的启动路径,在任何用户代码跑起来之前就已经发生,和 `Bun.spawn`/字面 fd 数字完全无关。
+对应 `OHOS_TEST_STATUS.md` 第八/九轮记录的"字面 fd 数字作 stdio 导致父进程自身 fd 失效"。本轮排查**完全推翻了"spawn fd 所有权"的原始假设**——fd 从头到尾都没坏，是 bun 的 `fstatSync()` 实现在特定条件下给出了错误答案。
 
-### 决定性复现：不需要 `Bun.spawn`，第一行用户代码执行前 fd1 就已经坏了
+### 根因
 
-```js
-// node 包装脚本：用 stdio:["ignore","pipe","pipe"] 拉起 bun ——
-// 这正是 scripts/runner.node.mjs:1250 起跑每个测试文件时用的确切 stdio 配置。
-import { spawn } from "node:child_process";
-spawn(bunPath, ["repro.ts"], { stdio: ["ignore", "pipe", "pipe"] });
-```
-```js
-// repro.ts —— 全文件只有这一行，不 import Bun.spawn，不做任何 spawn 调用：
-import { fstatSync } from "fs";
-console.log("before:", (()=>{try{fstatSync(1);return "OK"}catch(e){return e.message}})());
-// → "before: EBADF: bad file descriptor, fstat"     ←第一行用户代码就已经坏了！
-```
+`node_fs.rs::fstat()` 优先走 `statx(2)`（`SUPPORTS_STATX_ON_LINUX` 开关），失败时按 libuv 同款 errno 列表（`ENOSYS`/`EOPNOTSUPP`/`EPERM`/`EINVAL`）降级到普通 `fstat(2)`。**OHOS 的 `statx(2)` 对 socket 型 fd 返回的是 `EBADF`**（真机裸测证实：`syscall(SYS_statx, socket_fd, ...)` → `-1/EBADF`，而同一个 fd 上 `fstat(socket_fd, ...)` → `0` 成功）。`EBADF` 不在降级白名单里，于是这个本该降级处理的"假错误"被原样抛给了 JS 层的 `fstatSync()` 调用者。
 
-### 排除过程（均在 `e39db04d6` 上真机验证，按时间顺序）
+触发条件：fd1/2 底层是 **socket**——Node.js 在这个平台上的 `"pipe"` stdio 实际是用 socketpair 实现的（不是传统匿名管道），而 `scripts/runner.node.mjs:1250` 拉起每个测试文件用的正是 `stdio:["ignore","pipe","pipe"]`。这解释了为什么 `spawn.test.ts` "close handling" 64 个组合里只有 `stdout===1`/`stderr===2` 那 28 个报错——不是这两个字面数字触发了什么特殊 spawn 逻辑，纯粹是测试断言用 `typeof stdout === "number"` 做门控，只有这两种取值会真的去调用 `fstatSync`，其余组合根本没检查、不代表没受影响。
 
-1. 最初以为和 `Bun.spawn({stdout:1, stderr:2})` 有关（两次 spawn 调用一返回,父进程 fd 就坏）——这是本轮一开始复现到的现象，但只是**表象**。
-2. 深挖 `src/runtime/api/bun/spawn/stdio.rs::extract()`,确认字面 fd 1/2 命中"自然位置"特判会转成 `Stdio::Inherit`,这个分支只看数字（0/1/2）不看 fd 实际类型,理论上不该有 pipe/file 差异。
-3. **决定性反例**（上面的复现代码）：把 `Bun.spawn` 调用整个删掉,只留 `fstatSync(1)`——**照样坏**！证明和 `Bun.spawn`、和 stdio.rs 的任何逻辑都没有关系。
-4. 排除"OHOS fstat 对 pipe fd 天生不可靠"：写一个完全不经过 bun 的纯 C 二进制,套同样的 `stdio:["ignore","pipe","pipe"]`，`fstat(1)` 完全正常（`mode=0140000` = `S_IFSOCK`——**Node.js 在这个平台上的 `"pipe"` stdio 实际上是用 socket（socketpair）实现的，不是传统匿名管道**）。
-5. 排除"CLI 层面就坏"：`bun --version`、`bun -e ""`（落到打印 help,不真正跑脚本）在同样的管道 stdio 下都完全正常。**只有真正初始化完整 JS VM 去跑一个脚本时才会坏**——把范围缩小到"完整脚本执行路径"上的某处启动逻辑,而不是 CLI 参数解析阶段。
+### 排查历程摘要（完整过程见 commit 历史，不在此重复）
 
-### 结论（比最初的" spawn fd 所有权"假设精确得多，但还没钉死具体代码行）
+最初怀疑 `Bun.spawn({stdout:1,stderr:2})` 导致父进程 fd 失效 → 删掉 spawn 调用后单独一行 `fstatSync(1)` 依然报错，证明和 spawn 完全无关 → 怀疑 bun 启动阶段某处弄坏自己的 fd，用插桩二分定位（`run_command.rs`/`VirtualMachine.rs` 里连续加了 9 个 `t04_debug_fd_checkpoint()`，横跨 `boot()`→`Run::start()`→`load_entry_point()`→`wait_for_promise()`，做了 4 轮容器重编）→ **每一个 checkpoint 用裸 `libc::fstat()` 检查都显示 fd 完全正常，包括用户脚本自己的 `fstatSync(1)` 调用报错之后**——这才意识到检查方向错了：`writeSync(1, "...")` 在"失败"的 `fstatSync(1)` 前后都能成功写入，证明 fd 本身从未损坏，坏的是 `fstatSync()` 这个 API 本身的实现。顺藤摸瓜找到 `statx_impl` 的降级白名单缺了 `EBADF`。
 
-bun 在真正开始跑用户脚本之前的启动阶段（VM 初始化/模块系统初始化,具体哪一步未定位）,如果自己的 fd 1 和/或 fd 2 底层是一个 **socket 类型**的 fd（OHOS 上 Node.js/libuv 的"pipe" stdio 实际实现），会把这个 fd 弄坏——在任何用户代码执行前就已经发生，和 `Bun.spawn`、字面 fd 数字、GC 时序都无关。这解释了为什么 `spawn.test.ts` 里"close handling"64 个组合中只有 `stdout===1`/`stderr===2` 的 28 个失败——不是因为这两个字面数字触发了什么特殊逻辑，而是因为**测试断言本身用 `typeof stdout === "number"` 做门控**,其余组合（`"ignore"`/`Bun.stdout`/`undefined`）根本没有执行 `fstatSync` 检查，不代表 fd 没坏，只是没人问。真实受损范围可能不止这 28 个用例——任何在 runner（`stdio:["ignore","pipe","pipe"]`）下跑、且用到自己 fd 1/2 的测试理论上都受影响，只是大多数测试不会主动 `fstatSync(1)/(2)` 去暴露它。
+### 修复
 
-**下一步**：需要在 bun 启动路径里找 fstat/isatty/socket 探测相关代码（尝试过 grep `isTTY`/`S_ISSOCK`/`O_NONBLOCK` 等关键词，没能一次定位，需要更系统地过一遍 VM 启动序列，或者插桩重编）。
+`src/sys/lib.rs::statx_impl()`：把 `E::EBADF` 也纳入降级到 `statx_fallback`（普通 `fstat`）的判断，限定 `#[cfg(target_env = "ohos")]`（真实 Linux/Android 的 `statx` 没有这个怪癖，不动它们的行为；即使限定放开，对"fd 真的坏了"的场景也无害——fallback 路径一样会从 `fstat(2)` 得到相同的 `EBADF`，唯独修复了"fd 有效但 `statx` 不支持这个 fd 类型"这一种此前被误判的场景）。
+
+真机验证（`3bc00b9e7`，同一个复现脚本）：
+- `fstatSync(1)`/`fstatSync(2)` 在管道 stdio 下正确返回 OK，不再报 EBADF。
+- `test/js/bun/spawn/spawn.test.ts` "close handling" 描述块：64/64 全部通过（此前 28/64 失败）。
+
+插桩代码（`t04_debug_fd_checkpoint` 相关，跨 `e3deeb459`/`c1201090b`/`1e3b53fed`/`63f54adc7` 四个 commit）已在修复 commit 里一并移除。
 
 | 文件 | 症状 | 分类 | 层级 | 状态 |
 |---|---|---|---|---|
-| `test/js/bun/spawn/spawn.test.ts` | `close handling` 描述块 64 个组合里,凡是 `stdout===1` 或 `stderr===2`（不管 stdin/其余参数是什么）全部命中,28/64 全军覆没——**真正根因见上,和 spawn 本身无关**；另有 `with BUN_FEATURE_FLAG_FORCE_WAITER_THREAD` 一个不相关的慢用例 | A | rust | 根因缩小到启动路径,具体代码行待续查+修 |
-| `test/js/bun/spawn/spawn_waiter_thread.test.ts` | issue #9404 | A | rust | 历史已知,未修（本轮未复查,不确定是否同根因）|
-| `test/js/bun/spawn/spawn-pipe-read-error-leak.test.ts` | `PipeReader is freed when a subprocess stdout read fails` | A | rust | 历史已知,未修 |
-| `test/js/bun/spawn/spawn-pipe-stale-fd-unregister.test.ts` | `FilePoll teardown tolerates an fd closed while still registered` | A | rust | 历史已知,未修 |
-| `test/js/bun/spawn/spawn-stdin-large-buffer.test.ts` | 大 stdin buffer 截断（历史记录过隔离时曾 segfault，本轮跑通但仍断言失败）| A | rust | 历史已知,未修 |
-| `test/js/node/test/parallel/test-net-socket-constructor.js` | `cluster.fork({stdio:['pipe','pipe','pipe','ipc','pipe','pipe','pipe']})` 的 worker 退出码 1 而非 0 — `cluster.fork()` 会拉起一个新 bun worker 进程,且指定了 pipe stdio,很可能正是 T04 新根因（bun 启动路径遇到 socket 型 fd1/2 时自损）命中的另一个入口 | A | rust | 待查（现在怀疑和 T04 是同一根因,而不是"fd 所有权"）|
-
-### 排查进度快照（2026-07-27，第二次更新，中断点，供下一轮/压缩后继续）
-
-已经追到 `src/bun_bin/lib.rs::main()` 第 4 步 `output::stdio::init()`（约 197-200 行）——这个函数调用 C 的 `bun_initialize_process()`（`src/jsc/bindings/c-bindings.cpp:589`，"one-shot stdio fixup at process startup"）。
-
-**已经证伪的假设 #1**：`bun_initialize_process()` 里 `for (fd=0;fd<3;fd++) { isatty(fd); if (errno==EBADF) setDevNullFd(fd); }`（c-bindings.cpp 632-651 行）——用裸 C 程序在同样的 `stdio:["ignore","pipe","pipe"]` 环境下直接测过 `isatty()` 在 socket 型 fd 上的行为：errno 正确地是 25 (ENOTTY)，不是 EBADF。这条分支本身逻辑没问题，不是根因。
-
-**已经证实的边界**（用 `e39db04d6` 真机验证）：
-- `bun --version`、`bun -e ""`（落到打印 help）—— 在同样的管道 stdio 下完全正常。
-- 真正跑一个脚本（哪怕只有一行 `fstatSync(1)`）—— 坏。
-
-**插桩进度（`src/runtime/cli/run_command.rs`，`t04_debug_fd_checkpoint()` helper，env var `BUN_OHOS_T04_DEBUG=1` 打开，写到 `/data/storage/el2/base/tmp/bun-t04-debug.log`，不碰 fd1/2 本身）**：
-
-第一轮插桩（commit `e3deeb459`→修 `core::mem` shadowing 编译错误→`c1201090b`,真机验证过）5 个 checkpoint 全部正常：
-```
-[boot() entry] fd1=OK fd2=OK
-[after load_config_path (bunfig)] fd1=OK fd2=OK
-[after bun_jsc::initialize + bun_ast::initialize_store] fd1=OK fd2=OK
-[before VirtualMachine::init] fd1=OK fd2=OK
-[after VirtualMachine::init] fd1=OK fd2=OK   ← 这里还是好的
-```
-但用户脚本自己第一行 `fstatSync(1)` 已经是 EBADF——**证明坏在"VM 初始化返回之后"到"用户脚本真正跑起来之前"这一段**（`boot()` 剩余部分 + `Run::start()` + `vm.load_entry_point()`）。
-
-**已经追加了第二批 4 个 checkpoint（commit `1e3b53fed`，已推送，尚未真机验证,是本轮中断点）**：
-- `boot()` 里 `vm.load_extra_env_and_source_code_printer()`（约 1142-1144 行,只标了 `boot()` 这一处,`boot_standalone()` 里的同名调用没动)前后各一个
-- `Run::start()` 函数入口（约 1415 行）
-- `vm.load_entry_point(entry)`（约 1573 行,这是真正执行用户脚本的调用)之前
-
-**第二批 4 个 checkpoint 真机验证结果（`fa620e380` 二进制,commit 内容和 `1e3b53fed` 源码一致,只是 formula 缓存原因二进制版本串显示成了后一个 docs-only commit,不影响结果）：全部正常**：
-```
-[before load_extra_env_and_source_code_printer] fd1=OK fd2=OK
-[after load_extra_env_and_source_code_printer] fd1=OK fd2=OK
-[Run::start() entry] fd1=OK fd2=OK
-[before vm.load_entry_point] fd1=OK fd2=OK   ← 这里还是好的
-```
-**结论：坏在 `vm.load_entry_point()`（`src/jsc/VirtualMachine.rs:2442`）内部**——`boot()`/`Run::start()` 这一层全程干净。
-
-**已经追加了第三批 4 个 checkpoint（commit `63f54adc7`，已推送，尚未真机验证,是本轮中断点）**，都在 `src/jsc/VirtualMachine.rs::load_entry_point()` 内部（注意：这个函数在 `bun_jsc` crate,和 `run_command.rs` 不是同一个 crate,`t04_debug_fd_checkpoint` 在这里重复定义了一份,不是共享的）：
-- `self.reload_entry_point(entry_path)` 调用前后各一个（这一步做模块解析/读取/转译,还没真正跑 JS）
-- `self.wait_for_promise(...)` 调用前后各一个（这一步驱动事件循环,是真正执行用户顶层代码的地方）
-
-**下一步（尚未执行,是本轮中断点）**：把容器里的 formula revision 改成 `63f54adc7`,重编,取出二进制,同样的 wrapper+env var 跑一遍,读日志。预期两种可能：
-1. 如果"before wait_for_promise"就已经 ERR——说明 `reload_entry_point`（模块解析/转译阶段,跟用户代码执行无关）就会弄坏 fd,值得往这个函数（也在 `VirtualMachine.rs`,搜 `fn reload_entry_point`）内部继续插桩。
-2. 如果"before wait_for_promise"还是 OK,"after wait_for_promise"才 ERR——说明是 JS 顶层代码求值阶段本身弄坏的（可能是 bun 自己在用户代码之前注入的 CommonJS/ESM wrapper、全局 polyfill 初始化等),这层再往下就是 JSC C++ 内部,插桩成本会显著上升,届时需要重新评估投入产出比,和用户确认是否继续深挖到 C++ 层还是先止步于"已知在 JS 求值阶段,具体触发点未定位"这个结论。
-
----
+| `test/js/bun/spawn/spawn.test.ts` | `close handling` 描述块 64 个组合里,`stdout===1`/`stderr===2` 的 28 个失败 | A | rust | **已修复**（`3bc00b9e7`，真机验证 64/64 通过）；另有 `with BUN_FEATURE_FLAG_FORCE_WAITER_THREAD` 一个不相关的慢用例,未受影响 |
+| `test/js/bun/spawn/spawn_waiter_thread.test.ts` | issue #9404 | A | rust | 历史已知,本轮未复查,不确定是否同根因,建议下一轮用修复后的二进制重跑确认 |
+| `test/js/bun/spawn/spawn-pipe-read-error-leak.test.ts` | `PipeReader is freed when a subprocess stdout read fails` | A | rust | 历史已知,本轮未复查,建议下一轮重跑确认是否同根因 |
+| `test/js/bun/spawn/spawn-pipe-stale-fd-unregister.test.ts` | `FilePoll teardown tolerates an fd closed while still registered` | A | rust | 历史已知,本轮未复查,建议下一轮重跑确认是否同根因 |
+| `test/js/bun/spawn/spawn-stdin-large-buffer.test.ts` | 大 stdin buffer 截断（历史记录过隔离时曾 segfault) | A | rust | 历史已知,本轮未复查,建议下一轮重跑确认是否同根因 |
+| `test/js/node/test/parallel/test-net-socket-constructor.js` | `cluster.fork({stdio:['pipe','pipe','pipe','ipc','pipe','pipe','pipe']})` 的 worker 退出码 1 而非 0 | A | rust | 待查,`cluster.fork()` 拉起的 worker 也是 pipe stdio,值得用修复后二进制复核是否同根因 |
 
 ## T05 — `fs.watch(recursive: true)` 内核不支持（class B 硬限制，历史已确认）
 
@@ -517,6 +462,6 @@ test/napi/node-napi-tests/**（60 个子文件）
 
 1. ~~T01~~ —— **已修复并真机验证**（`e39db04d6`，9/9 文件转绿）。陈旧 quarantine 已清（class E 11 个文件删除）。
 2. ~~T15~~ —— **已复查完毕**：`path-length.test.ts` 随 T01 一起修复（连带副作用,6/6 转绿）；`unix-socket-long-path.test.ts` 改判为独立的测试算术脆弱（class C，低成本 test 层修复,未动手）。
-3. **T04（spawn fd 所有权）**——已知最大真实 bug 簇，仍需 Rust 层插桩。
+3. ~~T04~~ —— **已修复并真机验证**（`3bc00b9e7`，`statx(2)` 对 socket fd 报 EBADF 未降级到 `fstat`，`spawn.test.ts` close handling 64/64 转绿）。附带 4 个同簇文件（`spawn_waiter_thread`/`spawn-pipe-read-error-leak`/`spawn-pipe-stale-fd-unregister`/`spawn-stdin-large-buffer`/`test-net-socket-constructor`）本轮未复查,建议下一轮用修复后二进制重跑确认是否同根因。
 4. **T03（PTY/Terminal）**——新发现的规模较大的簇,建议先摸底根因（可能一次修复解决 7 个文件）。
 5. **T18（bake dev）**——投入产出比需要产品层面先拍板要不要投入。
