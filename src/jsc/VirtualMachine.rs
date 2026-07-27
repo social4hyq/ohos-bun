@@ -25,37 +25,6 @@ use crate::{
 
 pub use crate::process_auto_killer as ProcessAutoKiller;
 
-// TEMPORARY debug instrumentation for OHOS_TEST_TODO.md T04 -- see the
-// twin helper in src/runtime/cli/run_command.rs for the full explanation.
-// Duplicated here (not shared) because that one lives in a different crate.
-#[cfg(target_env = "ohos")]
-fn t04_debug_fd_checkpoint(label: &str) {
-    if std::env::var_os("BUN_OHOS_T04_DEBUG").is_none() {
-        return;
-    }
-    use std::io::Write as _;
-    let mut line = String::new();
-    for fd in [1i32, 2i32] {
-        let mut st: libc::stat = unsafe { std::mem::zeroed() };
-        let rc = unsafe { libc::fstat(fd, &mut st) };
-        if rc == 0 {
-            line.push_str(&format!("fd{fd}=OK(mode={:o}) ", st.st_mode));
-        } else {
-            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(-1);
-            line.push_str(&format!("fd{fd}=ERR(errno={errno}) "));
-        }
-    }
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/data/storage/el2/base/tmp/bun-t04-debug.log")
-    {
-        let _ = writeln!(f, "[{label}] {line}");
-    }
-}
-#[cfg(not(target_env = "ohos"))]
-fn t04_debug_fd_checkpoint(_label: &str) {}
-
 // ──────────────────────────────────────────────────────────────────────────
 // Exported globals
 // ──────────────────────────────────────────────────────────────────────────
@@ -2443,9 +2412,7 @@ impl VirtualMachine {
         &mut self,
         entry_path: &[u8],
     ) -> crate::CrateResult<*mut JSInternalPromise> {
-        t04_debug_fd_checkpoint("load_entry_point: before reload_entry_point");
         let promise = self.reload_entry_point(entry_path)?;
-        t04_debug_fd_checkpoint("load_entry_point: after reload_entry_point");
 
         // pending_internal_promise can change if hot module reloading is enabled
         if self.is_watcher_enabled() {
@@ -2474,9 +2441,7 @@ impl VirtualMachine {
                 return Ok(promise);
             }
             self.event_loop_mut().perform_gc();
-            t04_debug_fd_checkpoint("load_entry_point: before wait_for_promise");
             self.wait_for_promise(jsc::AnyPromise::Internal(promise));
-            t04_debug_fd_checkpoint("load_entry_point: after wait_for_promise");
         }
 
         Ok(self.pending_internal_promise.unwrap_or(promise))

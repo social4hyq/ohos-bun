@@ -36,40 +36,6 @@ bun_core::declare_scope!(RUN_LOG, visible);
 
 use bun_core::UnwrapOrOom;
 
-// TEMPORARY debug instrumentation for OHOS_TEST_TODO.md T04 (bun's own fd1/2
-// break during startup when they're socket-backed, before any user code
-// runs). Writes to a dedicated file, never to fd 1/2 themselves (those are
-// the thing under test). Gated behind an env var so it's a no-op otherwise;
-// remove once the exact startup step is pinned down.
-#[cfg(target_env = "ohos")]
-fn t04_debug_fd_checkpoint(label: &str) {
-    if std::env::var_os("BUN_OHOS_T04_DEBUG").is_none() {
-        return;
-    }
-    let mut line = String::new();
-    for fd in [1i32, 2i32] {
-        // SAFETY: `st` is a plain-old-data struct fully written by a
-        // successful fstat(); on failure we only read `errno`, not `st`.
-        let mut st: libc::stat = unsafe { std::mem::zeroed() };
-        let rc = unsafe { libc::fstat(fd, &mut st) };
-        if rc == 0 {
-            line.push_str(&format!("fd{fd}=OK(mode={:o}) ", st.st_mode));
-        } else {
-            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(-1);
-            line.push_str(&format!("fd{fd}=ERR(errno={errno}) "));
-        }
-    }
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/data/storage/el2/base/tmp/bun-t04-debug.log")
-    {
-        let _ = writeln!(f, "[{label}] {line}");
-    }
-}
-#[cfg(not(target_env = "ohos"))]
-fn t04_debug_fd_checkpoint(_label: &str) {}
-
 /// Picks the POSIX or Windows path literal at compile
 /// time. Local because `bun_paths` does not export a macro form yet.
 macro_rules! path_literal {
@@ -988,7 +954,6 @@ Full documentation is available at <magenta>https://bun.com/docs/cli/run<r>
         entry_path: Box<[u8]>,
         loader: Option<Loader>,
     ) -> crate::Result<()> {
-        t04_debug_fd_checkpoint("boot() entry");
         if !ctx.debug.loaded_bunfig {
             arguments::load_config_path(
                 CommandTag::RunCommand,
@@ -997,7 +962,6 @@ Full documentation is available at <magenta>https://bun.com/docs/cli/run<r>
                 ctx,
             )?;
         }
-        t04_debug_fd_checkpoint("after load_config_path (bunfig)");
 
         // The shell does not need to initialize JSC (saves 1-3ms).
         if strings::has_suffix_comptime(&entry_path, b".sh") {
@@ -1012,9 +976,7 @@ Full documentation is available at <magenta>https://bun.com/docs/cli/run<r>
         // a populated `RuntimeHooks` table.
         bun_jsc::initialize(ctx.runtime_options.eval.eval_and_print);
         bun_ast::initialize_store();
-        t04_debug_fd_checkpoint("after bun_jsc::initialize + bun_ast::initialize_store");
 
-        t04_debug_fd_checkpoint("before VirtualMachine::init");
         let vm_ptr = VirtualMachine::init(VmInitOptions {
             transform_options: ctx.args.clone(),
             log: ::core::ptr::NonNull::new(ctx.log),
@@ -1025,7 +987,6 @@ Full documentation is available at <magenta>https://bun.com/docs/cli/run<r>
             is_main_thread: true,
             ..Default::default()
         })?;
-        t04_debug_fd_checkpoint("after VirtualMachine::init");
         // SAFETY: `init` returns the unique freshly-boxed VM on this thread.
         let vm = unsafe { &mut *vm_ptr };
 
@@ -1139,9 +1100,7 @@ Full documentation is available at <magenta>https://bun.com/docs/cli/run<r>
         // `Transpiler::init`).
         bun_http::async_http::load_env(unsafe { vm.log.unwrap().as_mut() }, vm.env_loader());
 
-        t04_debug_fd_checkpoint("before load_extra_env_and_source_code_printer");
         vm.load_extra_env_and_source_code_printer();
-        t04_debug_fd_checkpoint("after load_extra_env_and_source_code_printer");
         vm.is_main_thread = true;
         bun_jsc::virtual_machine::IS_MAIN_THREAD_VM.set(true);
 
@@ -1412,7 +1371,6 @@ impl Run {
     /// fire `beforeExit`/`exit`, then `globalExit`. Called under the JSC API
     /// lock via `hold_api_lock`.
     fn start(&mut self) -> ! {
-        t04_debug_fd_checkpoint("Run::start() entry");
         // deref the raw VM/ctx pointers once so the rest of this
         // body can borrow `vm` and `ctx` alongside `self.entry_path`.
         // SAFETY: `self.vm` is the boxed-and-leaked main-thread VM; `self.ctx`
@@ -1570,7 +1528,6 @@ impl Run {
             }
         }
 
-        t04_debug_fd_checkpoint("before vm.load_entry_point");
         match vm.load_entry_point(entry) {
             Ok(promise) => {
                 // SAFETY: `promise` is a live GC cell returned by the module loader.
