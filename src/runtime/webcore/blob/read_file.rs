@@ -54,7 +54,7 @@ macro_rules! log {
 // either confirm or rule out. Gated behind an env var so it's a no-op
 // otherwise; remove once T24's exact double-schedule trigger is pinned down.
 #[cfg(target_env = "ohos")]
-mod t24_debug {
+pub(crate) mod t24_debug {
     use std::io::Write;
     use std::sync::Mutex;
 
@@ -62,6 +62,17 @@ mod t24_debug {
 
     fn enabled() -> bool {
         std::env::var_os("BUN_OHOS_T24_DEBUG").is_some()
+    }
+
+    /// Generic one-line checkpoint, for tracing the call chain leading up to
+    /// (or bypassing) `do_read_loop`/`on_ready` -- e.g. from `Blob::do_read_file`
+    /// or `ReadFile::run`/`run_async`/`run_async_with_fd`, to find where a
+    /// socket-backed stdin read diverges from the pipe/regular-file case.
+    pub(crate) fn checkpoint(label: &str, addr: usize) {
+        if !enabled() {
+            return;
+        }
+        log(&format!("[{label}] ReadFile@{addr:#x}"));
     }
 
     fn log(line: &str) {
@@ -131,9 +142,10 @@ mod t24_debug {
     }
 }
 #[cfg(not(target_env = "ohos"))]
-mod t24_debug {
+pub(crate) mod t24_debug {
     pub(super) fn enter_do_read_loop(_addr: usize) {}
     pub(super) fn on_ready(_addr: usize) {}
+    pub(crate) fn checkpoint(_label: &str, _addr: usize) {}
     pub(super) struct ExitGuard(pub(super) usize);
     impl Drop for ExitGuard {
         fn drop(&mut self) {}
@@ -711,10 +723,12 @@ impl ReadFile {
     }
 
     pub fn run(&mut self, task: *mut ReadFileTask) {
+        t24_debug::checkpoint("ReadFile::run", std::ptr::from_ref(self) as usize);
         self.run_async(task);
     }
 
     fn run_async(&mut self, task: *mut ReadFileTask) {
+        t24_debug::checkpoint("ReadFile::run_async", std::ptr::from_ref(self) as usize);
         #[cfg(windows)]
         {
             let _ = task;
@@ -812,6 +826,10 @@ impl ReadFile {
 
     #[cfg(not(windows))]
     fn run_async_with_fd(&mut self, fd: Fd) {
+        t24_debug::checkpoint(
+            "ReadFile::run_async_with_fd entry",
+            std::ptr::from_ref(self) as usize,
+        );
         if self.errno.is_some() {
             self.on_finish();
             return;
@@ -865,11 +883,19 @@ impl ReadFile {
         // readable.
         if self.could_block {
             if bun_core::is_readable(fd) == bun_core::Pollable::NotReady {
+                t24_debug::checkpoint(
+                    "ReadFile::run_async_with_fd -> wait_for_readable (not yet readable)",
+                    std::ptr::from_ref(self) as usize,
+                );
                 self.wait_for_readable();
                 return;
             }
         }
 
+        t24_debug::checkpoint(
+            "ReadFile::run_async_with_fd -> do_read_loop (immediately readable)",
+            std::ptr::from_ref(self) as usize,
+        );
         self.do_read_loop();
     }
 

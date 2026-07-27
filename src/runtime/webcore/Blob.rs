@@ -479,6 +479,11 @@ impl BlobExt for Blob {
                 handler,
             )
             .unwrap_or_else(|e| bun_core::handle_oom(Err(e)));
+            #[cfg(target_env = "ohos")]
+            read_file::t24_debug::checkpoint(
+                "Blob::do_read_file after ReadFile::create",
+                std::ptr::from_ref(&*file_read) as usize,
+            );
             let read_file_task = read_file::ReadFileTask::create_on_js_thread(
                 global,
                 bun_core::heap::into_raw(file_read),
