@@ -156,11 +156,11 @@ execlp("bash", "bash", "-c", "pwd", (char*)NULL);
 | 文件 | 症状 | 分类 | 层级 | 状态 |
 |---|---|---|---|---|
 | `test/js/bun/spawn/spawn.test.ts` | `close handling` 描述块 64 个组合里,`stdout===1`/`stderr===2` 的 28 个失败 | A | rust | **已修复,全文件真机验证**（`3bc00b9e7`：`135 pass, 6 skip, 0 fail`，`Ran 141 tests across 1 file`,此前 28 fail 现已全部转绿）；含 `with BUN_FEATURE_FLAG_FORCE_WAITER_THREAD` 那个不相关的慢用例,同样通过 |
-| `test/js/bun/spawn/spawn_waiter_thread.test.ts` | issue #9404 | A | rust | 历史已知,本轮未复查,不确定是否同根因,建议下一轮用修复后的二进制重跑确认 |
-| `test/js/bun/spawn/spawn-pipe-read-error-leak.test.ts` | `PipeReader is freed when a subprocess stdout read fails` | A | rust | 历史已知,本轮未复查,建议下一轮重跑确认是否同根因 |
-| `test/js/bun/spawn/spawn-pipe-stale-fd-unregister.test.ts` | `FilePoll teardown tolerates an fd closed while still registered` | A | rust | 历史已知,本轮未复查,建议下一轮重跑确认是否同根因 |
-| `test/js/bun/spawn/spawn-stdin-large-buffer.test.ts` | 大 stdin buffer 截断（历史记录过隔离时曾 segfault) | A | rust | 历史已知,本轮未复查,建议下一轮重跑确认是否同根因 |
-| `test/js/node/test/parallel/test-net-socket-constructor.js` | `cluster.fork({stdio:['pipe','pipe','pipe','ipc','pipe','pipe','pipe']})` 的 worker 退出码 1 而非 0 | A | rust | 待查,`cluster.fork()` 拉起的 worker 也是 pipe stdio,值得用修复后二进制复核是否同根因 |
+| `test/js/bun/spawn/spawn_waiter_thread.test.ts` | issue #9404，`resourceUsage().cpuTime.total` 断言 `< 750_000n`，实测 `1374480n` | A | rust | **复核完毕，非同根因**——不是 statx/EBADF，是 waiter thread CPU 时间统计口径问题（真机上 waiter 线程消耗的 CPU 时间比阈值假设的高约 83%），需要单独立项 |
+| `test/js/bun/spawn/spawn-pipe-read-error-leak.test.ts` | `PipeReader is freed when a subprocess stdout read fails`：断言 stderr 应为空数组，实测捕获到 8 行 `cat: .../sync-fifo: Broken pipe` | A | rust | **复核完毕，非同根因**——不是 statx/EBADF，是子进程 `cat` 读坏掉的 FIFO 时产生的 stderr 输出没有被过滤/预期到，需要单独立项 |
+| `test/js/bun/spawn/spawn-pipe-stale-fd-unregister.test.ts` | `FilePoll teardown tolerates an fd closed while still registered` | A | rust | **已确认同根因，随 T04 修复转绿**：`1 pass, 0 fail`（此前失败） |
+| `test/js/bun/spawn/spawn-stdin-large-buffer.test.ts` | 大 stdin buffer（2048/4096/8192 KB）截断，`spawnSync`/`Bun.spawn` 两条路径全部收到远小于预期的字节数（含收到 `0` 字节的情况） | A | rust | **复核完毕，非同根因**——不是 statx/EBADF，`fstatSync` 早已不参与这条路径；症状是大 buffer 下 socketpair 读取/写入的真实数据丢失，比 T04 更严重，需要单独立项且优先级应提高（数据完整性问题） |
+| `test/js/node/test/parallel/test-net-socket-constructor.js` | `cluster.fork({stdio:['pipe','pipe','pipe','ipc','pipe','pipe','pipe']})` 的 worker 退出码 1 而非 0 | A | rust | **通过**（本轮 `--include` 批次里在"parallel-safe"分组内跑,记为 Passed,未见于 Failing 列表）——是否是 T04 附带修复暂无法反证,但当前已是绿色,不再需要动作 |
 
 ## T05 — `fs.watch(recursive: true)` 内核不支持（class B 硬限制，历史已确认）
 
@@ -426,6 +426,9 @@ test/js/node/child_process/child-process-rlimit-nofile.test.ts
 | `test/js/node/test/parallel/test-net-error-twice.js` | `assert.strictEqual(0, 1)` — 错误只应触发一次的断言,实际触发次数不对 |
 | `test/regression/issue/07500/07500.test.ts` | `Bun.stdin.text() doesn't read all data`,100s 超时 |
 | `test/regression/issue/24364.test.ts` | `react-tailwind template passes tsc --noEmit`（可能依赖 T14 网络类模板拉取,未核实）|
+| `test/js/bun/spawn/spawn-stdin-large-buffer.test.ts` | **优先级建议提高**：2048/4096/8192 KB 级别 stdin 通过 socketpair 传输给子进程时数据丢失（`spawnSync`/`Bun.spawn` 两条路径都中招,部分组合收到 `0` 字节）。T04 复核时排除了 statx/EBADF 同根因,是独立的数据完整性问题,不是断言脆弱 |
+| `test/js/bun/spawn/spawn-pipe-read-error-leak.test.ts` | T04 复核确认非同根因：`cat` 读坏掉的 FIFO 时产生的 `Broken pipe` stderr 输出未被吞掉/预期到,导致断言的空数组不成立 |
+| `test/js/bun/spawn/spawn_waiter_thread.test.ts` | T04 复核确认非同根因：issue #9404 的 `resourceUsage().cpuTime.total` 阈值断言,真机实测比 `750_000n` 阈值高约 83%（`1374480n`），疑似 waiter 线程 CPU 时间统计口径与阈值假设不匹配 |
 
 ---
 
@@ -458,7 +461,7 @@ test/napi/node-napi-tests/**（60 个子文件）
 
 ---
 
-## 会话状态快照（2026-07-27，用户即将手工压缩上下文前记录）
+## 会话状态快照（2026-07-27 更新：T04 同簇 5 文件复核已完成）
 
 **已完成并真机验证的修复（3 个 commit 已推送到 `origin/ohos-aarch64`）**：
 - `6a5df2ea5`/`e39db04d6` 附近 —— T01（EL2 沙盒 `getcwd()` bug）修复，9/9 文件转绿
@@ -466,27 +469,20 @@ test/napi/node-napi-tests/**（60 个子文件）
 - T15：`path-length.test.ts` 随 T01 修复；`unix-socket-long-path.test.ts` 改判独立小问题(未修)
 - 11 条陈旧 quarantine 已清理,`js/sql/adapter-env-var-precedence.test.ts` 的 `/tmp` 硬编码已修
 
-**`spawn.test.ts` 全文件回归已跑完（压缩前最后确认的结果）**：`135 pass, 6 skip, 0 fail`（`Ran 141 tests across 1 file`），T04 的 28 个失败全部转绿，已写入上面 T04 表格。
+**`spawn.test.ts` 全文件回归**：`135 pass, 6 skip, 0 fail`（`Ran 141 tests across 1 file`），T04 的 28 个失败全部转绿。
 
-**压缩后第一件事（还没做，是真正的中断点）**：确认同一个 `statx`/`EBADF` 根因是否也影响 T04 表格里标"本轮未复查"的另外 5 个文件——`spawn_waiter_thread.test.ts`/`spawn-pipe-read-error-leak.test.ts`/`spawn-pipe-stale-fd-unregister.test.ts`/`spawn-stdin-large-buffer.test.ts`/`test-net-socket-constructor.js`。用同一个修复后二进制（`/data/storage/el2/base/tmp/bun-t01-verify/bun-t04-fixed`，revision `3bc00b9e7`）跑：
+**T04 同簇 5 文件复核已完成**（用修复后二进制 `3bc00b9e7` 跑,结果已写入 T04 表格）：
+- `spawn-pipe-stale-fd-unregister.test.ts` —— **同根因,随 T04 转绿**（1 pass, 0 fail）
+- `test/js/node/test/parallel/test-net-socket-constructor.js` —— 通过（parallel-safe 分组内绿色）
+- `spawn_waiter_thread.test.ts` —— **非同根因,仍失败**：CPU 时间断言（`1374480n` vs 阈值 `750_000n`），已转入 T21 列表
+- `spawn-pipe-read-error-leak.test.ts` —— **非同根因,仍失败**：FIFO 读坏时 `cat` 的 stderr 输出未被吞掉，已转入 T21 列表
+- `spawn-stdin-large-buffer.test.ts` —— **非同根因,仍失败**：大 buffer 数据丢失（比断言脆弱更严重的数据完整性问题），已转入 T21 列表并标记优先级建议提高
 
-```bash
-export TMPDIR=/data/storage/el2/base/tmp
-cd /storage/Users/currentUser/HarmonyPC/Software/ohos-bun
-CI=1 BUN_TEST_NO_SECRETS=1 node scripts/runner.node.mjs \
-  --exec-path=/data/storage/el2/base/tmp/bun-t01-verify/bun-t04-fixed \
-  --ignore-expectations=OPENHARMONY --retries=0 \
-  --include=js/bun/spawn/spawn_waiter_thread.test.ts,js/bun/spawn/spawn-pipe-read-error-leak.test.ts,js/bun/spawn/spawn-pipe-stale-fd-unregister.test.ts,js/bun/spawn/spawn-stdin-large-buffer.test.ts,js/node/test/parallel/test-net-socket-constructor.js
-```
-
-跑完把结果更新进 T04 表格对应行,然后 commit push。
-
-（如果 `/data/storage/el2/base/tmp/` 下的临时二进制/脚本已经被系统清理掉,重新走一遍："容器里 formula revision 改成 `3bc00b9e7`" → `brew install --build-from-source social4hyq/core/bun` → `docker cp` 取出二进制"这个流程,已经很熟悉了,前面 6 轮容器重编都是这个套路。）
-
-**下一步方向（这 5 个文件复核完之后，本轮更大范围的待办）**：
+**下一步方向（这一批任务里，性价比排序）**：
+- Task 14：`expectations.txt` 剩余 ~66 条 `[ OPENHARMONY ]` 条目逐条核实归类（删/降级为 in-file skip/保留)——纯 test 层整理工作,不需要容器重编,性价比高,**建议下一步优先做**
+- `spawn-stdin-large-buffer.test.ts` 根因排查——数据完整性问题,值得优先于其他长尾单点
 - T03（PTY/Terminal，7 个文件的簇）——还没开始摸底根因
 - T18（bake dev）——需要产品层面先拍板要不要投入
-- Task 14：`expectations.txt` 剩余 ~66 条 `[ OPENHARMONY ]` 条目逐条核实归类（删/降级为 in-file skip/保留)——纯 test 层整理工作,不需要容器重编,性价比高,适合下一步优先做
 - Task 15：全部真实修复落地后,做一次最终全量重跑,产出三口径通过率报告,追加进 `OHOS_TEST_STATUS.md`
 
 **环境状态**：容器（`openharmony`）当前安装的是 `3bc00b9e7`（T04 修复版,build-from-source,非正式 bottle）。host 的 harmonybrew tap 本地 formula 文件（`~/.harmonybrew/Homebrew/Library/Taps/social4hyq/homebrew-core/Formula/b/bun.rb`）也指向这个 revision，未提交（这是本地测试用的临时改动,不是正式发布,tap 是独立 git repo,main 受保护）。真机默认 `bun`（`~/.harmonybrew/bin/bun`）**仍然是修复前的旧版本**——本轮所有验证都是用 `docker cp` 取出的独立二进制文件跑,没有替换真机默认安装。
@@ -497,6 +493,8 @@ CI=1 BUN_TEST_NO_SECRETS=1 node scripts/runner.node.mjs \
 
 1. ~~T01~~ —— **已修复并真机验证**（`e39db04d6`，9/9 文件转绿）。陈旧 quarantine 已清（class E 11 个文件删除）。
 2. ~~T15~~ —— **已复查完毕**：`path-length.test.ts` 随 T01 一起修复（连带副作用,6/6 转绿）；`unix-socket-long-path.test.ts` 改判为独立的测试算术脆弱（class C，低成本 test 层修复,未动手）。
-3. ~~T04~~ —— **已修复并真机验证**（`3bc00b9e7`，`statx(2)` 对 socket fd 报 EBADF 未降级到 `fstat`，`spawn.test.ts` close handling 64/64 转绿）。附带 4 个同簇文件（`spawn_waiter_thread`/`spawn-pipe-read-error-leak`/`spawn-pipe-stale-fd-unregister`/`spawn-stdin-large-buffer`/`test-net-socket-constructor`）本轮未复查,建议下一轮用修复后二进制重跑确认是否同根因。
-4. **T03（PTY/Terminal）**——新发现的规模较大的簇,建议先摸底根因（可能一次修复解决 7 个文件）。
-5. **T18（bake dev）**——投入产出比需要产品层面先拍板要不要投入。
+3. ~~T04~~ —— **已修复并真机验证**（`3bc00b9e7`，`statx(2)` 对 socket fd 报 EBADF 未降级到 `fstat`，`spawn.test.ts` close handling 64/64 转绿）。同簇 5 文件复核完毕：仅 `spawn-pipe-stale-fd-unregister` 同根因转绿，其余 4 个（`spawn_waiter_thread`/`spawn-pipe-read-error-leak`/`spawn-stdin-large-buffer` 仍失败但非同根因已转入 T21；`test-net-socket-constructor` 已是绿色）。
+4. **Task 14（expectations.txt 剩余条目核实归类）**——纯 test 层，不需要容器重编，性价比最高，建议先做。
+5. **`spawn-stdin-large-buffer.test.ts`**——数据完整性问题（大 buffer 丢数据），优先级高于其他长尾单点，值得单独立项深挖。
+6. **T03（PTY/Terminal）**——新发现的规模较大的簇,建议先摸底根因（可能一次修复解决 7 个文件）。
+7. **T18（bake dev）**——投入产出比需要产品层面先拍板要不要投入。
