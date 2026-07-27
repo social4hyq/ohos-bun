@@ -458,6 +458,37 @@ test/napi/node-napi-tests/**（60 个子文件）
 
 ---
 
+## 会话状态快照（2026-07-27，用户即将手工压缩上下文前记录）
+
+**已完成并真机验证的修复（3 个 commit 已推送到 `origin/ohos-aarch64`）**：
+- `6a5df2ea5`/`e39db04d6` 附近 —— T01（EL2 沙盒 `getcwd()` bug）修复，9/9 文件转绿
+- `3bc00b9e7` —— T04（`statx(2)` 对 socket fd 报 EBADF)修复，最小复现脚本确认 `fstatSync(1)` 不再报错
+- T15：`path-length.test.ts` 随 T01 修复；`unix-socket-long-path.test.ts` 改判独立小问题(未修)
+- 11 条陈旧 quarantine 已清理,`js/sql/adapter-env-var-precedence.test.ts` 的 `/tmp` 硬编码已修
+
+**正在做的最后一步验证（压缩后请先查这个）**：T04 修复后的完整 `test/js/bun/spawn/spawn.test.ts` 回归正在后台跑（binary: `/data/storage/el2/base/tmp/bun-t01-verify/bun-t04-fixed`,revision `3bc00b9e7`；命令见下）,预期 64/64 通过（此前 28 个失败）。**压缩后第一件事**：检查这个后台任务是否跑完,读结果,如果 64/64 通过就在本文件 T04 表格里把 `spawn.test.ts` 行的状态从"已修复"补充上具体验证数字（可能已经有),然后顺手确认一下同一个 bug 会不会影响其他几个文件（`spawn_waiter_thread.test.ts`/`spawn-pipe-read-error-leak.test.ts`/`spawn-pipe-stale-fd-unregister.test.ts`/`spawn-stdin-large-buffer.test.ts`/`test-net-socket-constructor.js`,这几个在 T04 表格里标了"本轮未复查")：
+
+```bash
+export TMPDIR=/data/storage/el2/base/tmp
+cd /storage/Users/currentUser/HarmonyPC/Software/ohos-bun
+CI=1 BUN_TEST_NO_SECRETS=1 node scripts/runner.node.mjs \
+  --exec-path=/data/storage/el2/base/tmp/bun-t01-verify/bun-t04-fixed \
+  --ignore-expectations=OPENHARMONY --retries=0 \
+  --include=js/bun/spawn/spawn.test.ts,js/bun/spawn/spawn_waiter_thread.test.ts,js/bun/spawn/spawn-pipe-read-error-leak.test.ts,js/bun/spawn/spawn-pipe-stale-fd-unregister.test.ts,js/bun/spawn/spawn-stdin-large-buffer.test.ts,js/node/test/parallel/test-net-socket-constructor.js
+```
+
+（如果 `/data/storage/el2/base/tmp/` 下的临时二进制/脚本已经被系统清理掉,重新走一遍："容器里 formula revision 改成 `3bc00b9e7`" → `brew install --build-from-source social4hyq/core/bun` → `docker cp` 取出二进制"这个流程,已经很熟悉了,前面 6 轮容器重编都是这个套路。）
+
+**下一步方向（未开始，是本轮更大范围的待办）**：
+- T03（PTY/Terminal，7 个文件的簇）——还没开始摸底根因
+- T18（bake dev）——需要产品层面先拍板要不要投入
+- Task 14：`expectations.txt` 剩余 ~66 条 `[ OPENHARMONY ]` 条目逐条核实归类（删/降级为 in-file skip/保留)——纯 test 层整理工作,不需要容器重编,性价比高,适合下一步优先做
+- Task 15：全部真实修复落地后,做一次最终全量重跑,产出三口径通过率报告,追加进 `OHOS_TEST_STATUS.md`
+
+**环境状态**：容器（`openharmony`）当前安装的是 `3bc00b9e7`（T04 修复版,build-from-source,非正式 bottle）。host 的 harmonybrew tap 本地 formula 文件（`~/.harmonybrew/Homebrew/Library/Taps/social4hyq/homebrew-core/Formula/b/bun.rb`）也指向这个 revision，未提交（这是本地测试用的临时改动,不是正式发布,tap 是独立 git repo,main 受保护）。真机默认 `bun`（`~/.harmonybrew/bin/bun`）**仍然是修复前的旧版本**——本轮所有验证都是用 `docker cp` 取出的独立二进制文件跑,没有替换真机默认安装。
+
+---
+
 ## 下一轮优先级建议
 
 1. ~~T01~~ —— **已修复并真机验证**（`e39db04d6`，9/9 文件转绿）。陈旧 quarantine 已清（class E 11 个文件删除）。
