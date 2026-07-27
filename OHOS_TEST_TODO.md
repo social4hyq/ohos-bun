@@ -111,7 +111,7 @@ execlp("bash", "bash", "-c", "pwd", (char*)NULL);
 
 ---
 
-## T03 — PTY / TTY：`Bun.Terminal` raw mode 与作业控制（新发现，规模不小）
+## T03 — PTY / TTY 簇：raw mode 已修（`738701916`），剩余"数据不流动"为第二个独立根因（待查）
 
 `terminal-*.test.ts` 是全新文件（历史 `OHOS_TEST_STATUS.md` 里从未出现过 `Bun.Terminal` 相关记录），说明这是本轮首次覆盖到。核心症状：`setRawMode` 抛 `Failed to set raw mode`,以及依赖 raw mode/SIGWINCH/作业控制信号的场景全部超时。`no-orphans.test.ts`/`tty-reopen-after-stdin-eof`/`tui-app-tty-pattern`/`18239` 症状不同但都在 TTY/PTY 子系统,怀疑共享底层 termios/PTY 分配逻辑,值得一起排查。
 
@@ -140,11 +140,35 @@ execlp("bash", "bash", "-c", "pwd", (char*)NULL);
 
 **修复**：只在 `TCSADRAIN` 返回 `EACCES` 时回退到 `TCSANOW`，而不是直接改成 `TCSANOW`——内核允许的地方保留 drain-then-apply 语义，只在本来就会彻底失败的 fd 上放弃它。代价是待发送输出可能被新设置重新解释，相比 `setRawMode` 完全不可用是划算的，而且这就是这个平台的 PTY master 唯一允许的做法。限定 `__OHOS__`，不动其他平台。
 
-### 修复前基线（`5c2a44ef9`，10 个文件）
+### 验证结果（`738701916`）：setRawMode 彻底修好，但暴露出**第二个独立根因**
 
-**4 通过 / 6 失败**。失败：`no-orphans` / `repl` / `terminal-platform-gaps` / `terminal-spawn` / `terminal` / `18239`。
+直接命中核心症状的最小脚本：修复前 `RESULT: FAIL -> Failed to set raw mode`，修复后 `setRawMode(true)/(false)/toggle` **三次全部 OK**。
 
-注意 **`tty-reopen-after-stdin-eof` 和 `tui-app-tty-pattern` 这两个已经是通过的** —— 上面表格里原先把它们列为"可能同根因"，实测要么是 T24 修复的连带效果、要么当初归类偏了，本轮之后应从 T03 簇移出。
+10 文件回归的用例级对比：
+
+| 指标 | 修复前 | 修复后 |
+|---|---|---|
+| `Failed to set raw mode` 出现次数 | 7 | **0** |
+| 失败用例总数 | 13 | 11 |
+| 转绿的用例 | — | **9 个**（4 个 setRawMode 子用例 + `drain fires when a second write flushes…` + `GAP: setRawMode is a no-op on Windows` + `SAME: output LF is translated to CRLF` + `write returns the full input length when the PTY buffer fills` + `.editor mode collects lines until Ctrl+D`）|
+| 新跑到并失败的用例 | — | 7 个 |
+
+**文件级数字（4 通过 / 6 失败）前后完全一样，但这是假象**：底下换了一整批。那 7 个"新失败"经核查在基线日志里**一次都没出现过**（`grep -c` = 0）——修复前它们根本没被执行到（前面的 `setRawMode` 抛错把文件后续用例挡住了），所以**不是回归，是新暴露的覆盖面**。
+
+### T03 剩余部分：第二个根因（PTY 数据不流动，待查）
+
+新暴露出来的失败集中在一个清晰的症状群：**PTY 里数据根本不流动**——
+
+- `data callback > receives echoed output` —— 收不到回显
+- `exit callback is called on close` —— 90s 超时（回调永不触发）
+- `Bun.spawn with terminal option > creates subprocess with terminal attached` —— 90s 超时
+- `subprocess sees correct terminal dimensions`、`SIGWINCH in child`
+- REPL 三个用例（`error shows in terminal` / `multiline input with open brace` / `backspace deletes a whole multi-byte character`）—— REPL 完全依赖 PTY 收发
+- `18239` TTY stdin buffering、`no-orphans` 的 Ctrl-Z/setsid
+
+`setRawMode` 只是"能不能配置 termios"，这一批是"配置好之后数据能不能过去"，是**两个独立的问题**。下一步应当用同样的方法（独立 C 探针，绕开 bun）验证这台设备上 PTY master↔slave 的读写与 `SIGWINCH`/作业控制信号是否正常，再决定是 bun 侧的 bug 还是平台硬限制。
+
+**另外**：`tty-reopen-after-stdin-eof` 和 `tui-app-tty-pattern` 实测**已经通过**——上面表格里原先列为"可能同根因"，应从 T03 簇移出。
 
 ---
 
