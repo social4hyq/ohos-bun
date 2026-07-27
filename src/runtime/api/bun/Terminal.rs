@@ -38,85 +38,6 @@ use bun_sys::windows;
 
 bun_output::declare_scope!(Terminal, hidden);
 
-// TEMPORARY debug instrumentation for OHOS_TEST_TODO.md T03 (exit callback
-// occasionally never delivered after close()). Logs each silent-drop branch
-// in call_exit_callback plus the delivery points leading up to it. Gated
-// behind BUN_OHOS_T03_DEBUG=1; no-op otherwise. Remove once the drop branch
-// is pinned down.
-#[cfg(target_env = "ohos")]
-mod t03_debug {
-    use std::io::Write;
-
-    fn enabled() -> bool {
-        std::env::var_os("BUN_OHOS_T03_DEBUG").is_some()
-    }
-
-    pub(super) fn log(line: &str) {
-        if !enabled() {
-            return;
-        }
-        let tid = std::thread::current().id();
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/data/storage/el2/base/tmp/bun-t03-debug.log")
-        {
-            let _ = writeln!(f, "[tid={tid:?}] {line}");
-        }
-    }
-}
-#[cfg(not(target_env = "ohos"))]
-mod t03_debug {
-    pub(super) fn log(_line: &str) {}
-}
-
-// Generated bindings — `jsc.Codegen.JSTerminal`. The `.classes.ts` codegen
-// emits `crate::generated_classes::js_Terminal` with `from_js`/`to_js` and the
-// cached-value accessors; re-export here so callers continue to spell `js::*`.
-pub use self::js::{from_js, from_js_direct, to_js};
-pub mod js {
-    pub use crate::generated_classes::js_Terminal::{
-        data_get_cached, data_set_cached, drain_get_cached, drain_set_cached, exit_get_cached,
-        exit_set_cached, from_js, from_js_direct, get_constructor, to_js,
-    };
-
-    /// Typed accessor for the `values:` slots.
-    pub mod gc {
-        use bun_jsc::{JSGlobalObject, JSValue};
-
-        #[derive(Clone, Copy)]
-        pub enum GcValue {
-            Data,
-            Exit,
-            Drain,
-        }
-
-        #[inline]
-        pub fn get(which: GcValue, this_value: JSValue) -> Option<JSValue> {
-            match which {
-                GcValue::Data => super::data_get_cached(this_value),
-                GcValue::Exit => super::exit_get_cached(this_value),
-                GcValue::Drain => super::drain_get_cached(this_value),
-            }
-        }
-
-        #[inline]
-        pub(crate) fn set(
-            which: GcValue,
-            this_value: JSValue,
-            global: &JSGlobalObject,
-            value: JSValue,
-        ) {
-            match which {
-                GcValue::Data => super::data_set_cached(this_value, global, value),
-                GcValue::Exit => super::exit_set_cached(this_value, global, value),
-                GcValue::Drain => super::drain_set_cached(this_value, global, value),
-            }
-        }
-    }
-    pub use gc::GcValue;
-}
-
 /// Reference counting for Terminal.
 /// Refs are held by:
 /// 1. JS side (released in finalize)
@@ -631,16 +552,7 @@ impl Terminal {
         // instrumentation showed the final terminal entering close_internal
         // with READER_DONE already true and zero dispatches for the whole
         // run. See OHOS_TEST_TODO.md T03.
-        t03_debug::log(&format!(
-            "T@{:x} init: callbacks registered, calling read()",
-            parent_ptr as usize,
-        ));
         terminal.reader.with_mut(|r| r.read());
-        t03_debug::log(&format!(
-            "T@{:x} init: read() returned, READER_DONE={}",
-            parent_ptr as usize,
-            terminal.flags.get().contains(Flags::READER_DONE),
-        ));
 
         // Replay an exit notification that fired during startup, before the
         // wrapper and callbacks above existed. `writer.start()`,
@@ -648,11 +560,6 @@ impl Terminal {
         // synchronously; that path is one-shot, so without this replay the
         // user's `exit` callback would never fire at all.
         if let Some(code) = terminal.deferred_exit.take() {
-            t03_debug::log(&format!(
-                "T@{:x} init: replaying deferred exit_code={}",
-                parent_ptr as usize,
-                code,
-            ));
             terminal.this_value.with_mut(|v| v.downgrade());
             terminal.call_exit_callback(code, None);
         }
@@ -1822,13 +1729,6 @@ impl Terminal {
     }
 
     pub(crate) fn close_internal(&self) {
-        t03_debug::log(&format!(
-            "T@{:x} close_internal: CLOSED={} READER_STARTED={} READER_DONE={}",
-            std::ptr::from_ref(self) as usize,
-            self.flags.get().contains(Flags::CLOSED),
-            self.flags.get().contains(Flags::READER_STARTED),
-            self.flags.get().contains(Flags::READER_DONE),
-        ));
         if self.flags.get().contains(Flags::CLOSED) {
             return;
         }
@@ -1944,19 +1844,7 @@ impl Terminal {
     /// before the exit callback so re-entry (`terminal.close()` from the
     /// callback) sees the flag and no-ops, then release the reader's +1.
     fn on_reader_finished(&self, exit_code: i32) {
-        t03_debug::log(&format!(
-            "T@{:x} on_reader_finished(exit_code={}) finalized={} jsref={} READER_DONE={}",
-            std::ptr::from_ref(self) as usize,
-            exit_code,
-            self.flags.get().contains(Flags::FINALIZED),
-            self.this_value.get().debug_state(),
-            self.flags.get().contains(Flags::READER_DONE),
-        ));
         if self.flags.get().contains(Flags::READER_DONE) {
-            t03_debug::log(&format!(
-                "T@{:x}   -> EARLY RETURN (READER_DONE already set)",
-                std::ptr::from_ref(self) as usize,
-            ));
             return;
         }
         self.update_flags(|f| {
@@ -1973,11 +1861,6 @@ impl Terminal {
                 // so nothing will ever retry. Stash it; `init_terminal`
                 // replays it once the callbacks are registered.
                 self.deferred_exit.set(Some(exit_code));
-                t03_debug::log(&format!(
-                    "T@{:x}   -> DEFERRED exit_code={} (wrapper not ready yet)",
-                    std::ptr::from_ref(self) as usize,
-                    exit_code,
-                ));
             } else {
                 self.this_value.with_mut(|v| v.downgrade());
                 self.call_exit_callback(exit_code, None);
@@ -1991,21 +1874,13 @@ impl Terminal {
     /// The signal parameter is only populated if a signal caused the PTY close.
     fn call_exit_callback(&self, exit_code: i32, signal: Option<SignalCode>) {
         let Some(this_jsvalue) = self.this_value.get().try_get() else {
-            t03_debug::log(&format!("T@{:x} call_exit_callback: DROP at try_get", std::ptr::from_ref(self) as usize));
             return;
         };
         let Some(callback) = js::gc::get(js::GcValue::Exit, this_jsvalue) else {
-            t03_debug::log(&format!("T@{:x} call_exit_callback: DROP at gc::get(Exit)", std::ptr::from_ref(self) as usize));
             return;
         };
         {
             let global_for_check = self.global();
-            t03_debug::log(&format!(
-                "T@{:x} call_exit_callback: DISPATCHING exit_code={} has_exception={}",
-                std::ptr::from_ref(self) as usize,
-                exit_code,
-                global_for_check.has_exception(),
-            ));
         }
 
         let global_this = self.global();
