@@ -44,7 +44,13 @@ test/js/web/fetch/fetch.tls.test.ts
 
 ---
 
-## T01 — EL2 沙盒下子进程 `getcwd()` 内核级失效；bun 没有像 shell 一样用 `$PWD` 兜底（新发现，根因已完全钉死，有明确修复方向）
+## T01 — EL2 沙盒下子进程 `getcwd()` 内核级失效；bun 没有像 shell 一样用 `$PWD` 兜底（已修复并真机验证）
+
+**状态：已修复，2026-07-27 真机验证通过。** 两个 commit：
+- `6a5df2ea5`（`src/runtime/api/bun/js_bun_spawn_bindings.rs`）——覆盖 `Bun.spawn`/`Bun.spawnSync` 公开 JS API。单独验证时发现**不够**：`bun pm pack`/`bun-publish`/`bun-run-bunfig` 等走的是 `PackageManagerLifecycle.rs`/`run_command.rs` 内部直接拼 `SpawnOptions` 的路径，完全绕过这个 JS binding，改完之后这批文件依然复现。
+- `e39db04d6`（`src/jsc/bindings/bun-spawn.cpp`，`83409d5cd` 的修正版）——挪到所有 spawn 调用共用的最底层漏斗 `posix_spawn_bun`（chdir 之后、execve 之前），一次性覆盖所有调用点。**中间踩了一个自己的 bug**：`newEnvp` 数组最初声明在会在 `execve()` 之前就关闭的嵌套 `if` 块里，导致栈内存被后续的 `closeRangeOrLoop()` 覆盖，产生了一个新症状 `EFAULT: bad address in system call argument, posix_spawn`（真机复测抓到，简单的一次性 `Bun.spawnSync` 手测看不出来,因为中间调用栈太浅、内存还没被覆盖——`bun pm pack` 真实的生命周期脚本调用链更深,才暴露问题）。修正后（`newEnvp`/`pwdBuf` 提到和 `startChild()` 其余局部变量同级的外层作用域）真机复测：9 个受影响文件 + 2 个 install 步骤，**11/11 全部通过**，多次嵌套 spawn 压力测试也无 EFAULT。
+
+以下是根因分析全过程（保留作记录，修复已落地不需要再验证一遍）：
 
 **这不是噪音，根因已定位（2026-07-27，真机验证，多轮排除法）**：`environment_tmp.md`/`ohos_shell_init_getcwd.md` 里此前记的"纯噪音不影响功能"结论在本轮被推翻——`shell-init: error retrieving current directory: getcwd: cannot access parent directories: Permission denied` 这行噪音**混进了测试断言比对的实际输出**，导致多个原本应该通过的用例失败。
 
@@ -83,17 +89,17 @@ execlp("bash", "bash", "-c", "pwd", (char*)NULL);
 
 | 文件 | 具体断言 | 分类 | 层级 | 状态 |
 |---|---|---|---|---|
-| `test/cli/install/bun-pack.test.ts` | `$npm_command`/`$npm_lifecycle_event is accurate` | A | test/rust | 待修 |
-| `test/cli/install/bun-publish.test.ts` | 同上（publish 变体）| A | test/rust | 待修 |
-| `test/cli/install/bun-workspaces.test.ts` | `$npm_package_config_ works in root`（x2）| A | test/rust | 待修 |
-| `test/cli/install/bun-install-lifecycle-scripts.test.ts` | `stdout/stderr is inherited from root scripts`（x2×2 attempt）| A | test/rust | 待修 |
-| `test/cli/install/bun-run-bunfig.test.ts` | `run.shell=system/default > run.silent=true`（3+）| A | test/rust | 待修 |
-| `test/cli/install/bun-run.test.ts` | `toStartWith('error: "bash" exited with code 200')` 一个子用例 | A | test/rust | 待修（此文件另有 4 个不相关子失败,见 T02）|
-| `test/cli/run/filter-workspace.test.ts` | `elides output by default`/`respects --elide-lines`（噪音行改变了行数统计）| A | test/rust | 待修 |
-| `test/regression/issue/24314.test.ts` | `bun pm pack respects changes...from prepack/prepare scripts`（stderr 断言 not.toContain("error")）| A | test/rust | 待修 |
-| `test/regression/issue/10132.test.ts` | `bun run sets cwd for script, matching npm`（`pwd` 输出被污染）| A | test/rust | 待修 |
+| `test/cli/install/bun-pack.test.ts` | `$npm_command`/`$npm_lifecycle_event is accurate` | A | rust | **已修复**（e39db04d6，真机验证）|
+| `test/cli/install/bun-publish.test.ts` | 同上（publish 变体）| A | rust | **已修复** |
+| `test/cli/install/bun-workspaces.test.ts` | `$npm_package_config_ works in root`（x2）| A | rust | **已修复** |
+| `test/cli/install/bun-install-lifecycle-scripts.test.ts` | `stdout/stderr is inherited from root scripts`（x2×2 attempt）| A | rust | **已修复** |
+| `test/cli/install/bun-run-bunfig.test.ts` | `run.shell=system/default > run.silent=true`（3+）| A | rust | **已修复** |
+| `test/cli/install/bun-run.test.ts` | `toStartWith('error: "bash" exited with code 200')` 一个子用例 | A | rust | **已修复**（此文件另有 4 个不相关子失败,见 T02，未受影响）|
+| `test/cli/run/filter-workspace.test.ts` | `elides output by default`/`respects --elide-lines`（噪音行改变了行数统计）| A | rust | **已修复** |
+| `test/regression/issue/24314.test.ts` | `bun pm pack respects changes...from prepack/prepare scripts`（stderr 断言 not.toContain("error")）| A | rust | **已修复** |
+| `test/regression/issue/10132.test.ts` | `bun run sets cwd for script, matching npm`（`pwd` 输出被污染）| A | rust | **已修复** |
 
-（根因分析、排除过程、最小复现、修复方向见上面的独立小节；不再重复。）
+（根因分析、排除过程、最小复现见上面；修复实现见 `e39db04d6`。上一轮全量基线（2026-07-26）跑的是旧二进制，这批文件的通过率会在下一次全量重跑里反映到数字上。）
 
 ---
 
@@ -436,7 +442,7 @@ test/napi/node-napi-tests/**（60 个子文件）
 
 ## 下一轮优先级建议
 
-1. **T01（`Bun.spawn({cwd})` 破坏子进程 getcwd()）**——已完成：陈旧 quarantine 已清（class E 11 个文件删除），影响面最广的 9 个文件根因已钉死（`posix_spawn_file_actions_addchdir_np` 在 EL2 沙盒路径下的行为异常），下一步是 Rust 层修复 + 容器重编验证。
+1. ~~T01~~ —— **已修复并真机验证**（`e39db04d6`，9/9 文件转绿）。陈旧 quarantine 已清（class E 11 个文件删除）。
 2. **T15（深路径缓冲区）**——历史上这类 bug（shebang 128 字节）修复成本低、收益是通用 Rust 层修复,值得复用同一手法排查。
 3. **T04（spawn fd 所有权）**——已知最大真实 bug 簇，仍需 Rust 层插桩。
 4. **T03（PTY/Terminal）**——新发现的规模较大的簇,建议先摸底根因（可能一次修复解决 7 个文件）。
