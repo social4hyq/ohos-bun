@@ -269,9 +269,11 @@ test/js/node/test/parallel/test-fs-watch-recursive-sync-write.js
 | `test/js/node/fs/fs.test.ts` | `readdir(recursive)`/`readdirSync(...recursive)` 与 Node.js 结果不一致（3 个子用例）+ `readdir(recursive) x100` 遇 `ELOOP` | F | rust? | 待与真实 Node.js 对照 |
 | `test/js/node/test/sequential/test-fs-watch.js` | `assert.strictEqual(event, renameEv)` 事件分类不对 | F | rust | 待查（可能与 T05 同属 inotify 差异,但这个不是 recursive）|
 | `test/js/node/watch/fs.watch.test.ts` | `inotify queue overflow`→`(change, null)`断言；`fs.promises.watch` symlink 场景（2）| F | rust | 待查 |
-| `test/js/node/test/parallel/test-fs-link.js` | 未取得具体断言（历史记录归入"E 类 node-vendored 平台差异"）| E | n/a | 复核确认仍失败 |
-| `test/js/node/test/parallel/test-fs-promises.js` | 同上 | E | n/a | 复核确认仍失败 |
-| `test/js/node/test/parallel/test-fs-stat-date.mjs` | 同上 | E | n/a | 复核确认仍失败 |
+| `test/js/node/test/parallel/test-fs-link.js` | ~~未取得具体断言~~ | ~~E~~ | n/a | **已修复（`ade348ec6`）**——实际是 OHOS 内核拒绝裸 `SYS_linkat`，bun 直调 `libc::link()`（musl 直发裸 syscall）绕过 shim 的 `linkat` 符号拦截，详见 T21 表格里的完整根因记录 |
+| `test/js/node/test/parallel/test-fs-promises.js` | ~~同上~~ | ~~E~~ | n/a | **已修复（`ade348ec6`，同根因）** |
+| `test/js/node/test/parallel/test-fs-stat-date.mjs`（+ 未在基线清单的 `test-fs-stat-temporal.mjs`） | ~~同上~~ | ~~E~~ | test | **已修复（`64bf8ea35`）**——两个独立问题叠加：① vendored 测试的容忍守卫 `actual === 0` 对 BigInt 路径有类型洞（`0n === 0` 为 false）；② 这台设备文件系统的钳制边界比守卫预设的 NFSv3（仅 1970 前）更宽：**tv_sec=0 任意纳秒全部钳为 0**（1ms/355ms/999999999ns 实测皆然），tv_sec≥1 纳秒精度完整。守卫按实测边界（expected<1000ms）放宽并改数值比较 |
+
+**注意**：上面三行原本都被标成"E 类 node-vendored 平台差异，未取得具体断言"——本轮深挖证明这个归类**全是错的**：fs-link 是可修的真实调用链问题（改 1 行代码修复），stat-date 是测试自身的类型洞 + 可精确表征的平台行为（修测试容忍度）。这对"E 类=不用管"的默认假设是一个警示，其余 E 类条目值得按同样标准复核。
 
 ---
 
