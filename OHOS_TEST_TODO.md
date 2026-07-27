@@ -155,7 +155,7 @@ execlp("bash", "bash", "-c", "pwd", (char*)NULL);
 
 | 文件 | 症状 | 分类 | 层级 | 状态 |
 |---|---|---|---|---|
-| `test/js/bun/spawn/spawn.test.ts` | `close handling` 描述块 64 个组合里,`stdout===1`/`stderr===2` 的 28 个失败 | A | rust | **已修复**（`3bc00b9e7`，真机验证 64/64 通过）；另有 `with BUN_FEATURE_FLAG_FORCE_WAITER_THREAD` 一个不相关的慢用例,未受影响 |
+| `test/js/bun/spawn/spawn.test.ts` | `close handling` 描述块 64 个组合里,`stdout===1`/`stderr===2` 的 28 个失败 | A | rust | **已修复,全文件真机验证**（`3bc00b9e7`：`135 pass, 6 skip, 0 fail`，`Ran 141 tests across 1 file`,此前 28 fail 现已全部转绿）；含 `with BUN_FEATURE_FLAG_FORCE_WAITER_THREAD` 那个不相关的慢用例,同样通过 |
 | `test/js/bun/spawn/spawn_waiter_thread.test.ts` | issue #9404 | A | rust | 历史已知,本轮未复查,不确定是否同根因,建议下一轮用修复后的二进制重跑确认 |
 | `test/js/bun/spawn/spawn-pipe-read-error-leak.test.ts` | `PipeReader is freed when a subprocess stdout read fails` | A | rust | 历史已知,本轮未复查,建议下一轮重跑确认是否同根因 |
 | `test/js/bun/spawn/spawn-pipe-stale-fd-unregister.test.ts` | `FilePoll teardown tolerates an fd closed while still registered` | A | rust | 历史已知,本轮未复查,建议下一轮重跑确认是否同根因 |
@@ -466,7 +466,9 @@ test/napi/node-napi-tests/**（60 个子文件）
 - T15：`path-length.test.ts` 随 T01 修复；`unix-socket-long-path.test.ts` 改判独立小问题(未修)
 - 11 条陈旧 quarantine 已清理,`js/sql/adapter-env-var-precedence.test.ts` 的 `/tmp` 硬编码已修
 
-**正在做的最后一步验证（压缩后请先查这个）**：T04 修复后的完整 `test/js/bun/spawn/spawn.test.ts` 回归正在后台跑（binary: `/data/storage/el2/base/tmp/bun-t01-verify/bun-t04-fixed`,revision `3bc00b9e7`；命令见下）,预期 64/64 通过（此前 28 个失败）。**压缩后第一件事**：检查这个后台任务是否跑完,读结果,如果 64/64 通过就在本文件 T04 表格里把 `spawn.test.ts` 行的状态从"已修复"补充上具体验证数字（可能已经有),然后顺手确认一下同一个 bug 会不会影响其他几个文件（`spawn_waiter_thread.test.ts`/`spawn-pipe-read-error-leak.test.ts`/`spawn-pipe-stale-fd-unregister.test.ts`/`spawn-stdin-large-buffer.test.ts`/`test-net-socket-constructor.js`,这几个在 T04 表格里标了"本轮未复查")：
+**`spawn.test.ts` 全文件回归已跑完（压缩前最后确认的结果）**：`135 pass, 6 skip, 0 fail`（`Ran 141 tests across 1 file`），T04 的 28 个失败全部转绿，已写入上面 T04 表格。
+
+**压缩后第一件事（还没做，是真正的中断点）**：确认同一个 `statx`/`EBADF` 根因是否也影响 T04 表格里标"本轮未复查"的另外 5 个文件——`spawn_waiter_thread.test.ts`/`spawn-pipe-read-error-leak.test.ts`/`spawn-pipe-stale-fd-unregister.test.ts`/`spawn-stdin-large-buffer.test.ts`/`test-net-socket-constructor.js`。用同一个修复后二进制（`/data/storage/el2/base/tmp/bun-t01-verify/bun-t04-fixed`，revision `3bc00b9e7`）跑：
 
 ```bash
 export TMPDIR=/data/storage/el2/base/tmp
@@ -474,12 +476,14 @@ cd /storage/Users/currentUser/HarmonyPC/Software/ohos-bun
 CI=1 BUN_TEST_NO_SECRETS=1 node scripts/runner.node.mjs \
   --exec-path=/data/storage/el2/base/tmp/bun-t01-verify/bun-t04-fixed \
   --ignore-expectations=OPENHARMONY --retries=0 \
-  --include=js/bun/spawn/spawn.test.ts,js/bun/spawn/spawn_waiter_thread.test.ts,js/bun/spawn/spawn-pipe-read-error-leak.test.ts,js/bun/spawn/spawn-pipe-stale-fd-unregister.test.ts,js/bun/spawn/spawn-stdin-large-buffer.test.ts,js/node/test/parallel/test-net-socket-constructor.js
+  --include=js/bun/spawn/spawn_waiter_thread.test.ts,js/bun/spawn/spawn-pipe-read-error-leak.test.ts,js/bun/spawn/spawn-pipe-stale-fd-unregister.test.ts,js/bun/spawn/spawn-stdin-large-buffer.test.ts,js/node/test/parallel/test-net-socket-constructor.js
 ```
+
+跑完把结果更新进 T04 表格对应行,然后 commit push。
 
 （如果 `/data/storage/el2/base/tmp/` 下的临时二进制/脚本已经被系统清理掉,重新走一遍："容器里 formula revision 改成 `3bc00b9e7`" → `brew install --build-from-source social4hyq/core/bun` → `docker cp` 取出二进制"这个流程,已经很熟悉了,前面 6 轮容器重编都是这个套路。）
 
-**下一步方向（未开始，是本轮更大范围的待办）**：
+**下一步方向（这 5 个文件复核完之后，本轮更大范围的待办）**：
 - T03（PTY/Terminal，7 个文件的簇）——还没开始摸底根因
 - T18（bake dev）——需要产品层面先拍板要不要投入
 - Task 14：`expectations.txt` 剩余 ~66 条 `[ OPENHARMONY ]` 条目逐条核实归类（删/降级为 in-file skip/保留)——纯 test 层整理工作,不需要容器重编,性价比高,适合下一步优先做
