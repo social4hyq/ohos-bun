@@ -198,7 +198,22 @@ bun 在真正开始跑用户脚本之前的启动阶段（VM 初始化/模块系
 - `Run::start()` 函数入口（约 1415 行）
 - `vm.load_entry_point(entry)`（约 1573 行,这是真正执行用户脚本的调用)之前
 
-**下一步（尚未执行,是中断点）**：把容器里的 formula revision 改成 `1e3b53fed`,`brew install --build-from-source social4hyq/core/bun` 重编,`docker cp` 取出二进制,用同样的 node 包装器（`stdio:["ignore","pipe","pipe"]` + `BUN_OHOS_T04_DEBUG=1`）跑一个真实 `.ts` 文件（含一行 `fstatSync(1)`),读 `/data/storage/el2/base/tmp/bun-t04-debug.log`,看这 4 个新 checkpoint 里 fd1/fd2 从哪一步开始变 ERR。如果 4 个新 checkpoint 全部还是 OK,说明坏在 `load_entry_point()` 内部（模块加载/求值阶段本身),需要往那个函数内部继续插桩；如果某个中间 checkpoint 已经 ERR,范围就缩小到那两个 checkpoint 之间的具体几行代码。
+**第二批 4 个 checkpoint 真机验证结果（`fa620e380` 二进制,commit 内容和 `1e3b53fed` 源码一致,只是 formula 缓存原因二进制版本串显示成了后一个 docs-only commit,不影响结果）：全部正常**：
+```
+[before load_extra_env_and_source_code_printer] fd1=OK fd2=OK
+[after load_extra_env_and_source_code_printer] fd1=OK fd2=OK
+[Run::start() entry] fd1=OK fd2=OK
+[before vm.load_entry_point] fd1=OK fd2=OK   ← 这里还是好的
+```
+**结论：坏在 `vm.load_entry_point()`（`src/jsc/VirtualMachine.rs:2442`）内部**——`boot()`/`Run::start()` 这一层全程干净。
+
+**已经追加了第三批 4 个 checkpoint（commit `63f54adc7`，已推送，尚未真机验证,是本轮中断点）**，都在 `src/jsc/VirtualMachine.rs::load_entry_point()` 内部（注意：这个函数在 `bun_jsc` crate,和 `run_command.rs` 不是同一个 crate,`t04_debug_fd_checkpoint` 在这里重复定义了一份,不是共享的）：
+- `self.reload_entry_point(entry_path)` 调用前后各一个（这一步做模块解析/读取/转译,还没真正跑 JS）
+- `self.wait_for_promise(...)` 调用前后各一个（这一步驱动事件循环,是真正执行用户顶层代码的地方）
+
+**下一步（尚未执行,是本轮中断点）**：把容器里的 formula revision 改成 `63f54adc7`,重编,取出二进制,同样的 wrapper+env var 跑一遍,读日志。预期两种可能：
+1. 如果"before wait_for_promise"就已经 ERR——说明 `reload_entry_point`（模块解析/转译阶段,跟用户代码执行无关）就会弄坏 fd,值得往这个函数（也在 `VirtualMachine.rs`,搜 `fn reload_entry_point`）内部继续插桩。
+2. 如果"before wait_for_promise"还是 OK,"after wait_for_promise"才 ERR——说明是 JS 顶层代码求值阶段本身弄坏的（可能是 bun 自己在用户代码之前注入的 CommonJS/ESM wrapper、全局 polyfill 初始化等),这层再往下就是 JSC C++ 内部,插桩成本会显著上升,届时需要重新评估投入产出比,和用户确认是否继续深挖到 C++ 层还是先止步于"已知在 JS 求值阶段,具体触发点未定位"这个结论。
 
 ---
 
