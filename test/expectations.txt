@@ -159,9 +159,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # --- WASI cannot open '/' (EACCES on OHOS root) ---
 [ OPENHARMONY ] test/js/bun/wasm/wasi.test.js [ Failure ] # wasi preopened-dir tries openSync('/') → EACCES on OHOS
 
-# --- bun:internal-for-testing module not loadable on OHOS ---
-[ OPENHARMONY ] test/js/bun/sys/error-name-from-libuv.test.ts [ Failure ] # ENOENT reading bun:internal-for-testing
-
 # --- napi: node-gyp found ohos-sdk's older bundled clang (15.0.4, no C++20
 # libc++) instead of llvm@21 via PATH search, regardless of CC/CXX env vars.
 # Fixed in scripts/runner.node.mjs::getCombinedPath() (prepend llvm@21's keg
@@ -229,20 +226,13 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # --- cli/install performance-limited tests ---
 # 1/43 tests "Large payload via ipc pipe" sends >1MB JSON via IPC subprocess pipe
 # and bun install exits 1 (real platform issue, not timeout). Rest of file passes.
-[ OPENHARMONY ] test/cli/install/bun-install-security-provider.test.ts [ Flaky ] # 1/43 tests: large-payload IPC pipe fails on OHOS (exit 1, not timeout)
+[ OPENHARMONY ] test/cli/install/bun-install-security-provider.test.ts [ Failure ] # 1/43 tests, 100% reproducible (not flaky): security scanner subprocess SIGSEGVs on a >1MB JSON payload over the IPC pipe — likely same "large buffer over spawned-subprocess pipe" defect as spawn-stdin-large-buffer.test.ts, see OHOS_TEST_TODO.md T21
 
 # --- bunx TLS download failures ---
 # OHOS system CA store not in standard path → UNKNOWN_CERTIFICATE_VERIFICATION_ERROR
 # when bunx tries to install packages from npm live (eslint, @angular/cli).
 [ OPENHARMONY ] test/cli/install/bunx.test.ts [ Flaky ] # TLS cert errors on npm downloads from OHOS
 
-# --- security-scanner-matrix files (unsampled matrix too large for OHOS) ---
-# Runner generates ~7200 tests without isCI sampling; each has 5s default timeout
-# and OHOS spawn overhead pushes most past the limit. With CI=1 (10% sample)
-# they pass cleanly (59 pass / 661 skip / 0 fail in ~24s) but the OHOS test
-# runner does not set CI=1. Skipping the whole file until runner is configured.
-[ OPENHARMONY ] test/cli/install/bun-security-scanner-matrix-with-node-modules.test.ts [ Skip ] # matrix unsampled without CI=1; see comment above
-[ OPENHARMONY ] test/cli/install/bun-security-scanner-matrix-without-node-modules.test.ts [ Skip ] # matrix unsampled without CI=1; see comment above
 
 # --- bun-install.test.ts git+https TLS flake ---
 # 1/189 tests clones git+https://github.com/mishoo/UglifyJS.git and hits
@@ -288,8 +278,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # upstream Node test ports; not patched to keep them byte-identical.
 [ OPENHARMONY ] test/js/node/test/parallel/test-http2-premature-close.js [ Failure ] # family:6-restricted "localhost" lookup has no /etc/hosts entry here
 [ OPENHARMONY ] test/js/node/test/parallel/test-net-socket-connect-without-cb.js [ Failure ] # family:6-restricted "localhost" lookup has no /etc/hosts entry here
-[ OPENHARMONY ] test/js/web/html/FormData.test.ts [ Flaky ] # 1 test failure
-[ OPENHARMONY ] test/js/web/encoding/text-decoder.test.js [ Flaky ] # 1 test failure
 
 # --- js/third_party: HTTP2 / gRPC / pnpm / next-auth ---
 # All failures are networking-related: HTTP2 test server returns 403 on OHOS;
@@ -304,11 +292,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # Docker-dependent categories (2026-07-08)
 # ─────────────────────────────────────────────────────────────
 
-# --- js/sql: unix socket on /tmp ---
-# adapter-env-var-precedence tries to listen at /tmp/thisisacoolmysql.sock
-# but /tmp is read-only on OHOS. Rest of file passes (543 pass / 0 fail).
-[ OPENHARMONY ] test/js/sql/adapter-env-var-precedence.test.ts [ Flaky ] # unix socket bind on /tmp fails (read-only filesystem)
-
 # --- js/valkey: docker compose v2 unavailable ---
 # Valkey tests need `docker compose` (plugin v2). OHOS docker install does not
 # include the compose plugin. All 15 tests skip with pre-condition.
@@ -321,31 +304,31 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # expects @typescript/native-preview-openharmony-arm64 which doesn't exist.
 [ OPENHARMONY ] test/integration/bun-types/bun-types.test.ts [ Flaky ] # tsgo native binary unavailable for openharmony-arm64
 
-# --- regression: shell / TTY / docker / misc ---
-# Shell interpolation tests hit ENOENT on OHOS paths; V8StackTrace uses
-# bun:internal-for-testing; various issue-specific regressions need docker.
-[ OPENHARMONY ] test/regression/issue/17405.test.ts [ Flaky ] # 22 tests: shell interpolation / decompression
-[ OPENHARMONY ] test/regression/issue/17294.test.ts [ Flaky ] # 9 tests
-[ OPENHARMONY ] test/regression/issue/17244.test.ts [ Flaky ] # 4 tests
-[ OPENHARMONY ] test/regression/issue/prepare-stack-trace-crash.test.ts [ Flaky ] # 3 tests
-[ OPENHARMONY ] test/regression/issue/18161.test.ts [ Flaky ] # 3 tests
-[ OPENHARMONY ] test/regression/issue/29290.test.ts [ Flaky ] # 2 tests
-[ OPENHARMONY ] test/regression/issue/test-process-stdout-async-iterator.test.ts [ Flaky ] # 2 tests
-[ OPENHARMONY ] test/regression/issue/03844/03844.test.ts [ Flaky ] # 2 tests
-[ OPENHARMONY ] test/regression/issue/24742.test.ts [ Flaky ] # 1 test
-[ OPENHARMONY ] test/regression/issue/24364.test.ts [ Flaky ] # 1 test
-[ OPENHARMONY ] test/regression/issue/23022-stack-trace-iterator.test.ts [ Flaky ] # V8StackTraceIterator
-[ OPENHARMONY ] test/regression/issue/22353.test.ts [ Flaky ] # 1 test
-[ OPENHARMONY ] test/regression/issue/18239/18239.test.ts [ Flaky ] # 1 test
-[ OPENHARMONY ] test/regression/issue/14976/14976.test.ts [ Flaky ] # 1 test
-[ OPENHARMONY ] test/regression/issue/ctrl-c.test.ts [ Flaky ] # TTY ctrl+c
+# --- regression: real-machine 2026-07-27 reconciliation ---
+# This whole block used to carry vague "[ Flaky ] # N tests" labels dated
+# from a --parallel-based test methodology. Real CI (ohos-full-test.yml)
+# deliberately does not use --parallel (single serial job, matches
+# Buildkite's own invocation style — see that workflow's header comment).
+# Isolated reruns (--retries=0, single file, no --parallel) of every entry
+# below other than the four kept underneath came back 100% clean: 17405,
+# 17294, 17244, prepare-stack-trace-crash, 18161,
+# test-process-stdout-async-iterator, 03844, 24742's sibling 22353 and
+# 23022-stack-trace-iterator, 14976, and ctrl-c.test.ts (the last one prints
+# a `shell-init: error retrieving current directory: getcwd: ...` line from
+# the still-unfixed-in-the-installed-binary T01 gap, but that's cosmetic
+# stderr noise and doesn't fail the test). All removed as stale.
+#
+# Four entries are kept below because they fail 100% deterministically
+# (not flaky) for real, still-uninvestigated reasons — see OHOS_TEST_TODO.md.
+[ OPENHARMONY ] test/regression/issue/29290.test.ts [ Failure ] # bun build --compile /nix/store PT_INTERP normalization: readInterp() gets "" instead of the fake nix interpreter path — see OHOS_TEST_TODO.md T23
+[ OPENHARMONY ] test/regression/issue/24742.test.ts [ Failure ] # same PT_INTERP/patchelf root cause as 29290 — see OHOS_TEST_TODO.md T23
+[ OPENHARMONY ] test/regression/issue/24364.test.ts [ Skip ] # react-tailwind template's tsc --noEmit needs @typescript/typescript-openharmony-arm64, which upstream does not publish (same class as test/integration/bun-types/bun-types.test.ts's tsgo gap)
+[ OPENHARMONY ] test/regression/issue/18239/18239.test.ts [ Failure ] # TTY stdin buffering: process never receives "Received 3 chunks, exiting..." — part of the T03 PTY/TTY cluster, see OHOS_TEST_TODO.md
 
 # --- cli/hot + cli/inspect: OHOS unix socket / sourcemap timing ---
 # Patched in-place: inspect unix-domain-socket tests use tmpdirSync() on OHOS
 # (hmdfs disallows AF_UNIX bind → EPERM). hot sourcemap test timeouts bumped 10s→60s.
 # These files now pass on OHOS; entries kept as regression sentinels.
-[ OPENHARMONY ] test/cli/inspect/inspect.test.ts [ Flaky ] # OHOS unix socket path workaround (tmpdirSync instead of .tmp)
-[ OPENHARMONY ] test/cli/hot/hot.test.ts [ Flaky ] # OHOS timeout multipliers applied (6x/3x)
 
 # --- js/bun terminal/REPL: OHOS PTY and termios limitations ---
 # setRawMode throws "Failed to set raw mode"; SIGWINCH propagation to children broken;

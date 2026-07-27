@@ -426,15 +426,29 @@ test/js/node/child_process/child-process-rlimit-nofile.test.ts
 | `test/js/node/test/parallel/test-net-error-twice.js` | `assert.strictEqual(0, 1)` — 错误只应触发一次的断言,实际触发次数不对 |
 | `test/regression/issue/07500/07500.test.ts` | `Bun.stdin.text() doesn't read all data`,100s 超时 |
 | `test/regression/issue/24364.test.ts` | `react-tailwind template passes tsc --noEmit`（可能依赖 T14 网络类模板拉取,未核实）|
-| `test/js/bun/spawn/spawn-stdin-large-buffer.test.ts` | **优先级建议提高**：2048/4096/8192 KB 级别 stdin 通过 socketpair 传输给子进程时数据丢失（`spawnSync`/`Bun.spawn` 两条路径都中招,部分组合收到 `0` 字节）。T04 复核时排除了 statx/EBADF 同根因,是独立的数据完整性问题,不是断言脆弱 |
+| `test/js/bun/spawn/spawn-stdin-large-buffer.test.ts` | **优先级建议提高**：2048/4096/8192 KB 级别 stdin 通过 socketpair 传输给子进程时数据丢失（`spawnSync`/`Bun.spawn` 两条路径都中招,部分组合收到 `0` 字节）。T04 复核时排除了 statx/EBADF 同根因,是独立的数据完整性问题,不是断言脆弱。**Task 14 追加发现**：`test/cli/install/bun-install-security-provider.test.ts` 的 "Large payload via ipc pipe > handles packages JSON larger than max arg length (>1MB)" 用例 100% 复现 `SIGSEGV`（security scanner 子进程收 >1MB JSON 通过 IPC pipe 时崩溃）——症状级别比这里的截断更严重（是崩溃不是丢数据），但触发条件同款（子进程 pipe 传大 payload）,值得合并排查,可能是同一个 pipe 缓冲区处理缺陷的两种表现形式 |
 | `test/js/bun/spawn/spawn-pipe-read-error-leak.test.ts` | T04 复核确认非同根因：`cat` 读坏掉的 FIFO 时产生的 `Broken pipe` stderr 输出未被吞掉/预期到,导致断言的空数组不成立 |
 | `test/js/bun/spawn/spawn_waiter_thread.test.ts` | T04 复核确认非同根因：issue #9404 的 `resourceUsage().cpuTime.total` 阈值断言,真机实测比 `750_000n` 阈值高约 83%（`1374480n`），疑似 waiter 线程 CPU 时间统计口径与阈值假设不匹配 |
+| `test/cli/install/bun-install-security-provider.test.ts` | Task 14 新发现：大 payload (>1MB JSON) 经 IPC pipe 传给 security scanner 子进程时 100% 复现 `SIGSEGV`（"multiple threads are crashing" 连环崩溃日志）。同一簇候选,见上一行 `spawn-stdin-large-buffer.test.ts` |
 
 ---
 
 ## T22 — `fs-oom.test.ts`：memfd + readFileSync 交互差异（复核：不是陈旧 quarantine）
 
-`expectations.txt` 把这个文件标注为"bun:internal-for-testing unavailable"（和 T23 一起被认为陈旧），但**放回来复测后确认这条 quarantine 依然成立**——只是理由错了。真实原因：`memfd_create` 产生的 fd 配合 `setSyntheticAllocationLimitForTesting` 后调用 `readFileSync`，OHOS 上报 `EACCES: permission denied, fstat`，而不是预期的 `ENOMEM: not enough memory`。分类 A/B（待定,需要判断是 bun 对 memfd fd 的 fstat 逻辑问题还是 OHOS memfd 实现本身的差异），层级 rust，状态：待查。
+`expectations.txt` 把这个文件标注为"bun:internal-for-testing unavailable"（和下面"陈旧 quarantine 确认"里那批一样的理由），但**放回来复测后确认这条 quarantine 依然成立**——只是理由错了。真实原因：`memfd_create` 产生的 fd 配合 `setSyntheticAllocationLimitForTesting` 后调用 `readFileSync`，OHOS 上报 `EACCES: permission denied, fstat`，而不是预期的 `ENOMEM: not enough memory`。分类 A/B（待定,需要判断是 bun 对 memfd fd 的 fstat 逻辑问题还是 OHOS memfd 实现本身的差异），层级 rust，状态：待查。
+
+---
+
+## T23 — `patchelf --set-interpreter` 在 OHOS 签名后的 bun 二进制上静默失效（Task 14 新发现）
+
+`test/regression/issue/24742.test.ts` 和 `test/regression/issue/29290.test.ts` 都测试 `bun build --compile` 对 NixOS `/nix/store` 风格 `PT_INTERP` 路径的归一化逻辑。两个文件都在**归一化逻辑跑之前**就失败：`patchelf --set-interpreter <fake-nix-path> <copied-bun-binary>` 执行后（`stderr === ""`、`exitCode === 0`，patchelf 自认为成功），紧接着 `readInterp(readHead(patchedBinary))` 读回的 `PT_INTERP` 字符串是空的 `""`，而不是 patchelf 刚写入的伪 nix 路径。
+
+### 现状（未深挖，Task 14 只是发现并记录）
+
+- 两个测试用同一段 helper（`readInterp`/`readHead`/`patchelf --set-interpreter`），失败点一致，判定同根因。
+- 尚未确认是：① OHOS bun 二进制自带的 CodeSign 段（LLD `--code-sign` patch + `binary-sign-tool` 双重签名）让 `patchelf` 认为程序头有效但实际写入位置不对；② 这台设备 `/data/service/hnp/bin/patchelf` 版本本身在处理这类 ELF 时有 bug；③ 别的原因。三种可能都还没验证。
+- 不影响生产使用——这是"NixOS 主机把 bun 自身的 PT_INTERP 改写成 nix store 路径，bun build --compile 复制这个改写过的二进制时应该把路径转回标准 FHS 路径"的边缘功能测试，这台设备既不是 NixOS 也不会真的触发这个场景，所以是低优先级。
+- 分类 A（可能是真实平台交互 bug）或 C（可能是测试 helper 对签名二进制的假设不成立），层级 rust 或 test，状态：待查。
 
 ---
 
@@ -461,31 +475,29 @@ test/napi/node-napi-tests/**（60 个子文件）
 
 ---
 
-## 会话状态快照（2026-07-27 更新：T04 同簇 5 文件复核已完成）
+## 会话状态快照（2026-07-27 更新：Task 14 expectations.txt 核实归类进行中）
 
-**已完成并真机验证的修复（3 个 commit 已推送到 `origin/ohos-aarch64`）**：
+**已完成并真机验证的修复（commit 已推送到 `origin/ohos-aarch64`）**：
 - `6a5df2ea5`/`e39db04d6` 附近 —— T01（EL2 沙盒 `getcwd()` bug）修复，9/9 文件转绿
-- `3bc00b9e7` —— T04（`statx(2)` 对 socket fd 报 EBADF)修复，最小复现脚本确认 `fstatSync(1)` 不再报错
+- `3bc00b9e7` —— T04（`statx(2)` 对 socket fd 报 EBADF)修复，最小复现脚本确认 `fstatSync(1)` 不再报错;`spawn.test.ts` 135 pass/6 skip/0 fail,28 个失败全转绿
 - T15：`path-length.test.ts` 随 T01 修复；`unix-socket-long-path.test.ts` 改判独立小问题(未修)
-- 11 条陈旧 quarantine 已清理,`js/sql/adapter-env-var-precedence.test.ts` 的 `/tmp` 硬编码已修
+- T04 同簇 5 文件复核完毕：仅 `spawn-pipe-stale-fd-unregister` 同根因转绿；`spawn_waiter_thread`/`spawn-pipe-read-error-leak`/`spawn-stdin-large-buffer` 非同根因仍失败,已转入 T21；`test-net-socket-constructor` 已是绿色
 
-**`spawn.test.ts` 全文件回归**：`135 pass, 6 skip, 0 fail`（`Ran 141 tests across 1 file`），T04 的 28 个失败全部转绿。
+**Task 14（expectations.txt 核实归类）进行中,本轮已处理 19 条**：
+- 删除（陈旧/已修复,共 15 条）：`adapter-env-var-precedence`（tmpdirSync 修复生效）、`error-name-from-libuv`（disproven premise 同款,漏网之鱼）、`FormData`/`text-decoder`（"1 test failure" 语焉不详,隔离单跑 0 fail,是 --parallel 下的假阳性）、`bun-security-scanner-matrix-{with,without}-node-modules`（CI=true 确实有传,理由本身过期）、`inspect`/`hot`（workaround 已生效,隔离单跑全绿）、`17405`/`17294`/`17244`/`prepare-stack-trace-crash`/`18161`/`test-process-stdout-async-iterator`/`03844`/`23022-stack-trace-iterator`/`22353`/`14976`/`ctrl-c`（regression/issue 整批"[Flaky] # N tests"标签隔离单跑全部 0 fail——**关键发现**：这批标签的年代早于"CI 不用 `--parallel`"这个约定,`ohos-full-test.yml` 头部注释明写"Buildkite 自己的 CI 也不用 `--parallel`",隔离单跑（无并发）就是真实 CI 的复现条件,所以这批"Flaky"从一开始就是并发假阳性,不是环境限定的真实降级）
+- 修正标签+关联新发现（4 条）：`29290`/`24742`（同根因,新立 **T23**：`patchelf --set-interpreter` 在签名后的 bun 二进制上写入静默失效,`PT_INTERP` 读回空字符串,未深挖）；`24364`（改判为确定性 `Skip`,和 `bun-types.test.ts` 一样是 tsc/tsgo 原生包 OHOS 未发布)；`18239`（改判为确定性 `Failure`,归入 T03 PTY 簇,该表已有此文件）
+- **新发现的高价值关联**：`bun-install-security-provider.test.ts` 的 "Large payload via ipc pipe" 用例其实是 100% 复现的 `SIGSEGV`（不是原标签写的 flaky exit 1），和 `spawn-stdin-large-buffer.test.ts` 的数据丢失高度疑似同一个"子进程 pipe 传大 payload"缺陷的两种表现（一个丢数据、一个直接崩），已在两处互相引用，值得合并立项
+- 剩余 ~54 条：TLS 证书库缺失、DNS/hosts family:6 gap、RLIMIT 内核默认值差异、docker compose 不可用、FUSE 沙盒拦截、第三方包无 OHOS 原生二进制（sharp/astro/prisma/resvg/canvas/rspack/tsgo）、T03 PTY 簇本轮未逐条重跑——这些都已有扎实的证据链（日期、具体报错、确认过的平台限制），本轮判断不需要逐条重新压测,维持现状
 
-**T04 同簇 5 文件复核已完成**（用修复后二进制 `3bc00b9e7` 跑,结果已写入 T04 表格）：
-- `spawn-pipe-stale-fd-unregister.test.ts` —— **同根因,随 T04 转绿**（1 pass, 0 fail）
-- `test/js/node/test/parallel/test-net-socket-constructor.js` —— 通过（parallel-safe 分组内绿色）
-- `spawn_waiter_thread.test.ts` —— **非同根因,仍失败**：CPU 时间断言（`1374480n` vs 阈值 `750_000n`），已转入 T21 列表
-- `spawn-pipe-read-error-leak.test.ts` —— **非同根因,仍失败**：FIFO 读坏时 `cat` 的 stderr 输出未被吞掉，已转入 T21 列表
-- `spawn-stdin-large-buffer.test.ts` —— **非同根因,仍失败**：大 buffer 数据丢失（比断言脆弱更严重的数据完整性问题），已转入 T21 列表并标记优先级建议提高
-
-**下一步方向（这一批任务里，性价比排序）**：
-- Task 14：`expectations.txt` 剩余 ~66 条 `[ OPENHARMONY ]` 条目逐条核实归类（删/降级为 in-file skip/保留)——纯 test 层整理工作,不需要容器重编,性价比高,**建议下一步优先做**
-- `spawn-stdin-large-buffer.test.ts` 根因排查——数据完整性问题,值得优先于其他长尾单点
-- T03（PTY/Terminal，7 个文件的簇）——还没开始摸底根因
+**下一步方向（性价比排序）**：
+- **`spawn-stdin-large-buffer.test.ts` + `bun-install-security-provider.test.ts` 合并根因排查**——数据完整性/崩溃问题,现在有两个独立入口都指向"子进程 pipe 传大 payload"，优先级应该提到最高
+- Task 14 收尾：剩余 ~54 条如果要继续抠,边际收益已经不高（本轮已经把好摘的果子摘完）,可以考虑就此收口进入 Task 15
+- T03（PTY/Terminal）——还没开始摸底根因,现在有 7 个文件（含新发现的 18239）
+- T23（patchelf/PT_INTERP）——低优先级,不影响生产场景
 - T18（bake dev）——需要产品层面先拍板要不要投入
 - Task 15：全部真实修复落地后,做一次最终全量重跑,产出三口径通过率报告,追加进 `OHOS_TEST_STATUS.md`
 
-**环境状态**：容器（`openharmony`）当前安装的是 `3bc00b9e7`（T04 修复版,build-from-source,非正式 bottle）。host 的 harmonybrew tap 本地 formula 文件（`~/.harmonybrew/Homebrew/Library/Taps/social4hyq/homebrew-core/Formula/b/bun.rb`）也指向这个 revision，未提交（这是本地测试用的临时改动,不是正式发布,tap 是独立 git repo,main 受保护）。真机默认 `bun`（`~/.harmonybrew/bin/bun`）**仍然是修复前的旧版本**——本轮所有验证都是用 `docker cp` 取出的独立二进制文件跑,没有替换真机默认安装。
+**环境状态**：容器（`openharmony`）当前安装的是 `3bc00b9e7`（T04 修复版,build-from-source,非正式 bottle）。host 的 harmonybrew tap 本地 formula 文件（`~/.harmonybrew/Homebrew/Library/Taps/social4hyq/homebrew-core/Formula/b/bun.rb`）也指向这个 revision，未提交（这是本地测试用的临时改动,不是正式发布,tap 是独立 git repo,main 受保护）。真机默认 `bun`（`~/.harmonybrew/bin/bun`）**仍然是修复前的旧版本**——本轮所有验证都是用 `docker cp` 取出的独立二进制文件跑,没有替换真机默认安装。Task 14 的验证全部用真机默认 `bun`（旧版本）跑,因为涉及的都是 test 层判断,和 T01/T04 的 rust 修复无关。
 
 ---
 
