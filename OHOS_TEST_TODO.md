@@ -171,17 +171,34 @@ bun 在真正开始跑用户脚本之前的启动阶段（VM 初始化/模块系
 | `test/js/bun/spawn/spawn-stdin-large-buffer.test.ts` | 大 stdin buffer 截断（历史记录过隔离时曾 segfault，本轮跑通但仍断言失败）| A | rust | 历史已知,未修 |
 | `test/js/node/test/parallel/test-net-socket-constructor.js` | `cluster.fork({stdio:['pipe','pipe','pipe','ipc','pipe','pipe','pipe']})` 的 worker 退出码 1 而非 0 — `cluster.fork()` 会拉起一个新 bun worker 进程,且指定了 pipe stdio,很可能正是 T04 新根因（bun 启动路径遇到 socket 型 fd1/2 时自损）命中的另一个入口 | A | rust | 待查（现在怀疑和 T04 是同一根因,而不是"fd 所有权"）|
 
-### 排查进度快照（2026-07-27，中断点，供下一轮/压缩后继续）
+### 排查进度快照（2026-07-27，第二次更新，中断点，供下一轮/压缩后继续）
 
 已经追到 `src/bun_bin/lib.rs::main()` 第 4 步 `output::stdio::init()`（约 197-200 行）——这个函数调用 C 的 `bun_initialize_process()`（`src/jsc/bindings/c-bindings.cpp:589`，"one-shot stdio fixup at process startup"）。
 
-**已经证伪的假设**：`bun_initialize_process()` 里 `for (fd=0;fd<3;fd++) { isatty(fd); if (errno==EBADF) setDevNullFd(fd); }`（c-bindings.cpp 632-651 行）——用裸 C 程序在同样的 `stdio:["ignore","pipe","pipe"]` 环境下直接测过 `isatty()` 在 socket 型 fd 上的行为：**errno 正确地是 25 (ENOTTY)，不是 EBADF**。这条分支本身逻辑没问题，不是根因。
+**已经证伪的假设 #1**：`bun_initialize_process()` 里 `for (fd=0;fd<3;fd++) { isatty(fd); if (errno==EBADF) setDevNullFd(fd); }`（c-bindings.cpp 632-651 行）——用裸 C 程序在同样的 `stdio:["ignore","pipe","pipe"]` 环境下直接测过 `isatty()` 在 socket 型 fd 上的行为：errno 正确地是 25 (ENOTTY)，不是 EBADF。这条分支本身逻辑没问题，不是根因。
 
 **已经证实的边界**（用 `e39db04d6` 真机验证）：
-- `bun --version`、`bun -e ""`（落到打印 help）—— 在同样的管道 stdio 下完全正常，说明 `output::stdio::init()`/`bun_initialize_process()` 本身跑完不会立刻弄坏 fd（这两条命令也会执行到这一步）。
-- 真正跑一个脚本（哪怕只有一行 `fstatSync(1)`）—— 坏。说明根因在"这两类命令都不会走到、但跑脚本会走到"的某处，最可疑的是 VM/模块系统初始化。
+- `bun --version`、`bun -e ""`（落到打印 help）—— 在同样的管道 stdio 下完全正常。
+- 真正跑一个脚本（哪怕只有一行 `fstatSync(1)`）—— 坏。
 
-**下一步（尚未执行,是中断点）**：正在准备往 `src/runtime/cli/run_command.rs:980` 附近（`VirtualMachine::init(...)` 调用前后）插桩,对比"VM 初始化前/后"fd1/fd2 的 `fstat` 状态,把范围从"启动阶段某处"精确缩小到"VM 初始化之前 vs 之后"。插桩方式：写到独立的调试文件（不能写 fd 2，会污染被测对象本身），走一次容器重编验证。这一步还没做代码改动，是下一轮/压缩后继续时的具体入口点。
+**插桩进度（`src/runtime/cli/run_command.rs`，`t04_debug_fd_checkpoint()` helper，env var `BUN_OHOS_T04_DEBUG=1` 打开，写到 `/data/storage/el2/base/tmp/bun-t04-debug.log`，不碰 fd1/2 本身）**：
+
+第一轮插桩（commit `e3deeb459`→修 `core::mem` shadowing 编译错误→`c1201090b`,真机验证过）5 个 checkpoint 全部正常：
+```
+[boot() entry] fd1=OK fd2=OK
+[after load_config_path (bunfig)] fd1=OK fd2=OK
+[after bun_jsc::initialize + bun_ast::initialize_store] fd1=OK fd2=OK
+[before VirtualMachine::init] fd1=OK fd2=OK
+[after VirtualMachine::init] fd1=OK fd2=OK   ← 这里还是好的
+```
+但用户脚本自己第一行 `fstatSync(1)` 已经是 EBADF——**证明坏在"VM 初始化返回之后"到"用户脚本真正跑起来之前"这一段**（`boot()` 剩余部分 + `Run::start()` + `vm.load_entry_point()`）。
+
+**已经追加了第二批 4 个 checkpoint（commit `1e3b53fed`，已推送，尚未真机验证,是本轮中断点）**：
+- `boot()` 里 `vm.load_extra_env_and_source_code_printer()`（约 1142-1144 行,只标了 `boot()` 这一处,`boot_standalone()` 里的同名调用没动)前后各一个
+- `Run::start()` 函数入口（约 1415 行）
+- `vm.load_entry_point(entry)`（约 1573 行,这是真正执行用户脚本的调用)之前
+
+**下一步（尚未执行,是中断点）**：把容器里的 formula revision 改成 `1e3b53fed`,`brew install --build-from-source social4hyq/core/bun` 重编,`docker cp` 取出二进制,用同样的 node 包装器（`stdio:["ignore","pipe","pipe"]` + `BUN_OHOS_T04_DEBUG=1`）跑一个真实 `.ts` 文件（含一行 `fstatSync(1)`),读 `/data/storage/el2/base/tmp/bun-t04-debug.log`,看这 4 个新 checkpoint 里 fd1/fd2 从哪一步开始变 ERR。如果 4 个新 checkpoint 全部还是 OK,说明坏在 `load_entry_point()` 内部（模块加载/求值阶段本身),需要往那个函数内部继续插桩；如果某个中间 checkpoint 已经 ERR,范围就缩小到那两个 checkpoint 之间的具体几行代码。
 
 ---
 
