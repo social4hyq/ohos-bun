@@ -223,10 +223,12 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # Previously flaky at 5s default timeout. setDefaultTimeout(5min) applied to all;
 # verified passing under full-directory concurrent load (2026-07-08 r22).
 
-# --- cli/install performance-limited tests ---
-# 1/43 tests "Large payload via ipc pipe" sends >1MB JSON via IPC subprocess pipe
-# and bun install exits 1 (real platform issue, not timeout). Rest of file passes.
-[ OPENHARMONY ] test/cli/install/bun-install-security-provider.test.ts [ Failure ] # 1/43 tests, 100% deterministic (not flaky): security scanner subprocess SIGSEGVs on a >1MB JSON payload over the IPC pipe — see OHOS_TEST_TODO.md T24 (similar trigger to spawn-stdin-large-buffer.test.ts's pipe race, but that one is non-deterministic and this one isn't, so not confirmed to be the same bug)
+# bun-install-security-provider.test.ts's "Large payload via ipc pipe" case
+# (>1MB JSON to the security scanner subprocess, previously a 100%
+# reproducible SIGSEGV) was fixed by the ReadFile read-loop serialization in
+# src/runtime/webcore/blob/read_file.rs -- same concurrency bug as the
+# spawn-stdin-large-buffer truncation, see OHOS_TEST_TODO.md T24. Verified
+# 43 pass / 0 fail across three consecutive isolated runs; entry removed.
 
 # --- bunx TLS download failures ---
 # OHOS system CA store not in standard path → UNKNOWN_CERTIFICATE_VERIFICATION_ERROR
