@@ -166,7 +166,18 @@ execlp("bash", "bash", "-c", "pwd", (char*)NULL);
 - REPL 三个用例（`error shows in terminal` / `multiline input with open brace` / `backspace deletes a whole multi-byte character`）—— REPL 完全依赖 PTY 收发
 - `18239` TTY stdin buffering、`no-orphans` 的 Ctrl-Z/setsid
 
-`setRawMode` 只是"能不能配置 termios"，这一批是"配置好之后数据能不能过去"，是**两个独立的问题**。下一步应当用同样的方法（独立 C 探针，绕开 bun）验证这台设备上 PTY master↔slave 的读写与 `SIGWINCH`/作业控制信号是否正常，再决定是 bun 侧的 bug 还是平台硬限制。
+`setRawMode` 只是"能不能配置 termios"，这一批是"配置好之后数据能不能过去"，是**两个独立的问题**。
+
+**已用独立 C 探针排除平台限制** —— 操作系统层面这台设备的 PTY 完全正常：
+
+```
+ioctl(master, TIOCSWINSZ) = 0        ioctl(master, TIOCGWINSZ) = 0  rows=24 cols=80
+write(master) -> poll(slave)  = POLLIN,  read(slave)  = 18 字节，内容完整
+write(slave)  -> poll(master) = POLLIN,  read(master) = 37 字节（含内核回显）
+close(slave)  -> poll(master) = 0x10 (POLLHUP)
+```
+
+回显、窗口大小 ioctl、EOF/HUP 通知——失败用例依赖的每一条 PTY 能力都验证可用。**所以这第二个根因是 bun 侧的缺陷，不是平台硬限制**（分类 A，不是 B）：数据通路本身通畅，是 bun 没能正确驱动它。症状（回调永不触发导致 90s 超时、收不到回显）指向 bun 把 PTY master fd 接入事件循环 / 读路径的那一段，具体位置待定位。
 
 **另外**：`tty-reopen-after-stdin-eof` 和 `tui-app-tty-pattern` 实测**已经通过**——上面表格里原先列为"可能同根因"，应从 T03 簇移出。
 
