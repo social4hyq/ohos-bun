@@ -974,6 +974,8 @@ node scripts/runner.node.mjs --exec-path=<bun> --results-json=logs/refail-serial
 
 `localIPv6Hosts` 同样依赖 `isLinux`，但无任何测试消费，无连带影响。
 
+**事后修正（同一轮）**：上面 A/B 用裸 `bun` 直接跑，漏掉了 `bun:internal-for-testing` 需要的两个 runner 环境变量，导致 dgram/abstract-socket 那批文件的"仍失败"判断是假的（实际失败原因是 `ENOENT reading bun:internal-for-testing` 而不是测试断言）。用真实 runner 复测全部 18 个消费 `common.isLinux` 的文件：**19 通过 / 1 失败**，唯一仍失败的是 `test-fs-watch.js`（T06 已知的 inotify 事件分类问题，与 isLinux 无关）。所以这个改动的真实收益远大于最初记录的 3 个：`test-dgram-bind-fd.js`、`test-dgram-socket-buffer-size.js`、`test-pipe-abstract-socket-http.js`、`test-trace-events-net-abstract-socket.js` 等一并转绿。
+
 ### 下一轮优先级
 
 1. **T03 剩余的 exit 回调偶发丢失**——`await promise` 无固定 sleep，超时放宽到 30s 仍不触发；单独跑 0ms 立即触发，先造 N 个 Terminal 后间歇失败（非单调，排除耗尽；GC 假设亦已证伪）。真实竞争，未定位。
