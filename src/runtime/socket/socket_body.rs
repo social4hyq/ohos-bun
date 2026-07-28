@@ -15,7 +15,7 @@ pub(crate) fn netwrite_debug() -> bool {
 
 macro_rules! netlog {
     ($($arg:tt)*) => {
-        if crate::runtime::socket::socket_body::netwrite_debug() {
+        if netwrite_debug() {
             eprintln!("[netwrite] {}", format_args!($($arg)*));
         }
     };
