@@ -575,7 +575,20 @@ test/js/node/test/parallel/test-trace-events-fs-sync.js
 
 ## T21 — F 类：未深挖的单点/长尾问题
 
-逐个独立，尚未查根因，按文件列出，后续 triage 从这里挑：
+### 修复后批量复测（18 个文件，`7f42ebc2d`）：3 个真转绿，1 个差点误判
+
+| 文件 | 结果 | 归因（二分中间版本确认）|
+|---|---|---|
+| `cli/run/run-quote.test.ts` | ✅ 3/3 稳定通过（6 pass）| T01 版（`e39db04d6`）即已通过 → **T01 getcwd 修复**的连带受益 |
+| `test/js/node/test/sequential/test-stream2-stderr-sync.js` | ✅ 3/3 稳定通过 | T01 版 2/2 失败、T04 版（`3bc00b9e7`）2/2 通过 → **T04 statx-on-socket 修复**。证实了台账里"libuv fd 类型识别 gap"的猜测，具体根因就是 `fstat` 对 socket fd 报 EBADF |
+| `test/js/node/test/parallel/test-fs-write-sigxfsz.js` | ✅ 3/3 稳定通过 | rlimit 那一轮的 test 层改动（mksh `ulimit` no-op → 改用 `/usr/bin/zsh`）+ rust 层 `adjust_ulimit` EPERM 回退 |
+| `test/js/node/net/node-net.test.ts` | ❌ **未转绿** | 见下 |
+
+**`node-net.test.ts` 差点被记成转绿，是自己的数据把它拦下来的**：首轮单跑显示 61 pass / 0 fail，看着像被某个修复顺带解决了。二分归因时一路回溯到 `bun-rlimit`（`b6e5798e5`）都还失败，本来要把功劳记给其间的 T03 —— 但 T03 是 PTY 修复，跟网络测试八竿子打不着，这个不合理迫使我回头做重复性验证：`bun-rlimit` 跑 3 次得到 **0/1/1** 失败，`bun-t03-clean` 跑 3 次得到 **1/1/1**。真相是这个文件本身摇摆，首轮那次"通过"只是运气好。
+
+**方法论教训（第二次踩同一类坑）**：单次运行不足以判定"转绿"，必须重复。T03 那轮"失败项每次都在换"已经提示过摇摆的存在，这次仍然差点上当。凡是宣布转绿的，本节一律给 3/3 的重复证据；归因不合常理时（修复域与测试域无关）优先怀疑自己的测量，而不是编一个因果故事。
+
+余下 14 个文件复测后仍失败，维持原状。逐个独立，尚未查根因，按文件列出，后续 triage 从这里挑：
 
 | 文件 | 症状摘要 |
 |---|---|
