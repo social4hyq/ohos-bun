@@ -352,6 +352,39 @@ command -v probe-bin -> /…/fakehome/node_modules/.bin/probe-bin
 
 ---
 
+## T32 — 测量环境本身有透明代理：任意公网地址的任意端口都"连接成功"（class D，影响网络类判定）
+
+挖 `test-net-autoselectfamily.js`（Happy Eyeballs / RFC 8305）时撞上的，**不是 bun 缺陷，是本机网络环境**。
+
+测试用 mock lookup 给出 6 个地址（v6/v4 交替），期望 `autoSelectFamilyAttemptedAddresses` 记录全部 6 次尝试；实测只有 1 个。但把它抽成不依赖 node test harness 的最小复现后，**node 在同一台机器上给出完全相同的结果**：
+
+```
+本机 bun : attempted count = 1  ["2606:4700::6810:85e5:36423"]
+本机 node: attempted count = 1  ["2606:4700::6810:85e5:36481"]
+```
+
+行为一致 ⇒ 与 bun 无关。C 探针查出原因：
+
+| 目标 | `connect()` 结果 |
+|---|---|
+| `2606:4700::6810:85e5:9`（公网 v6，discard 端口）| **connected** ❌ |
+| `104.20.22.46:9`（公网 v4，discard 端口）| **connected** ❌ |
+| `::1:9` | Connection refused ✅ |
+| `127.0.0.1:9` | Connection refused ✅ |
+
+连公网地址的 **discard 端口**都"连得上"——本机跑着 `org.xbgroup.clashbox` / `org.xbgroup.clashbox:vpn`，透明代理接管了所有出站连接。于是 Happy Eyeballs 的第一个地址立即"成功"，后续 5 个根本不会被尝试，`attemptedAddresses` 自然只有 1 条。
+
+**归类 class D（环境），不是 A/B/C。** 任何有透明代理的机器上这个测试都会这样失败，与平台和 bun 都无关。
+
+### 对已有结论的影响（已核查）
+
+- **loopback 不受影响**——探针确认 `::1` / `127.0.0.1` 仍正确返回 `Connection refused`，代理只接管出站。因此 **T30（内核把 RST 呈现成正常 EOF）的结论不受波及**：它的复现全程在 `127.0.0.1` 上，且那里 bun 与 node 的行为**不同**（node 报 EPIPE、bun 不报），正是排除环境因素的判据。
+- **需要重新审视的**：台账里凡是断言"连接某个公网地址应当失败/超时"的条目，其失败原因都可能是这个代理而非被测对象。已知涉及外网的有 T14（网络/超时预算）、`node-dns.test.js` 的 `dns.resolvePtr → ENOTFOUND`、`fetch-tls-abortsignal-timeout`。本轮未逐条复核，但**在此环境下它们的失败不能直接当作 bun 或平台的证据**。
+
+**方法论**：这一条能定性，靠的是先拿 node 做同机对照、发现一致后才去查环境，而不是直接从 bun 的实现找解释。凡是"网络行为不符预期"的失败，同机 node 对照应当是第一步而非最后一步。
+
+---
+
 ## T30 — 内核把 TCP RST 呈现成正常 EOF，bun 的读侧错误检测因此失效（平台限制 + bun 可改进）
 
 从 T21 复核里挑 `test-net-error-twice.js` 深挖得到。测试逻辑：client 连上后立即 `destroy()`（RST），server 往这条死连接写 10MB，期望 server 端 `error` 事件**恰好一次**。
