@@ -395,6 +395,54 @@ return fchmodat(dirfd, path, mode, 0);
 
 ---
 
+## T34 — `execSync` 的 timeout 杀不到真正的子进程（class D，非 bun 缺陷）
+
+`test-child-process-execsync.js` 断在 `assert(end < SLEEP)`：`TIMER=200ms` 的超时应当让调用提前返回，实测却等满了子进程的 2000ms。
+
+**第一步就是同机 node 对照**（T32 的教训），结果逐项一致：
+
+| | elapsed | errno | status |
+|---|---|---|---|
+| bun | 2093ms | -110 ETIMEDOUT | **143** |
+| node | 2130ms | -110 ETIMEDOUT | **143** |
+
+`status=143` = 128+15，说明 SIGTERM 确实发出并终止了某个进程 —— 但调用仍等满。node 一致 ⇒ **不是 bun 缺陷**。
+
+**定位到 shell 这一层**，靠一组对照：
+
+| 方式 | sleep=2000 | sleep=5000 |
+|---|---|---|
+| `execSync`（**经 shell**）| 2098ms ❌ | 5086ms ❌ |
+| `spawnSync`（**不经 shell**）| 425ms ✅ | 430ms ✅ |
+
+不经 shell 时超时完全正常，且 elapsed 不随 sleep 变化。经 shell 时 elapsed 精确跟随 sleep —— 超时对它毫无作用。
+
+trace 给出进程结构与致命的一步：
+
+```
+bun(56101) → helper(56104) → /bin/sh(56116) → bun(56127)
+pid=56104  kill(56116, 15)             ← 只杀了 shell
+pid=56104  wait4(56116, WNOHANG) = 0   ← 反复轮询，孙进程还活着
+```
+
+**timeout 只 `kill` 直接子进程（shell），孙进程 56127 继续持有 stdout 管道的写端**，父进程读不到 EOF，于是等到孙进程自然结束。在多数 Linux 上这被 shell 的 exec 优化掩盖了：`sh -c "单条命令"` 直接 exec 替换自身，于是"杀 shell"就等于"杀真正的进程"。
+
+**已排除的方向**（都做了探针，避免把平台当替罪羊）：
+
+| 假设 | 结果 |
+|---|---|
+| 信号无法中断阻塞等待 | ❌ 证伪：SIGTERM 在 300ms 中断了 `poll` / `epoll_wait` / `nanosleep` 三者 |
+| shell 忽略 SIGTERM | ❌ 证伪：mksh / bash / zsh 收到 SIGTERM 均在 ~300ms 内退出 |
+| mksh 不做 exec 优化 | ❌ 部分证伪：裸命令、带引号路径、带参数、含分号四种形态下 mksh **都**做了 exec 优化，无子进程 |
+
+**未查清、如实记录**：手动用 execSync 的精确命令串跑 `/bin/sh -c`，mksh 做了 exec 优化、不 fork；但 execSync 实际运行时 trace 显示 shell 确实 fork 了孙进程。两者的差异变量（execSync 设置的 stdio 组合 / 环境 / 进程组）尚未定位。**所以"mksh 在此场景下为何 fork"是未解的**，不要把上表当成完整解释。
+
+**归类 class D（环境）**：被测对象（bun）行为与 node 一致，平台的信号机制正常，差异来自 shell 层的进程结构。
+
+**潜在改进（上游设计，非本轮范围）**：`execSync` 的 timeout 若杀进程组（`kill(-pgid)`）而非单个 pid，就不依赖 shell 是否 exec 优化。这是 node 与 bun 共有的设计选择，不是本 fork 的问题。
+
+---
+
 ## T32 — 测量环境本身有透明代理：任意公网地址的任意端口都"连接成功"（class D，影响网络类判定）
 
 挖 `test-net-autoselectfamily.js`（Happy Eyeballs / RFC 8305）时撞上的，**不是 bun 缺陷，是本机网络环境**。
