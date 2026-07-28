@@ -336,7 +336,19 @@ command -v probe-bin -> /…/fakehome/node_modules/.bin/probe-bin
 | 两者共用的 `npm_package_*` 注入 | fallback 时一律跳过 —— 这些变量描述"正在运行的包"，顶替来的根没有这个身份 |
 | fallback 发生时 | 打印警告；静默替换会让下游所有异常看起来像是别处的问题 |
 
-副作用是好的：`bun run` 恢复致命行为后，上面那条被 skip 的测试用例重新成立，skip 可以撤掉。
+**验证（`ada86391d`）**：
+
+| 检查 | 结果 |
+|---|---|
+| 不可读 cwd 跑 `bun run start` | 报 `error loading current directory`，exit=1，**未执行 $HOME 的脚本** ✅ |
+| 正常项目 | 照常执行，`npm_package_name` 正确 ✅ |
+| PATH | 不再含 `$HOME/node_modules/.bin` ✅ |
+| `resolver-permission-denied-ancestor.test.ts` | skip 已撤销，**2 pass / 0 fail** |
+| `cli/run` 全目录 43 个文件 | 仅 2 个失败，均为已知 T12（FUSE），**零回归**；比修复前还少一个（`multi-run` 已随 splice 修复转绿）|
+| `filter-workspace`（保留 fallback 的那侧）| 3 0 通过 —— 此前只能靠推断的边界得到实测确认 |
+| `bun-install` / `bun-add`（install 路径）| 各 3 0 通过，跳过 `npm_package_*` 注入未造成影响 |
+
+报的错误文案与上游逐字一致，所以这不是"OHOS 特例"而是**回到了正确行为**。
 
 ---
 
