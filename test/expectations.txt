@@ -325,7 +325,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 [ OPENHARMONY ] test/regression/issue/29290.test.ts [ Failure ] # bun build --compile /nix/store PT_INTERP normalization: readInterp() gets "" instead of the fake nix interpreter path — see OHOS_TEST_TODO.md T23
 [ OPENHARMONY ] test/regression/issue/24742.test.ts [ Failure ] # same PT_INTERP/patchelf root cause as 29290 — see OHOS_TEST_TODO.md T23
 [ OPENHARMONY ] test/regression/issue/24364.test.ts [ Skip ] # react-tailwind template's tsc --noEmit needs @typescript/typescript-openharmony-arm64, which upstream does not publish (same class as test/integration/bun-types/bun-types.test.ts's tsgo gap)
-[ OPENHARMONY ] test/regression/issue/18239/18239.test.ts [ Failure ] # TTY stdin buffering: process never receives "Received 3 chunks, exiting..." — part of the T03 PTY/TTY cluster, see OHOS_TEST_TODO.md
 
 # --- cli/hot + cli/inspect: OHOS unix socket / sourcemap timing ---
 # Patched in-place: inspect unix-domain-socket tests use tmpdirSync() on OHOS

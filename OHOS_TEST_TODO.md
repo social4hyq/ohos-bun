@@ -372,7 +372,22 @@ while out_fds_to_wait_for[0] != Fd::INVALID || out_fds_to_wait_for[1] != Fd::INV
 
 **修复**：只有在那个循环确实会跑时才做这笔交易；否则保留 PDEATHSIG。代价是 SIGKILL 情形下 cleanup defer 不执行 —— 而这正是上游 Linux 路径既有的行为（`enable()` 的注释写明该情形靠 env-var 继承来做后代清理）。两害相权，"父死我死"是 `--no-orphans` 的第一语义，不能为了次要的 defer 把它丢掉。
 
-待验证：构建中。
+**验证（`822f3121d`）**：最小复现 A/B —— 修复前 `bun run(18929) 仍存活`，修复后 `bun run(19690) 已随父退出`。
+
+### `no-orphans.test.ts` 收口（plan Step 5 的样板）
+
+一个文件走完"解锁 → 修 → 降级剩余项"的完整流程：
+
+| 阶段 | pass | skip | fail |
+|---|---|---|---|
+| 起点（`isPosix` 不认 openharmony）| 1 | 21 | 1 |
+| 解锁 `isPosix` | 15 | 5 | 3 |
+| T26 + T28 修复后 | 16 | 5 | 2 |
+| 两个 Ctrl-Z 用例降级为带根因的文件内 skip | **16** | 7 | **0** |
+
+最后一步**没有**把文件塞回 `expectations.txt`。剩下两个用例是 T25/T27 两个内核侧缺口，各自在 `skipIf` 上标了 `ohosNoTtyJobControl` 并在文件头写清根因和探针结论；其余 16 个用例照常计入分母。这正是 `expectations.txt` 文件头警告的反面做法 —— 整文件 quarantine 会连带丢掉那 16 个的覆盖。
+
+同时 `test/expectations.txt` 删掉 `18239` 条目（**73 → 51 条** `[ OPENHARMONY ]`），该文件在**不带** `--ignore-expectations` 的正常 CI 口径下已 1 pass / 0 fail。
 
 **另外**：`tty-reopen-after-stdin-eof` 和 `tui-app-tty-pattern` 实测**已经通过**——上面表格里原先列为"可能同根因"，应从 T03 簇移出。
 
