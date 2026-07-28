@@ -3270,7 +3270,25 @@ mod spawn_process_body {
                 #[cfg(target_env = "ohos")]
                 let (ohos_ppid, ohos_ppid_fd): (libc::pid_t, AutoCloseFd) = if no_orphans
                 {
-                    let ppid_from_watchdog = ParentDeathWatchdog::ppid_to_watch().unwrap_or(0);
+                    // Only trade PDEATHSIG away for the pidfd/getppid watch if the
+                    // loop that performs that watch is actually going to run. Its
+                    // condition is the same `out_fds_to_wait_for` test below: with
+                    // inherited stdio — which is what plain `bun run <script>`
+                    // uses — both fds are INVALID, the loop body never executes,
+                    // and clearing PDEATHSIG here would leave the process with no
+                    // parent-death detection of any kind. That is exactly the
+                    // `--no-orphans` guarantee, so keep the kernel-side signal
+                    // when we cannot replace it. The cost is that the cleanup
+                    // defer won't run in the SIGKILL case, which matches upstream
+                    // Linux behaviour (see enable()'s comment: that path relies on
+                    // env-var inheritance for descendant cleanup).
+                    let will_watch_in_poll_loop = out_fds_to_wait_for[0] != Fd::INVALID
+                        || out_fds_to_wait_for[1] != Fd::INVALID;
+                    let ppid_from_watchdog = if will_watch_in_poll_loop {
+                        ParentDeathWatchdog::ppid_to_watch().unwrap_or(0)
+                    } else {
+                        0
+                    };
                     if ppid_from_watchdog > 1 {
                         // Clear PDEATHSIG — SIGKILL is uncatchable and would prevent
                         // our cleanup defer from running.  See wait_linux_signalfd:3697.
