@@ -352,6 +352,39 @@ command -v probe-bin -> /…/fakehome/node_modules/.bin/probe-bin
 
 ---
 
+## T33 — compat-shim 丢掉 `AT_SYMLINK_NOFOLLOW`，chmod 穿透 symlink（已修，0.2.2）
+
+`cli/install/symlink-path-traversal.test.ts` 断言：安装一个 `bin` 指向包外文件的软链接时，被指向的文件必须保持原权限 `0o600`。实测是 **`0o775`** —— chmod 穿透了软链接，落到了包外的文件上。测试名里的 "path traversal" 不是修辞。
+
+**根因在我们自己的 compat-shim**，而且旧代码的注释里就写着：
+
+```c
+/* Fallback: classic fchmodat(), no flags — the one meaningful loss is
+ * AT_SYMLINK_NOFOLLOW (mode would apply to the symlink's target
+ * instead of being rejected/applied to the link itself). */
+return fchmodat(dirfd, path, mode, 0);
+```
+
+`fchmodat2` 在本平台会 SIGSYS，shim 回退到经典 `fchmodat()` 时把 flags 一并丢了。当时把这当作"有损但可接受的简化"——**不可接受**：丢掉 `AT_SYMLINK_NOFOLLOW` 等于把"不要跟随这个软链接"改写成"跟随它"。
+
+**而且那个前提本身是错的。** 实测本机的经典 `fchmodat()` 完整支持该 flag：
+
+| 目标 | `fchmodat(..., AT_SYMLINK_NOFOLLOW)` |
+|---|---|
+| 普通文件 | `rc=0`，正确应用 |
+| 目录 | `rc=0`，正确应用 |
+| 软链接 | `rc=-1 ENOTSUP`，**目标不变** |
+
+这正是 Linux 的契约（软链接自身的权限位没有意义，所以 chmod 被拒绝）。**flag 直接透传即可**，`AT_EMPTY_PATH` 仍丢弃（经典 `fchmodat` 会直接拒绝，且无调用方使用）。
+
+**验证**：shim 功能测试新增 `test_fchmodat2_symlink_not_followed`（断言目标 mode 不变），报 `ret=-1 errno=95 (ENOTSUP), target mode=600`；原有的 `fchmodat2_bun_lchmod`（普通文件）照常通过，因为 NOFOLLOW 在那里本就是 no-op。套件 **ALL PASS (0/35)**。bun 侧该文件 **1 fail → 0 fail，3/3 稳定**。
+
+发布：tap PR [#87](https://github.com/social4hyq/homebrew-core/pull/87)，`ohos-compat-shim` 0.2.1 → **0.2.2**。
+
+**遗留边界**：bun **静态内嵌**了一份 compat-shim，所以 `bun build --compile` 的产物（运行时没有 ambient `LD_PRELOAD`）在 bun 重新编译前仍是旧行为。普通 `bun` 调用走预加载库，立即修复。
+
+---
+
 ## T32 — 测量环境本身有透明代理：任意公网地址的任意端口都"连接成功"（class D，影响网络类判定）
 
 挖 `test-net-autoselectfamily.js`（Happy Eyeballs / RFC 8305）时撞上的，**不是 bun 缺陷，是本机网络环境**。
