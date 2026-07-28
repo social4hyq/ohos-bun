@@ -840,7 +840,19 @@ on_writable: fatal=0                                    ← 错误在这里丢�
 1. 在 socket 上落 `pending_fatal_send_errno` 闩：`internal_flush` 处理致命 errno 时同时落闩，`on_writable` 在自己那次 flush 没发现问题时取闩。报告不再取决于是谁驱动的 flush。
 2. open 后的延迟 flush 不再仅凭"缓冲空了"就派发 drain —— 致命错误下缓冲是**被丢弃**才变空的，派发 drain 等于把丢掉的字节报告成写入成功（实测 `'drain'` 先于 `'error'` 到达，回调拿到 `null`）。
 
-`126fe84ae` 验证：`immediate-nocb` 与 node 完全一致（`'error'`=1 EPIPE），`test-net-error-twice` **3/3 通过**，回归 spawn 135 / multi-run 118 / filesink 50 / node-http 143 全 0 fail。
+**验证**（`496fdb61a`，两处修复齐全）：
+
+| 场景 | 修复前 bun | 修复后 bun | node |
+|---|---|---|---|
+| 立刻写，无回调 | `'error'`=0 | `'error'`=1 EPIPE | `'error'`=1 EPIPE |
+| 立刻写，带回调 | `'error'`=0，回调 `null` | `'error'`=1 EPIPE，**回调 EPIPE** | 同 |
+| 延迟写 | 一致 | 一致 | — |
+
+事件序列也与 node 一致了：`error EPIPE → close`（修复前是 `drain → end → finish → close`，修复第一版是 `drain → error → close`）。
+
+`test-net-error-twice` **3/3 通过**；正常连接写 10MB **3/3 完整**（确认没有把正常路径改坏）。回归：node-http 143、spawn 135、multi-run 118、filesink 50、fetch 353，全部 0 fail。
+
+**`node-net.test.ts` 未被带绿**：跑 5 次得 0/1/1/1/1 fail，仍是 T21 记录的 `#13126` 那个用例。它单次通过过两回，两次都差点被我记成转绿 —— 这个文件必须跑 ≥3 次才能下结论。
 
 ### 容器为什么没暴露（**未查清**）
 
