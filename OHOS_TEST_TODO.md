@@ -740,7 +740,34 @@ splice(in=0, out=6, len=524288) = -1 errno=32   stdin 已 EOF -> EPIPE
 
 顺带发现该内核的 `splice()` 还有第二个毛病：**对空管道无限阻塞，无视 `O_NONBLOCK` 和 `SPLICE_F_NONBLOCK`**。它不返回 EPIPE 所以碰不到上面的分支，未处理，但它排除了"用非阻塞探测来做修复"这条路。
 
-**待办（未验证）**：bun 自己也调 `libc::splice`（`copy_file.rs:383`），且只在 **FIFO→FIFO** 时启用（注释写的场景是 `bun run foo.js | bun run bar.js`），正是会踩坑的组合；而 bun 内嵌的是**静态**编译进二进制的 compat-shim，不含本次修复。两次尝试构造 FIFO→FIFO 的 `Bun.write` 都被 bun 的 `Non-regular files aren't supported yet` 挡在 splice 之前 —— 而那条兜底路径本身也可疑：两端都是 FIFO 时本该命中 FIFO→FIFO 分支，却落到了"所有分支都不匹配"的兜底，说明 `ISFIFO(st_mode)` 没成立，疑似又一个 fstat/statx 类问题（T04 的近亲）。**所以"bun 自身是否受 splice 缺陷影响"目前是未证实的推断，不是结论。**
+**发布**：走 formula bump —— `ohos-compat-shim` 0.2.0 → **0.2.1**，repin 到 `63715bb`，tap PR [#86](https://github.com/social4hyq/homebrew-core/pull/86)。
+
+#### 追查续：bun 自身**不**受影响（推断已证伪），但顺带挖出一个上游缺陷
+
+先前记的"bun 也调 `libc::splice`（`copy_file.rs:383`，仅 FIFO→FIFO 启用），可能同样踩坑"是**推断，现已证伪**。绕开阻塞点后实测四个场景 —— 200000 / 0 / 4096 / 8192 字节 —— **全部正确、数据完整、无报错**。原因在循环结构：
+
+```rust
+if unknown_size { remain = 4096; }        // 长度未知时只要 4096
+...
+if written == 0 || remain == 0 { break; } // 搬满即退出
+```
+
+搬满 4096 就 `remain == 0` 退出，**结构上永远不会调用到源端 EOF 的那一次**，所以碰不到 EPIPE。此前实验里那几行 `cat: out: Broken pipe` 全部来自测试脚本自己的 `cat`（用的是尚未更新的生产版 shim），不是 bun。**结论：compat-shim 一处修复即可，bun 不需要改。**
+
+**但挡住这次验证的东西是个真实的上游缺陷（未修，见下）**：`Bun.write(Bun.file(fifoA), Bun.file(fifoB))` 必定报 `Non-regular files aren't supported yet`，而代码里明明有 FIFO→FIFO 分支、注释还写明场景是 `bun run foo.js | bun run bar.js`。两个分支不对称：
+
+```rust
+// REG→REG   ：有 mode == 0 兜底
+if ISREG(stat.st_mode) && (ISREG(dest.mode) || dest.mode == 0)
+// FIFO→FIFO ：没有
+if ISFIFO(stat.st_mode) && ISFIFO(dest.mode)
+```
+
+`stat` 是源的（当场 `fstat(source_fd)`），而 `dest.mode` 取自 File store，由 `resolve_file_stat()` **惰性**填充 —— 它只在 JS 访问 `.size`/`.lastModified` 时才跑，`Bun.write` 全程不碰。于是 `dest.mode` 恒为 0：REG 路径靠兜底照常工作，FIFO 路径直接掉进"所有分支都不匹配"的兜底报错。实证：先 `void dst.size` 强制 resolve 一下，同一段代码立刻正常搬运。
+
+平台无辜 —— C 探针确认 `stat`/`lstat`/`fstat`/`statx` 对 FIFO 全部正确返回 `010644`。代码出自上游 `23427dbc1 (Rewrite Bun in Rust #30412)`，**非 OHOS 改动，所有平台都有**。
+
+**本轮不修**，理由：不影响任何现有测试（涉及 FIFO 的 `bun-serve-file`、`file-io` 均 0 fail），且更合适的归宿是提 upstream PR 而不是留在 fork 里。修法很直接：判断前对已打开的 `destination_fd` 做一次 `fstat`，别信那个通常还是 0 的 store mode，`dest.mode == 0` 保留作 fstat 失败的后备。
 
 #### 这条的排查过程值得留档：连续 8 个假设被证伪
 
