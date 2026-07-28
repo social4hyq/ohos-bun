@@ -303,7 +303,40 @@ T21 复核确认 13 项里 10 项是稳定真失败后，逐个深挖。前三�
 
 已降级为带根因的文件内 skip，1 fail → **1 pass / 1 skip**。
 
-**遗留的可改进点**：这个 fallback 是**静默**的，于是真正"当前目录不可读"的场景对用户表现为误导性的 `Script not found`。加一句提示是合理的，但会改动 `bun run` 的输出、可能牵连其他 run_command 测试，故未在本轮动手。
+### 追查：这个 fallback 本身是错的（已修 `ada86391d`）
+
+上一段把它当成"合理的平台适配 + 一个静默的小瑕疵"。**深究之后这个判断不成立** —— 它不是"少报了一条提示"，而是**静默换了一个项目在跑**。
+
+拿 `HOME` 指向 fixture 实测（工作目录不可读，但它自己的 `package.json` 里**确实定义了** `start`）：
+
+```
+$ cd unreadable-project && bun run start
+$ echo LEAKED-FROM-HOME                       ← 跑的是 $HOME 的 start
+name=HOME-PACKAGE ver=9.9.9 cfg=home-config-value
+PATH-HEAD=/…/fakehome/node_modules/.bin:/…/fakehome/node_modules/.bin
+command -v probe-bin -> /…/fakehome/node_modules/.bin/probe-bin
+```
+
+三层后果，全部无任何提示：
+
+| 后果 | 说明 |
+|---|---|
+| **执行错误的脚本** | 用户在项目里敲 `bun run start`，跑的是 home 目录的同名脚本 |
+| **身份冒充** | `npm_package_name`/`version`/`config_*` 全来自 $HOME 的 package.json，`config` 段整段泄漏进环境变量 |
+| **PATH 劫持** | `$HOME/node_modules/.bin` 被放到 PATH 最前；脚本调用的 `tsc`/`eslint`/`prettier` 优先命中那里 |
+
+第三条最隐蔽：不需要攻击者，一个在 home 目录随手 `npm i` 过的开发者就够了。
+
+**恢复动机本身是成立的**（SELinux 确实会挡住某些挂载点的 `getcwd`/`openat`），错在把"读不到当前目录"降级成了"改用 $HOME 当项目根"——这是两件不同的事。修复按调用方拆开：
+
+| 调用方 | 处理 |
+|---|---|
+| `bun run <script>`（`without_linker`）| **恢复上游的致命行为** —— 它靠 `root_dir_info.enclosing_package_json` 找脚本，拿别的目录顶替必然跑错 |
+| install / `filter_run`（`with_linker`）| 保留 fallback —— 它们只需要一个 resolver 起点，不读 cwd 的 package.json 当身份 |
+| 两者共用的 `npm_package_*` 注入 | fallback 时一律跳过 —— 这些变量描述"正在运行的包"，顶替来的根没有这个身份 |
+| fallback 发生时 | 打印警告；静默替换会让下游所有异常看起来像是别处的问题 |
+
+副作用是好的：`bun run` 恢复致命行为后，上面那条被 skip 的测试用例重新成立，skip 可以撤掉。
 
 ---
 
