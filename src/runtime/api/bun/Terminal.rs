@@ -1926,9 +1926,6 @@ impl Terminal {
         let Some(callback) = js::gc::get(js::GcValue::Exit, this_jsvalue) else {
             return;
         };
-        {
-            let global_for_check = self.global();
-        }
 
         let global_this = self.global();
         let signal_value: JSValue = if let Some(s) = signal {
