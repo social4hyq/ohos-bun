@@ -646,6 +646,63 @@ while out_fds_to_wait_for[0] != Fd::INVALID || out_fds_to_wait_for[1] != Fd::INV
 
 ---
 
+---
+
+## T35 — 每个 Worker 生命周期泄漏 ~1.4–1.8MB，线性不收敛（**上游缺陷，非 OHOS**；未修）
+
+**入口**：`test/js/web/workers/message-port-context-destroy-leak.test.ts` 失败（delta 65.97MB / 阈值 30MB）。但 MessagePort 只是放大器，不是根因 —— 这条记录的主要价值在于它推翻了自己最初的结论。
+
+### 已证伪的路线（留档，避免重走）
+
+第一版结论是 `MessagePort::close()` 置位 `m_closeEventPending` 后把 'close' 事件 `postTask` 出去，context 先死则 task 随队列丢弃、标志永久为真，`hasPendingActivity()` 于是永远返回 true。据此在 `contextDestroyed()` 里显式清标志（`44f5ac5cb`），**实测无效**：
+
+| | 修复前 | 修复后 |
+|---|---|---|
+| `closed`（显式 close 全部 port） | 70.95MB | 67.77MB |
+| `ports`（从不 close） | 64.73MB | 63.04MB |
+
+差异在噪音内。这个理论在提出时就有两处对不上，当时没有对账：
+
+- `ports` 模式**从不调用 `close()`**，`m_closeEventPending` 根本不会被置位，却漏同样多。只有 close 才能置的标志，解释不了没有 close 的负载。
+- 既不 close 也不装 `onmessage` 的变体（`noonmsg`）仍漏 **45.86MB**，占总量的大头。
+
+`44f5ac5cb` 已由 `762faaebe` 撤销。**教训**：当时是先有机制假设、再拿一个能对上的实验去确认，而把同一批数据里对不上的那一列放过了。正确顺序是先让所有已有数据自洽，再谈机制。
+
+### 真实画像
+
+逐层剥离后，MessagePort、close、监听器全部不是必要条件：
+
+| 实验 | 结果 | 排除了什么 |
+|---|---|---|
+| 主线程建 8000 channel × 40 轮 | 16 轮后**完全趋平**（~74MB） | 主线程路径不漏；早先"主线程也漏 30MB"是只跑 8 轮、还在爬坡段的误读 |
+| worker 内 channel 数 0/1k/4k/8k/16k | 13.0 / 19.0 / 30.8 / 45.8 / 56.1MB，**次线性** | 不是按 port 计的对象泄漏 |
+| **空 worker（N=0）× 40 轮** | 每轮 **+1.39MB，全程线性，不收敛** | **MessagePort 不是必要条件** |
+| worker 内分配 0 / 8 / 32MB JS 堆 | 1.77 / 1.73 / 1.85MB per worker | 泄漏量与 worker 分配量无关 → VM 堆是被释放的 |
+| terminate() / self.close() / 自然退出 | 1.81 / 1.75 / 1.78MB per worker | 与退出路径无关，不是 terminate 特有 |
+| `/proc/self/task` 线程数 | 11 → 16（有界） | 线程确实退出了，不是线程没死 |
+| `/proc/self/maps` 条目数 | 171 → 189（30 轮，有界） | 不是没 munmap 的映射；增长发生在既有映射**内部** |
+
+**同机 node 对照**（同样 40 轮 create/terminate）：
+
+| | 线程数 | RSS |
+|---|---|---|
+| node 24 | 恒定 7 | 58 → 70.4MB，10 轮后**完全平** |
+| bun | 11 → 16 | 24 → 82MB，**+1.45MB/worker 线性** |
+
+同一台机器、同一个 musl 分配器、同一个 OS，node 平而 bun 线性 —— 平台/分配器因素排除。
+
+**归属**：`src/jsc/web_worker.rs` 的 worker 拆解路径**我们 fork 一行没改**（最近三个 commit 全是上游的 #35320 / #35002 / #34455），`git diff` 对上游基线在该文件上为空。判定为**上游缺陷**，class A，与 OHOS 无关。
+
+### 尚未定位的部分
+
+固定 ~1.4–1.8MB/worker，与负载无关、与退出路径无关，且增长在已有映射内部而非新映射 —— 指向分配器持有的、不可复用的常驻内存（mimalloc 线程退出后的 abandoned segment 是首选嫌疑，但未证实：bun 走 `_exit`，`MIMALLOC_SHOW_STATS=1` 拿不到退出统计，`MIMALLOC_VERBOSE=1` 只能看到选项表）。
+
+下一步若继续，两条路：① 找一台 glibc x86-64 跑官方 bun 复现，确认与平台无关后向上游报；② 在 fork 里临时给 mimalloc 加 stats 编译开关，直接读 abandoned 计数。
+
+**测试处置**：`message-port-context-destroy-leak.test.ts` 目前的失败是真实的，但它测的阈值实际上被 worker 泄漏主导。在根因修掉之前不动它，也**不**塞进 `expectations.txt`。
+
+**复现脚本**（`/data/storage/el2/base/tmp/`）：`mpvar.js`（四路对照）、`mpvar2.js`（onmessage × close 四格）、`mpcount.js`（port 数扫描）、`mpplateau.js` / `mpwplateau.js`（趋平检验）、`mpvm.js`（堆大小 × 退出路径）、`mpthreads.js`、`mpmaps.js`、`mpnode.mjs`（node 对照）。
+
 ## T04 — `statx(2)` 对 socket 型 fd 报 EBADF，bun 的 `fstatSync` 误当真错误抛出（已修复并真机验证）
 
 对应 `OHOS_TEST_STATUS.md` 第八/九轮记录的"字面 fd 数字作 stdio 导致父进程自身 fd 失效"。本轮排查**完全推翻了"spawn fd 所有权"的原始假设**——fd 从头到尾都没坏，是 bun 的 `fstatSync()` 实现在特定条件下给出了错误答案。
