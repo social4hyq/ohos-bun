@@ -740,7 +740,19 @@ splice(in=0, out=6, len=524288) = -1 errno=32   stdin 已 EOF -> EPIPE
 
 顺带发现该内核的 `splice()` 还有第二个毛病：**对空管道无限阻塞，无视 `O_NONBLOCK` 和 `SPLICE_F_NONBLOCK`**。它不返回 EPIPE 所以碰不到上面的分支，未处理，但它排除了"用非阻塞探测来做修复"这条路。
 
-**发布**：走 formula bump —— `ohos-compat-shim` 0.2.0 → **0.2.1**，repin 到 `63715bb`，tap PR [#86](https://github.com/social4hyq/homebrew-core/pull/86)。
+**已发布并装机**：`ohos-compat-shim` 0.2.0 → **0.2.1**（repin `63715bb`），tap PR [#86](https://github.com/social4hyq/homebrew-core/pull/86) 已合并，CI 构建 bottle（tag `ohos-compat-shim-v0.2.1-r1`）并自动回写、automerge 链跑通，本机已 `brew upgrade` 到位。
+
+用**生产版** shim（不再是本地构建）复验，全部通过：
+
+| 验证 | 结果 |
+|---|---|
+| 内核缺陷探针 `splice #2 (source at EOF)` | 返回 **0**（修复前 -1/EPIPE）|
+| 真 EPIPE 场景 | 仍报 `-1 Broken pipe`（未被吞）|
+| `bun run --parallel piped` | 6 次 **0 次**报错 |
+| `cli/run/multi-run.test.ts`（`--ignore-expectations`）| 0 fail |
+| 同上，**不带** `--ignore-expectations`（正常 CI 口径）×3 | **3/3 全 0 fail** |
+
+据此从 `test/expectations.txt` 移除 `multi-run.test.ts` 条目（**51 → 50** 条 `[ OPENHARMONY ]`）。
 
 #### 追查续：bun 自身**不**受影响（推断已证伪），但顺带挖出一个上游缺陷
 
