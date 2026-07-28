@@ -724,6 +724,24 @@ splice(in=0, out=6, len=524288) = -1 errno=32   stdin 已 EOF -> EPIPE
 
 **影响面远大于这一个测试**：任何用 splice 做拷贝循环的程序（GNU coreutils 的 cat/cp、多种 I/O 库）在本机都会在 EOF 处误报错误。bun 只是因为 `--parallel` 把 stdout 接成管道，才让 cat 走上这条路径。归 class B，测试侧无需改动。
 
+#### 已修：ohos-compat-shim 加了 splice 拦截器（`63715bb`）
+
+内核改不了，但 ohos-compat-shim 本来就是补这类缺口的（它已在拦 `getcwd`/`linkat`/`tmpfile` 等）。在那里加了 `splice` 拦截器：只在 `splice()` 已经返回 EPIPE 时介入，用 `poll()`（无损，不像 `read()` 会吃掉待搬运的字节）区分两种情况 ——
+
+| 情形 | `poll(fd_in)` | `poll(fd_out)` | 处理 |
+|---|---|---|---|
+| 源端 EOF（内核 bug）| `POLLIN\|POLLHUP` | `POLLOUT` | 改写为 `0` |
+| 目标端损坏（真 EPIPE）| `POLLIN` | `POLLOUT\|POLLERR` | 原样透传 |
+| 两者同时 | `POLLIN\|POLLHUP` | `POLLOUT\|POLLERR` | 透传（先查目标端，歧义时倒向真错误）|
+
+先查目标端是刻意的：把一个恰好也 EOF 的坏管道报成错误没有损失，吞掉一个真 EPIPE 却会让拷贝静默少写数据。EOF 的判据是 `POLLHUP` 而非"没有 `POLLIN`"—— EOF 的 pipe 上 `POLLIN` 同样置位。
+
+验证：compat-shim 功能测试 **ALL PASS (0/34)**，其中新增的 `splice_eof_is_zero` 在 baseline（无 shim）段**故意失败**、shimmed 段通过，等于把这个内核缺陷本身变成了常驻探针；`splice_real_epipe_preserved` 两段都通过，防止将来有人把真错误也吞掉。端到端：`bun run --parallel piped` 从 6/6 报错变成 **0/6**，`cli/run/multi-run.test.ts` 从稳定失败变成 **0 fail**。
+
+顺带发现该内核的 `splice()` 还有第二个毛病：**对空管道无限阻塞，无视 `O_NONBLOCK` 和 `SPLICE_F_NONBLOCK`**。它不返回 EPIPE 所以碰不到上面的分支，未处理，但它排除了"用非阻塞探测来做修复"这条路。
+
+**待办（未验证）**：bun 自己也调 `libc::splice`（`copy_file.rs:383`），且只在 **FIFO→FIFO** 时启用（注释写的场景是 `bun run foo.js | bun run bar.js`），正是会踩坑的组合；而 bun 内嵌的是**静态**编译进二进制的 compat-shim，不含本次修复。两次尝试构造 FIFO→FIFO 的 `Bun.write` 都被 bun 的 `Non-regular files aren't supported yet` 挡在 splice 之前 —— 而那条兜底路径本身也可疑：两端都是 FIFO 时本该命中 FIFO→FIFO 分支，却落到了"所有分支都不匹配"的兜底，说明 `ISFIFO(st_mode)` 没成立，疑似又一个 fstat/statx 类问题（T04 的近亲）。**所以"bun 自身是否受 splice 缺陷影响"目前是未证实的推断，不是结论。**
+
 #### 这条的排查过程值得留档：连续 8 个假设被证伪
 
 | # | 假设 | 怎么倒的 |
