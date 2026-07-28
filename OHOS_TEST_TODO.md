@@ -252,6 +252,27 @@ T@5b2f182bc0   -> EARLY RETURN (READER_DONE already set)
 
 ---
 
+## 台账自查（07-28）：把"待查/待修"逐条隔离复测
+
+T07 被撤回后做了一次系统复核 —— 台账里所有仍标"待查/待修"且带具体文件的条目，用最新二进制逐个**单文件隔离**复跑，通过的再拿基线 `3e233644d` 对照，区分"被本轮修好"和"从来就没坏"：
+
+| 文件 | 最新 | 基线 | 判定 |
+|---|---|---|---|
+| `test-cluster-bind-privileged-port.js` | 0 fail | 0 fail | **撤回**（T07）|
+| `test-cluster-shared-handle-bind-privileged-port.js` | 0 fail | 0 fail | **撤回**（T07）|
+| `test-dgram-bind-fd.js` | 0 fail | 0 fail | **撤回**（T08）|
+| `test-dgram-socket-buffer-size.js` | 0 fail | 0 fail | **撤回**（T08）|
+| `cli/install/bun-run.test.ts` | 0 fail | **1 fail** | **真修复** —— T01 版即通过 → getcwd/`$PWD` 兜底的连带受益 |
+| `test/js/node/test/sequential/test-fs-watch.js` | 1 fail | — | 仍失败（T05 `fs.watch(recursive)`，class B 已知）|
+| `test/js/node/watch/fs.watch.test.ts` | 1 fail | — | 同上 |
+| `test/js/bun/net/unix-socket-long-path.test.ts` | 1 fail | — | 仍失败（T15）|
+
+`bake/dev/*` 11 个文件跳过：T18 已有结论（feature flag 能开但功能性失败，需产品级决策），且每个都会跑满超时，复测无信息量。
+
+**教训**：本轮方案 Step 2 明确写了"每个失败文件单独跑一次 `--retries=0`，隔离下仍失败的才进台账"，但 T07/T08 是直接从全量批跑的失败清单誊进来的。四个条目里有四个是并发假象，这个比例说明批跑失败清单**不能**当作缺陷清单用。后续新增条目一律先隔离复测再写入，且"通过"要给重复次数。
+
+---
+
 ## T25 — OHOS procfs 不报告 `tty_nr` / `tpgid` / `state`（平台限制，class B）
 
 `no-orphans.test.ts` 的 Ctrl-Z 用例断言全部建立在 `/proc/<pid>/stat` 之上，在 OHOS 上无法成立。四个独立 C 探针（完全脱离 bun）把边界划清楚了：
@@ -460,7 +481,7 @@ test/js/node/test/parallel/test-fs-watch-recursive-sync-write.js
 
 ---
 
-## T07 — cluster 特权端口绑定 + `getSystemErrorName` 崩溃（发现一个额外的真实 bug）
+## T07 — ~~cluster `getSystemErrorName` 崩溃~~ **撤回：隔离复测不复现，基线同样通过**
 
 已知平台限制是"绑定 <1024 端口需 root"（class B），但本轮发现 fork 出的子进程在收到 `EACCES`（errno 13）后，试图把它转成可读错误名时本身就崩了：
 
@@ -471,19 +492,30 @@ RangeError: The value of "err" is out of range. It must be a negative integer. R
 
 这说明 `util.getSystemErrorName`（或它调用的 `makeErrorWithCode`）**期望负数 errno,但这条路径传入的是正数 13**——独立于"需要 root"这个已知限制之外的一个真实 bug，很可能不是 OHOS 专属（值得先在 macOS/Linux 上验证是否通用）。
 
-| 文件 | 分类 | 层级 | 状态 |
-|---|---|---|---|
-| `test/js/node/test/parallel/test-cluster-bind-privileged-port.js` | A（`getSystemErrorName` 崩溃）+ B（需 root，已知）| rust | 待修（`getSystemErrorName` 正负号问题）|
-| `test/js/node/test/parallel/test-cluster-shared-handle-bind-privileged-port.js` | 同上 | rust | 待修 |
+**07-28 复核后撤回这条判断。** 四种组合下都不复现：
+
+| 口径 | 最新二进制 | 基线 `3e233644d` |
+|---|---|---|
+| 单文件隔离 ×3 | 0 fail | 0 fail |
+| 61 个 `test-cluster*` 并发 | 0 fail | 0 fail |
+
+`getSystemErrorName` 本身的契约也和 node 完全一致（`-13 → EACCES`，`13 → RangeError`），两边逐字相同 —— 所以"bun 传了正 errno"这个推断没有立足点。当初那条 RangeError 是在**全量批跑**（几百文件并发）里观测到的，进台账前没做隔离复测，违反了本轮方案 Step 2 自己定的规矩（"隔离下仍失败的才进台账；隔离下通过的记为并发敏感，不当作 bug"）。
+
+| 文件 | 分类 | 状态 |
+|---|---|---|
+| `test/js/node/test/parallel/test-cluster-bind-privileged-port.js` | 并发敏感（非缺陷）| **撤回**，隔离与并发下均通过 |
+| `test/js/node/test/parallel/test-cluster-shared-handle-bind-privileged-port.js` | 同上 | **撤回** |
 
 ---
 
-## T08 — dgram 未深挖
+## T08 — ~~dgram 未深挖~~ **撤回：与 T07 同类，基线也通过**
 
-| 文件 | 分类 | 层级 | 状态 |
+| 文件 | 最新二进制 ×3 | 基线 `3e233644d` ×3 | 结论 |
 |---|---|---|---|
-| `test/js/node/test/parallel/test-dgram-bind-fd.js` | F | rust? | 待查 |
-| `test/js/node/test/parallel/test-dgram-socket-buffer-size.js` | F | rust? | 待查 |
+| `test/js/node/test/parallel/test-dgram-bind-fd.js` | 0 fail | 0 fail | 并发敏感，非缺陷 |
+| `test/js/node/test/parallel/test-dgram-socket-buffer-size.js` | 0 fail | 0 fail | 同上 |
+
+和 T07 同一个成因：全量批跑里的失败没经隔离复测就进了台账。
 
 ---
 
