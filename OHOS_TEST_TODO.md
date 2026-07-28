@@ -677,6 +677,35 @@ test/js/node/test/parallel/test-trace-events-fs-sync.js
 
 **方法论教训（第二次踩同一类坑）**：单次运行不足以判定"转绿"，必须重复。T03 那轮"失败项每次都在换"已经提示过摇摆的存在，这次仍然差点上当。凡是宣布转绿的，本节一律给 3/3 的重复证据；归因不合常理时（修复域与测试域无关）优先怀疑自己的测量，而不是编一个因果故事。
 
+### 回归检查（T26/T28 都改了 spawn 路径，`js/bun/spawn` + `cli/run` 共 87 个文件逐个单跑）
+
+**零回归。** 失败项全部是 pre-existing 或已知长尾：
+
+| 文件 | 判定 |
+|---|---|
+| `spawn-pipe-leak.test.ts` | **并发摇摆，不是回归** —— batch 里失败 1 次；单跑修复后 4/4 通过、修复前 2/2 通过 |
+| `spawn.test.ts` | **不是失败** —— 我回归脚本的 100s 超时太短；单独跑 134+135 pass / 0 fail |
+| `spawn-pipe-read-error-leak.test.ts`、`spawn_waiter_thread.test.ts` | T21 已知长尾 |
+| `glob-on-fuse.test.ts`、`run-file-on-fuse.test.ts` | T12 FUSE 不可用（class B）|
+| `multi-run.test.ts` | pre-existing（修复前同样失败、同一用例），新记入下表 |
+
+`spawn-pipe-leak` 这一条再次印证前面的教训：batch 环境下的单次失败不足以判定回归，必须单跑复现。
+
+### 新增长尾：`multi-run.test.ts` — `--parallel` 下管道子命令拿到 EPIPE
+
+回归检查中发现，pre-existing。最小复现（script 是 `echo "hello world" | cat`）：
+
+```
+bun run piped              -> hello world              exit=0  ✅
+bun run --parallel piped   -> piped | hello world
+                              piped | cat: -: Broken pipe
+                              piped | Exited with code 1  exit=1 ❌
+```
+
+输出内容是对的（前缀也对），但 `cat` 在写入时拿到 EPIPE。`--parallel` 需要给每行加 `piped |` 前缀，所以子进程 stdout 被接到收集管道上 —— 读端疑似在 `cat` 写完之前就关了。
+
+**与 T21 表中的 `spawn-pipe-read-error-leak.test.ts` 症状同源**（同样是 `cat` + Broken pipe），两者应一起查，可能是同一个管道生命周期问题。未深挖。
+
 余下 14 个文件复测后仍失败，维持原状。逐个独立，尚未查根因，按文件列出，后续 triage 从这里挑：
 
 | 文件 | 症状摘要 |
