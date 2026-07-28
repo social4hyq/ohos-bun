@@ -909,7 +909,26 @@ on_writable: fatal=0                                    ← 错误在这里丢�
 | `test/js/bun/spawn/spawn-stdin-large-buffer.test.ts` | 大 stdin buffer（2048/4096/8192 KB）截断，`spawnSync`/`Bun.spawn` 两条路径全部收到远小于预期的字节数（含收到 `0` 字节的情况） | A | rust | **复核完毕，非同根因**——不是 statx/EBADF，`fstatSync` 早已不参与这条路径；症状是大 buffer 下 socketpair 读取/写入的真实数据丢失，比 T04 更严重，需要单独立项且优先级应提高（数据完整性问题） |
 | `test/js/node/test/parallel/test-net-socket-constructor.js` | `cluster.fork({stdio:['pipe','pipe','pipe','ipc','pipe','pipe','pipe']})` 的 worker 退出码 1 而非 0 | A | rust | **通过**（本轮 `--include` 批次里在"parallel-safe"分组内跑,记为 Passed,未见于 Failing 列表）——是否是 T04 附带修复暂无法反证,但当前已是绿色,不再需要动作 |
 
-## T05 — `fs.watch(recursive: true)` 内核不支持（class B 硬限制，历史已确认）
+## T05 — ~~`fs.watch(recursive: true)` 内核不支持~~ **已作废：递归 watch 实际能用**（2026-07-28 复核）
+
+> **更正。** "内核不支持"这个框架本身就站不住：**Linux 内核从来就没有递归 inotify**，递归监视一律是用户态模拟的，与内核支持与否无关。
+>
+> 真机实测（`496fdb61a`）：bun 的 `fs.watch(root, {recursive:true})` **2/2 捕获嵌套子目录变更**（`a/b/deep.txt`），顶层变更也捕获，与同机 node 行为一致（bun 多发 `change`，node 只发 `rename`，是事件粒度差异，不是功能缺失）。
+>
+> 两个被归到本条的文件实跑结果：
+>
+> | 文件 | 结果 | 真实失败点 |
+> |---|---|---|
+> | `js/node/watch/fs.watch.test.ts` | **40 pass / 1 fail** | `inotify queue overflow is delivered as ('change', null)`，另有 `symlink -> symlink -> dir` 期望 `rename` |
+> | `js/node/test/sequential/test-fs-watch.js` | 1 fail | `AssertionError`，未细查 |
+>
+> 失败的是 **inotify 队列溢出的投递语义**和符号链接事件类型，与"递归不支持"无关。整条 class B 定性**作废**，剩余失败应作为独立问题重新立项（未做）。
+>
+> 与 T30 同类错误：**把一个没验证过的机制假设写成了平台限制**，然后据此不再追查。
+
+<details><summary>原文（存档，结论已作废）</summary>
+
+### `fs.watch(recursive: true)` 内核不支持（class B 硬限制，历史已确认）
 
 OHOS inotify 不支持递归监听 flag，历史多轮记录过，本轮 6 个文件全部复现。
 
@@ -923,6 +942,8 @@ test/js/node/test/parallel/test-fs-watch-recursive-sync-write.js
 ```
 
 分类 B，层级 n/a，状态：保留 quarantine（整文件跳过合理，beforeAll 就依赖递归监听）。
+
+</details>
 
 ---
 
