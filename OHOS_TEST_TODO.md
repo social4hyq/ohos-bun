@@ -703,6 +703,56 @@ while out_fds_to_wait_for[0] != Fd::INVALID || out_fds_to_wait_for[1] != Fd::INV
 
 **复现脚本**（`/data/storage/el2/base/tmp/`）：`mpvar.js`（四路对照）、`mpvar2.js`（onmessage × close 四格）、`mpcount.js`（port 数扫描）、`mpplateau.js` / `mpwplateau.js`（趋平检验）、`mpvm.js`（堆大小 × 退出路径）、`mpthreads.js`、`mpmaps.js`、`mpnode.mjs`（node 对照）。
 
+---
+
+## T36 — `splice()` 写入管道不唤醒 poll/epoll 等待者，轮询型消费端永久死锁（平台缺陷 class B，**已由 shim 0.2.3 修复**）
+
+**入口**：`test/regression/issue/07500/07500.test.ts`（"Bun.stdin.text() doesn't read all data"，100s 超时）。台账原先记的症状"读不全数据"是错的 —— 它根本不是丢数据，是**整条管道死锁**。
+
+### 定位过程
+
+测试形如 `cat 大文件 | bun fixture.js`，909000 字节。逐步缩小：
+
+| 实验 | 结果 | 排除了什么 |
+|---|---|---|
+| 输入 1KB / 64KB / 128KB / 256KB | 全部正确 | 不是通用的 stdin 读取缺陷 |
+| 二分阈值 | 512KB 过、640KB 挂 | 阈值 = 管道容量（trace 里 `fcntl(1, F_GETPIPE_SZ) = 524288`）|
+| 改为 `< 文件` 重定向（非管道）| 909000 ✅ | 不是 bun 读大输入的问题 |
+| **`dd bs=64K` 作生产端** | 909000 ✅ | **换个生产端就好 → 问题在生产端** |
+| `dd bs=909000`（一次写满整个管道，生产端必然阻塞在写中途）| 909000 ✅ | bun 的 epoll 唤醒在 `write()` 供数时完全正常 |
+| `cat | wc -c` | 909000 ✅ | 换个消费端也好 → 是生产/消费**组合** |
+| trace-shim 抓生产端 | 停在 `splice(in=6, out=1)` | cat 用 splice 供 stdout |
+| `/proc/<pid>/wchan` | cat 在 `hm_futex_wait_interruptible`，bun 在 `EVENTPOLL` | 两边都在等，真死锁 |
+
+### 根因（独立 C 探针，完全脱离 bun 和 cat）
+
+等待者**先**阻塞在空管道上，300ms 后写入方送 4096 字节 —— 考的是唤醒，不是就绪状态：
+
+| 等待方式 | 由 `splice()` 送入 | 由 `write()` 送入 |
+|---|---|---|
+| `poll` | **2000ms 超时，不唤醒** ❌ | 300ms 唤醒 ✅ |
+| `epoll` LT | **2000ms 超时，不唤醒** ❌ | 301ms 唤醒 ✅ |
+| `epoll` ET | **2000ms 超时，不唤醒** ❌ | 301ms 唤醒 ✅ |
+| 阻塞 `read` | 301ms 唤醒 ✅ | 301ms 唤醒 ✅ |
+
+**`splice()` 往管道里放数据，只唤醒阻塞在 `read()` 的等待者，不唤醒任何 poll/epoll 等待者。** 数据确实进去了（随后的非阻塞 read 能读出来），管道的就绪**状态**是对的，坏的只有**唤醒**。
+
+这一条把全部观测解释干净：bun 阻塞在 `epoll_wait` → 永不被唤醒 → cat 填满 512KB 管道后也阻塞在 splice → 死锁；`wc` 用阻塞 `read` 所以没事；`dd` 用 `write()` 所以没事。**bun 无辜**，class B。
+
+与 T29 是同一个 syscall 的两个独立缺陷（T29 是源端 EOF 报 EPIPE），互不相干。
+
+### 修复（ohos-compat-shim 0.2.3，`225ecc5`，tap PR #88）
+
+目标是 FIFO 时，把字节经用户态缓冲区搬过去，让管道由 `write()` 供数。代价是这条路径不再零拷贝：100MB 过两级管道 **101ms → 129ms（慢 28%）**。收口时应第一时间删掉，README 的收口表已记。
+
+**曾经考虑并被真实场景否决的方案**：只扣下最后 1 字节用 `write()` 送，保住零拷贝。探针确认能唤醒 poll，但 cat 要往 512KB 管道里搬 524288 字节，splice 填满即短返回，收尾的 write 根本走不到 —— **一个恰好在管道满时失效的唤醒方案没有意义，管道满正是读者一定在等的时刻**。这一条值得留档：探针通过不等于修法成立，必须拿真实调用参数复核。
+
+**验证**：新增功能测试 `splice_wakes_poll_waiter`（把 poll 停在 splice **之前**，考唤醒而非状态；和 `splice_eof_is_zero` 一样在 baseline 段故意失败，因此本身就是这个内核缺陷的常驻探针），套件 **36/36**。端到端 `cat 909KB | bun read-stdin.js` 从挂死变成返回 909000；`07500.test.ts` **3/3 通过**。回归：multi-run 118 pass、spawn 135、spawn-pipe-leak 3、filesink 50，全部 0 fail。
+
+### 影响面
+
+远大于这一个测试：**任何用 poll/epoll 读管道、而上游用 splice 供数的程序**在本机都会死锁。GNU coreutils 的 cat 只要 stdout 是管道就走这条路，所以 `cat 大文件 | <任何轮询型程序>` 都中招。
+
 ## T04 — `statx(2)` 对 socket 型 fd 报 EBADF，bun 的 `fstatSync` 误当真错误抛出（已修复并真机验证）
 
 对应 `OHOS_TEST_STATUS.md` 第八/九轮记录的"字面 fd 数字作 stdio 导致父进程自身 fd 失效"。本轮排查**完全推翻了"spawn fd 所有权"的原始假设**——fd 从头到尾都没坏，是 bun 的 `fstatSync()` 实现在特定条件下给出了错误答案。
@@ -1127,7 +1177,7 @@ if ISFIFO(stat.st_mode) && ISFIFO(dest.mode)
 | `test/js/bun/resolve/resolver-permission-denied-ancestor.test.ts` | "errors on the requested directory itself stay fatal" 断言不符 |
 | `test/js/bun/util/filesink.test.ts` | backpressured `write()` 后 `end()` 的 promise 未按预期 resolve |
 | `test/cli/run/run-quote.test.ts` | "should handle quote escapes" |
-| `test/cli/install/symlink-path-traversal.test.ts` | "does not change permissions of a file reached through a symlinked bin target" — 可能是真实 chmod-through-symlink 逻辑或 OHOS 权限模型差异 |
+| ~~`test/cli/install/symlink-path-traversal.test.ts`~~ | **已随 T33 收口**（shim 0.2.2 补回 `AT_SYMLINK_NOFOLLOW`）：07-28 隔离复测 0 fail |
 | `test/cli/install/migrate-bun-lockb-v2.test.ts` | lockfile 迁移快照不匹配 |
 | `test/cli/install/bun-install-registry.test.ts` | `prereleases-3 should fail` 系列（3 个子用例，`assertManifestsPopulated`）|
 | `test/cli/install/bun-security-scanner-matrix-with-node-modules.test.ts` | 矩阵测试若干组合失败（linker=hoisted/isolated × scanner=npm 等）|
@@ -1137,7 +1187,7 @@ if ISFIFO(stat.st_mode) && ISFIFO(dest.mode)
 | `test/js/node/http2/node-http2.test.js` | "http2 server with minimal maxSessionMemory handles multiple requests" 15s 超时 |
 | `test/js/node/net/node-net.test.ts` | "should trigger error when aborted even if connection failed #13126" |
 | `test/js/node/process/process.test.js` | "should be the node version on the host that we expect" |
-| `test/js/node/test/parallel/test-child-process-exec-timeout-expire.js` | 未深挖 |
+| ~~`test/js/node/test/parallel/test-child-process-exec-timeout-expire.js`~~ | 07-28 隔离复测 **0 fail**（此前是并发假象或已被本轮修复顺带解决）|
 | `test/js/node/test/sequential/test-child-process-execsync.js` | `execSync should throw` / 计时断言 |
 | `test/js/node/test/sequential/test-stream2-stderr-sync.js` | 历史记录过：libuv fd 类型识别 gap（`new net.Socket({fd})` 包裹继承 stdio）|
 | `test/js/node/test/parallel/test-fs-write-sigxfsz.js` | 疑似与历史记录的"OHOS rlimit FSIZE 不产生 EFBIG"同根因,未核实 |
@@ -1149,9 +1199,9 @@ if ISFIFO(stat.st_mode) && ISFIFO(dest.mode)
 | `test/js/bun/test/parallel/test-integration-rspack.ts` | 跑 `create-rsbuild` 模板 + `bun install`,超时（可能是 T14 网络类,未核实）|
 | `test/js/node/test/parallel/test-net-autoselectfamily.js` | `afterConnectMultiple`/`afterConnect` 路径抛错（Happy Eyeballs 双栈连接逻辑）|
 | `test/js/node/test/parallel/test-net-error-twice.js` | `assert.strictEqual(0, 1)` — 错误只应触发一次的断言,实际触发次数不对 |
-| `test/regression/issue/07500/07500.test.ts` | `Bun.stdin.text() doesn't read all data`,100s 超时 |
+| ~~`test/regression/issue/07500/07500.test.ts`~~ | **已收口 → T36**：不是丢数据，是 `splice()` 不唤醒 poll/epoll 导致的管道死锁；shim 0.2.3 修复，3/3 通过 |
 | `test/regression/issue/24364.test.ts` | `react-tailwind template passes tsc --noEmit`（可能依赖 T14 网络类模板拉取,未核实）|
-| `test/js/bun/spawn/spawn-pipe-read-error-leak.test.ts` | T04 复核确认非同根因：`cat` 读坏掉的 FIFO 时产生的 `Broken pipe` stderr 输出未被吞掉/预期到,导致断言的空数组不成立 |
+| ~~`test/js/bun/spawn/spawn-pipe-read-error-leak.test.ts`~~ | **已随 T29 收口**（shim 0.2.1 的 splice EOF 修复消掉了那条 `Broken pipe`）：07-28 隔离复测 0 fail |
 | `test/js/node/test/parallel/test-fs-link.js` + `test/js/node/test/parallel/test-fs-promises.js` | **已修复并真机验证（ade348ec6）**：OHOS 内核拒绝裸 SYS_linkat（EACCES），硬链接唯一可用途径是 ohos-compat-shim 对 linkat libc 符号的拦截（EACCES→字节拷贝回退）。musl 把 link() 实现为直发裸 SYS_linkat，绕过符号拦截；而 node_fs.rs::link() 又直接调 libc::link()，完全碰不到拦截器。改走 libc::linkat(AT_FDCWD,...)（语义等价）。第一轮修错了函数（改了无人走的 sys::link()，18 分钟重编白烧） |
 | `test/js/bun/spawn/spawn_waiter_thread.test.ts` | T04 复核确认非同根因：issue #9404 的 `resourceUsage().cpuTime.total` 阈值断言,真机实测比 `750_000n` 阈值高约 83%（`1374480n`），疑似 waiter 线程 CPU 时间统计口径与阈值假设不匹配 |
 
