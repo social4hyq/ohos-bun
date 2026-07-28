@@ -35,7 +35,16 @@ describe.skipIf(isWindows || process.getuid?.() === 0)("resolver with unreadable
     }
   });
 
-  test("errors on the requested directory itself stay fatal", () => {
+  // Not applicable on OpenHarmony: this fork deliberately makes an unreadable
+  // requested directory recoverable rather than fatal. SELinux can block
+  // getcwd/openat on some mounts here, so run_command falls back to a $HOME
+  // (or "/") root DirInfo instead of aborting -- see the target_env = "ohos"
+  // arms in run_command.rs, scoped to OHOS by 36dbc7630 precisely so other
+  // platforms keep the fatal behaviour this case asserts. `bun run` then
+  // reports the script it could not find rather than the directory it could
+  // not read. The ancestor case above is the half that must keep working, and
+  // it does.
+  test.skipIf(process.platform === "openharmony")("errors on the requested directory itself stay fatal", () => {
     const dir = tempDirWithFiles("unreadable-cwd", {
       "project/package.json": JSON.stringify({ name: "p", scripts: { start: "echo should-not-run" } }),
     });
