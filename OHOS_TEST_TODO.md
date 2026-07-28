@@ -878,6 +878,42 @@ on_writable: fatal=0                                    ← 错误在这里丢�
 
 **复现脚本**（`/data/storage/el2/base/tmp/`）：`neterr2.js`（立刻/延迟 × 带回调/不带 四格）、`neterr3.js`（payload 扫描）、`neterr4.js`（bytesWritten + 事件序列）、`neterr5.js`（角色对调）、`netbulk.js`（正常连接完整性）、`rstwrite.c`（写侧 errno 探针）、`rstread.c` + `rstread.js`（读侧三信道探针，T30 复核用）。
 
+---
+
+## T38 — `dns.lookup(..., {all:true})` 只返回一个地址，双栈回退因此失效（class A，未修）
+
+2026-07-28 把 `/etc/hosts` 补成标准双栈（`::1 localhost ip6-localhost ip6-loopback`，人工改，见 T11）之后暴露出来的。
+
+### 现象
+
+`localhost` 现在同时有 A 和 AAAA。server 只监听 `127.0.0.1`，client 连 `"localhost"`：
+
+| | `lookup(localhost,{all:true})` | `net.connect(host:"localhost")` |
+|---|---|---|
+| **bun** | **`[::1]` —— 只有一条** | `ECONNREFUSED ::1`，3/3 失败 |
+| **node**（同机） | `[::1, 127.0.0.1]` —— 两条 | 连 `::1` 被拒 → **回退 127.0.0.1**，3/3 成功 |
+
+`all: true` 的语义就是"返回全部地址"，bun 返回了 2 条里的 1 条。
+
+**返回哪一条不确定**：另一次测量里 bun 给的是 `[127.0.0.1]`（于是同样的连接反而成功了）。这个不确定性一度让我以为两个脚本行为不一致，实际上两次都是"只返回一条"，只是挑中的那条不同。
+
+**Happy Eyeballs 不是没实现，是它手上从来只有一个地址可试。** 回退需要候选列表里有第二个地址。
+
+### 影响
+
+- `js/node/http/node-http.test.ts` 的 `https.request with custom tls options > supports custom tls args` 从 0 fail 变成 **3/3 稳定失败**（`connect ECONNREFUSED ::1:<port>`）。这是补 hosts 之后唯一的回归。
+- 任何"server 绑单一地址族、client 连 `localhost`"的代码在双栈 hosts 下都会随机失败 —— 取决于 bun 那次挑中了哪个地址族。标准 Linux 发行版的 `/etc/hosts` **本来就是双栈**，所以这个缺陷在正常环境里一直存在，只是本机此前缺 AAAA 条目把它掩盖了。
+
+### 与 T32 的边界
+
+T32（透明代理）解释的是 `test-net-autoselectfamily.js` 里 `attemptedAddresses` 只有 1 条：那个测试用 **mock lookup** 提供 6 个地址，bun 的解析器根本不参与，且 node 同机结果相同 —— 那条结论不受本条影响，仍然成立。本条是独立缺陷：真实解析路径下候选列表被截断成 1 条。
+
+### 未做
+
+未定位到具体代码，未修。下一步应从 `dns.lookup` 的 `all` 分支查起（bun 的 `resolve4/resolve6` 单独调用都正常，说明底层拿得到两族地址，丢失发生在 `lookup` 的合并/返回环节）。
+
+**复现脚本**（`/data/storage/el2/base/tmp/`）：`ds2.js`（同进程内同时打印 lookup 与 connect 结果，最短复现）、`dualstack.js`（只测连接）、`lhchk.js`（6 种 lookup 调用方式对照）。
+
 ## T04 — `statx(2)` 对 socket 型 fd 报 EBADF，bun 的 `fstatSync` 误当真错误抛出（已修复并真机验证）
 
 对应 `OHOS_TEST_STATUS.md` 第八/九轮记录的"字面 fd 数字作 stdio 导致父进程自身 fd 失效"。本轮排查**完全推翻了"spawn fd 所有权"的原始假设**——fd 从头到尾都没坏，是 bun 的 `fstatSync()` 实现在特定条件下给出了错误答案。
@@ -1041,7 +1077,7 @@ RangeError: The value of "err" is out of range. It must be a negative integer. R
 >
 > 逐项与同机 node 对照，`lookup` 的 6 种调用方式 + `net.connect`（含 `autoSelectFamily`）**全部逐项一致**，唯一失败的是 `family:6`，node 同样 `ENOTFOUND`。所以是环境限制、不是 bun 缺陷 —— 结论不变，但"缺 IPv6 回环"这个说法要作废，它把一个窄问题写成了宽问题。
 >
-> **无便宜修法**：`/etc/hosts` 是指向 `/data/service/el1/public/hosts_user/hosts` 的符号链接，非 root 不可写，补不了 `::1 localhost`。
+> **已由用户人工补上**（2026-07-28）：`/etc/hosts` 现为 `::1  localhost ip6-localhost ip6-loopback`，与主流发行版一致。效果实测：`node-dns.test.js` 和 `test-http2-invalid-last-stream-id.js` **转绿**；`resolve-dns.test.ts` / `22712.test.ts` 无变化；代价是暴露出一个真实的 bun 缺陷（**T38**，`node-http.test.ts` 由 0 fail 变 1 fail）。该回归不是环境改坏了，而是此前被单栈 hosts 掩盖的双栈缺陷现形。
 
 原表如下（症状描述仍有效）：
 
