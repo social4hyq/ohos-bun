@@ -753,6 +753,55 @@ while out_fds_to_wait_for[0] != Fd::INVALID || out_fds_to_wait_for[1] != Fd::INV
 
 远大于这一个测试：**任何用 poll/epoll 读管道、而上游用 splice 供数的程序**在本机都会死锁。GNU coreutils 的 cat 只要 stdout 是管道就走这条路，所以 `cat 大文件 | <任何轮询型程序>` 都中招。
 
+---
+
+## T37 — 对端 RST 时，排队中的大写入被静默丢弃并报告成功（真机独有，class A，未修）
+
+**入口**：`test/js/node/test/parallel/test-net-error-twice.js`，稳定失败 3/3，断言 `assert.strictEqual(errs.length, 1)` 实际拿到 **0**。台账原记"错误只应触发一次的断言,实际触发次数不对"，真相是**一次都没触发**，而且代价远不止少一个事件。
+
+场景：client `destroy()` 发 RST，server 在同一 tick 往这条连接写 10MB。
+
+### 现象（同机 node 对照）
+
+| | bun 真机 | node 真机 |
+|---|---|---|
+| `bytesWritten` | **1047728 / 10485760** | 10485760 |
+| 事件序列 | **`drain`** → `end` → `finish` → `close` | **`error` EPIPE** → `close` |
+| `write()` 回调 | `null`（**报告成功**）| `EPIPE` |
+| `'error'` 事件 | 无 | 1 个 EPIPE |
+
+bun 实际只发出 1MB，**剩余约 9.4MB 静默丢弃**，然后发 `'drain'`（语义是"缓冲已清空，可以继续写"）、发 `'end'`（干净 EOF）、干净关闭。**它把丢数据报告成了成功**——这比缺一个 error 事件严重得多。
+
+### 逐步排除
+
+| 实验 | 结果 | 排除了什么 |
+|---|---|---|
+| payload 64 / 4K / 64K / 512K | bun 与 node **一致**（都报成功）| 小写入进得了发送缓冲，无人报错是正常的 |
+| payload 1M / 10M | node EPIPE，bun 成功 | 阈值 = 一次写不完、需要排队续写 |
+| 写入前加 50ms 延迟 | bun 与 node **一致**（都在回调拿到 EPIPE）| socket 已关闭后的写没问题；坏的是"下发时还可写、之后才失败"的排队路径 |
+| 角色对调（client 写，server RST）| bun **能**报 ECONNRESET | 错误上报机制本身是通的 |
+| **正常连接写 10MB（对端一直在读）** | **3/3 完整 10485760 字节** | **不是普遍性的写丢失**，只发生在 RST 拆解路径 |
+| C 探针：RST 后 `write()` 的返回 | `-1 / ECONNRESET(104)`，首次写即报 | **内核报得很清楚**，不是平台不给信号 |
+| **同一二进制在 OpenHarmony 容器** | **正确报出 `EPIPE`** | **不是 bun 代码的问题** —— 真机独有 |
+
+最后两行合起来是这条的要害：同一个 `1.4.0+44f5ac5cb`，容器对、真机错；而同一台真机上 node 又能拿到 EPIPE。所以既不是"bun 写错了"，也不是"平台不报错"，是**真机把这个错误呈现给 bun 那套 syscall 序列的方式，与呈现给 libuv 的不同，而 bun 的致命判定漏掉了它**。
+
+### 代码侧的线索（未证实）
+
+`src/runtime/socket/socket_body.rs` 的三处相关点：
+
+1. `internal_flush()`（2914）对致命 errno 有完整处理：丢弃缓冲并**返回 errno**，注释写明"the data was already acknowledged to JS, so only an 'error' can"。`on_writable`（905）在 POSIX 上消费这个 errno、派发 error handler 并关闭 socket —— 注释甚至精准描述了本条的症状："swallowing it here acknowledged the bytes to JS, sent a clean FIN, and the peer saw a silently truncated stream"。**这套机制存在，但真机上没有生效**。
+2. `'drain'` 被发出，说明 `on_writable` 跑到了末尾（致命分支会提前 return），且此时 `buffered_data_for_node_net` 已空。
+3. `close_and_detach()`（1258）会**静默** `clear_and_free()` 缓冲，不失败任何待处理的写。RST 若被读侧当成关闭处理，9.4MB 就在这里无声消失 —— 与观测吻合，但**尚未证实**是这条路径。
+
+要坐实第 3 点需要带日志的构建（release 版 `log!` 被编掉），也就是一次容器重编。**本轮不修**，先把证据链留全。
+
+### 与 T30 的关系
+
+T30 记的是"内核把 RST 呈现成正常 EOF，bun 的读侧错误检测失效"。本条的 `'end'` 事件是同一现象的表现，但**归类要改**：T30 把它记成平台限制，而本条的 node 对照证明**同一台真机上 node 能正确区分 RST 与 EOF**，所以那不是平台限制，是 bun 的读侧检测在真机上漏判。T30 的 class B 定性需要复核。
+
+**复现脚本**（`/data/storage/el2/base/tmp/`）：`neterr2.js`（立刻/延迟 × 带回调/不带 四格）、`neterr3.js`（payload 扫描）、`neterr4.js`（bytesWritten + 事件序列）、`neterr5.js`（角色对调）、`netbulk.js`（正常连接完整性）、`rstwrite.c`（内核 errno 探针）。
+
 ## T04 — `statx(2)` 对 socket 型 fd 报 EBADF，bun 的 `fstatSync` 误当真错误抛出（已修复并真机验证）
 
 对应 `OHOS_TEST_STATUS.md` 第八/九轮记录的"字面 fd 数字作 stdio 导致父进程自身 fd 失效"。本轮排查**完全推翻了"spawn fd 所有权"的原始假设**——fd 从头到尾都没坏，是 bun 的 `fstatSync()` 实现在特定条件下给出了错误答案。
@@ -1198,7 +1247,7 @@ if ISFIFO(stat.st_mode) && ISFIFO(dest.mode)
 | `test/js/third_party/pnpm/pnpm.test.ts` | "successfully traverses pnpm-generated install directory" |
 | `test/js/bun/test/parallel/test-integration-rspack.ts` | 跑 `create-rsbuild` 模板 + `bun install`,超时（可能是 T14 网络类,未核实）|
 | `test/js/node/test/parallel/test-net-autoselectfamily.js` | `afterConnectMultiple`/`afterConnect` 路径抛错（Happy Eyeballs 双栈连接逻辑）|
-| `test/js/node/test/parallel/test-net-error-twice.js` | `assert.strictEqual(0, 1)` — 错误只应触发一次的断言,实际触发次数不对 |
+| ~~`test/js/node/test/parallel/test-net-error-twice.js`~~ | **已定性 → T37**：不是次数不对，是一次都没触发；对端 RST 时 ~9.4MB 排队写入被静默丢弃并报告成功。真机独有（容器正确、同机 node 正确）|
 | ~~`test/regression/issue/07500/07500.test.ts`~~ | **已收口 → T36**：不是丢数据，是 `splice()` 不唤醒 poll/epoll 导致的管道死锁；shim 0.2.3 修复，3/3 通过 |
 | `test/regression/issue/24364.test.ts` | `react-tailwind template passes tsc --noEmit`（可能依赖 T14 网络类模板拉取,未核实）|
 | ~~`test/js/bun/spawn/spawn-pipe-read-error-leak.test.ts`~~ | **已随 T29 收口**（shim 0.2.1 的 splice EOF 修复消掉了那条 `Broken pipe`）：07-28 隔离复测 0 fail |
