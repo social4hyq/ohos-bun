@@ -476,7 +476,25 @@ pid=56104  wait4(56116, WNOHANG) = 0   ← 反复轮询，孙进程还活着
 
 ---
 
-## T30 — 内核把 TCP RST 呈现成正常 EOF，bun 的读侧错误检测因此失效（平台限制 + bun 可改进）
+## T30 — ~~内核把 TCP RST 呈现成正常 EOF~~ **已作废：前提测错了**（实际根因见 T37）
+
+> **2026-07-28 更正。** 本条的核心证据（下方那张"读侧三信道全丢错误"的 C 探针表）复测**不成立**。重做探针（对端设 `SO_LINGER{1,0}` 后关闭，确实发出 RST）：
+>
+> | 读侧信道 | 本条原记录 | 复测（真机）|
+> |---|---|---|
+> | `read()` | **0（干净 EOF）** | **-1 / ECONNRESET(104)** ✅ |
+> | `epoll` | 无 `EPOLLERR` | **含 `EPOLLERR`** ✅ |
+> | `SO_ERROR` | 0 | 0（属实，但标准 Linux 上同样会被 `read` 消费，不构成缺陷）|
+>
+> 两个变体（RST 前有/无待读数据）都正确；JS 层 `resetAndDestroy()` 下 bun 真机 3/3 报 `error ECONNRESET`，与 node、与容器一致。
+>
+> **最可能的原因是当时的探针没造出 RST**：`close()`（以及 node 的 `destroy()`）在没有待收数据时发的是 **FIN**，`read()` 返回 `0` 本来就是正确的干净 EOF。整条结论建立在把 FIN 当成 RST 之上。
+>
+> `test-net-error-twice.js` 的真实根因是写侧的 fatal errno 被 `internal_flush` 的调用方丢弃，与读侧无关，已在 **T37** 定位并修复。本条的 class B 平台限制定性**作废**，下方原文仅作存档。
+
+<details><summary>原文（存档，结论已作废）</summary>
+
+### 内核把 TCP RST 呈现成正常 EOF，bun 的读侧错误检测因此失效（平台限制 + bun 可改进）
 
 从 T21 复核里挑 `test-net-error-twice.js` 深挖得到。测试逻辑：client 连上后立即 `destroy()`（RST），server 往这条死连接写 10MB，期望 server 端 `error` 事件**恰好一次**。
 
@@ -502,6 +520,8 @@ pid=56104  wait4(56116, WNOHANG) = 0   ← 反复轮询，孙进程还活着
 **errno 分类不是问题**：`us_internal_send_errno_is_peer_gone()`（`packages/bun-usockets/src/socket.c:515`）的名单里有 `ECONNRESET`。bun 也确实有写侧的 fatal 派发路径（`socket_body.rs:~906`，`internal_flush()` 返回 fatal errno → 派发 error handler → close），只是它挂在 **drain 派发**上，而这个场景里 RST 让 socket 先走了 close，那条路径没被走到。
 
 **可修，但要动上游共享的 socket 关闭路径**（class A + B 混合）：既然 `write()` 仍然带着 `ECONNRESET`，bun 完全可以像 node 那样在关闭前从写侧取错误。风险在于"关闭前尝试 flush 并检查 fatal errno"要嵌进 close 流程，误判会把正常关闭报成错误。**本轮未修**，建议单独立项。
+
+</details>
 
 ---
 
@@ -755,7 +775,7 @@ while out_fds_to_wait_for[0] != Fd::INVALID || out_fds_to_wait_for[1] != Fd::INV
 
 ---
 
-## T37 — 对端 RST 时，排队中的大写入被静默丢弃并报告成功（真机独有，class A，未修）
+## T37 — 对端关闭时，排队中的大写入被静默丢弃并报告成功（class A，**已修复并真机验证**）
 
 **入口**：`test/js/node/test/parallel/test-net-error-twice.js`，稳定失败 3/3，断言 `assert.strictEqual(errs.length, 1)` 实际拿到 **0**。台账原记"错误只应触发一次的断言,实际触发次数不对"，真相是**一次都没触发**，而且代价远不止少一个事件。
 
@@ -796,11 +816,53 @@ bun 实际只发出 1MB，**剩余约 9.4MB 静默丢弃**，然后发 `'drain'`
 
 要坐实第 3 点需要带日志的构建（release 版 `log!` 被编掉），也就是一次容器重编。**本轮不修**，先把证据链留全。
 
-### 与 T30 的关系
+### 根因（埋点实测，推翻了两个先行假设）
 
-T30 记的是"内核把 RST 呈现成正常 EOF，bun 的读侧错误检测失效"。本条的 `'end'` 事件是同一现象的表现，但**归类要改**：T30 把它记成平台限制，而本条的 node 对照证明**同一台真机上 node 能正确区分 RST 与 EOF**，所以那不是平台限制，是 bun 的读侧检测在真机上漏判。T30 的 class B 定性需要复核。
+带 `BUN_DEBUG_NETWRITE` 的构建（`1533ccbed`）在真机上拿到：
 
-**复现脚本**（`/data/storage/el2/base/tmp/`）：`neterr2.js`（立刻/延迟 × 带回调/不带 四格）、`neterr3.js`（payload 扫描）、`neterr4.js`（bytesWritten + 事件序列）、`neterr5.js`（角色对调）、`netbulk.js`（正常连接完整性）、`rstwrite.c`（内核 errno 探针）。
+```
+check_error: len=10485760 send=1047728              部分写，9438032 进缓冲
+internal_flush: enter buffered=9438032              shutdown=false closed=false
+check_error: len=9438032 send=-1 errno=32 peer_gone=1   ← EPIPE，分类完全正确
+internal_flush: write_check_error res=0 fatal=32        ← fatal 确实算出来了
+internal_flush: enter buffered=0                        ← 第二次调用，缓冲已空
+on_writable: fatal=0                                    ← 错误在这里丢了
+```
+
+**推翻的假设一**（我的）：`us_socket_write_check_error` 开头"已关闭就早退、返回 0 不设 fatal"。日志显示 `shutdown=false closed=false`，`bsd_send` 正常拿到 errno 32，`peer_gone=1` 分类也对。
+
+**推翻的假设二**（台账原有的）：这是"真机 errno 呈现方式不同"。不是 —— 分类完全正确。
+
+真正的根因是结构性的：**`internal_flush()` 有副作用（丢弃无法投递的缓冲、停止重新武装可写轮询），却只通过返回值报告 errno，而它的 5 个调用点里只有 `on_writable` 读返回值**，`flush()` / `end()` / open 后的延迟 flush 三处都是 `let _ =`。谁先驱动 flush 谁就把错误连同数据一起吃掉；等 `on_writable` 再来时缓冲已空、返回 0，于是照常派发 `'drain'`、干净关闭。**与平台无关**，只是在容器里被掩盖（见下）。
+
+### 修复（`519c8163c` + `126fe84ae` + `496fdb61a`）
+
+1. 在 socket 上落 `pending_fatal_send_errno` 闩：`internal_flush` 处理致命 errno 时同时落闩，`on_writable` 在自己那次 flush 没发现问题时取闩。报告不再取决于是谁驱动的 flush。
+2. open 后的延迟 flush 不再仅凭"缓冲空了"就派发 drain —— 致命错误下缓冲是**被丢弃**才变空的，派发 drain 等于把丢掉的字节报告成写入成功（实测 `'drain'` 先于 `'error'` 到达，回调拿到 `null`）。
+
+`126fe84ae` 验证：`immediate-nocb` 与 node 完全一致（`'error'`=1 EPIPE），`test-net-error-twice` **3/3 通过**，回归 spawn 135 / multi-run 118 / filesink 50 / node-http 143 全 0 fail。
+
+### 容器为什么没暴露（**未查清**）
+
+容器侧埋点只有最初那次写的两行，之后再无 `internal_flush`，但错误确实报了出来 —— 说明它走的是另一条路径。**具体是哪条没有查清**。先前写在这里的解释（"真机读侧把 RST 当干净 EOF，容器则从读侧报错"）**已证伪**，见下。
+
+### 更正：T30 的前提不成立
+
+先前（含本条初稿）把 server 端的 `'end'` 事件当作"真机读侧把 RST 当成干净 EOF"的证据。这是错的：`clientSocket.destroy()` 在没有待收数据时发的是 **FIN**，server 收到 `'end'` 是**正确行为**。要发 RST 必须先设 `SO_LINGER{1,0}`。
+
+重做的读侧探针（对端确实发 RST）：
+
+| 读侧信道 | T30 原记录 | 本次实测（真机）|
+|---|---|---|
+| `read()` | **0（干净 EOF）** | **-1 / ECONNRESET(104)** ✅ |
+| `epoll` | 无 `EPOLLERR` | **含 `EPOLLERR`** ✅ |
+| `SO_ERROR` | 0 | 0（属实，但 Linux 上同样会被 `read` 消费，不构成缺陷）|
+
+两个变体（RST 前有/无待读数据）都正确。JS 层同样：`resetAndDestroy()` 下 bun 真机 **3/3** 报 `error ECONNRESET`，与 node、与容器一致。
+
+**结论：T30 的 class B 平台限制定性错误，应作废**（详见 T30 条目的更正）。最可能的原因是当时的探针没造出 RST，测的其实是 FIN。
+
+**复现脚本**（`/data/storage/el2/base/tmp/`）：`neterr2.js`（立刻/延迟 × 带回调/不带 四格）、`neterr3.js`（payload 扫描）、`neterr4.js`（bytesWritten + 事件序列）、`neterr5.js`（角色对调）、`netbulk.js`（正常连接完整性）、`rstwrite.c`（写侧 errno 探针）、`rstread.c` + `rstread.js`（读侧三信道探针，T30 复核用）。
 
 ## T04 — `statx(2)` 对 socket 型 fd 报 EBADF，bun 的 `fstatSync` 误当真错误抛出（已修复并真机验证）
 
