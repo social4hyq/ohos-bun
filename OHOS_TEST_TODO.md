@@ -691,20 +691,55 @@ test/js/node/test/parallel/test-trace-events-fs-sync.js
 
 `spawn-pipe-leak` 这一条再次印证前面的教训：batch 环境下的单次失败不足以判定回归，必须单跑复现。
 
-### 新增长尾：`multi-run.test.ts` — `--parallel` 下管道子命令拿到 EPIPE
+### T29 — OHOS 内核 `splice()` 在源端 EOF 时返回 EPIPE 而非 0（平台限制，class B）
 
-回归检查中发现，pre-existing。最小复现（script 是 `echo "hello world" | cat`）：
+`multi-run.test.ts` 的 `scripts with pipes work` 失败，追到底是内核缺陷，**与 bun 无关**。
+
+复现（script 是 `echo "hello world" | cat`）：
 
 ```
-bun run piped              -> hello world              exit=0  ✅
+bun run piped              -> hello world                 exit=0  ✅
 bun run --parallel piped   -> piped | hello world
                               piped | cat: -: Broken pipe
-                              piped | Exited with code 1  exit=1 ❌
+                              piped | Exited with code 1   exit=1 ❌   (4/4 稳定)
 ```
 
-输出内容是对的（前缀也对），但 `cat` 在写入时拿到 EPIPE。`--parallel` 需要给每行加 `piped |` 前缀，所以子进程 stdout 被接到收集管道上 —— 读端疑似在 `cat` 写完之前就关了。
+`--parallel` 要给每行加 `piped |` 前缀，于是 script 的 stdout 变成管道。GNU coreutils 的 `cat` 一旦发现 stdin 和 stdout 都是 pipe 就切到 `splice()` 零拷贝路径（经一个自建的中转 pipe）。同时挂 trace-shim 和 compat-shim 拿到的调用序列：
 
-**与 T21 表中的 `spawn-pipe-read-error-leak.test.ts` 症状同源**（同样是 `cat` + Broken pipe），两者应一起查，可能是同一个管道生命周期问题。未深挖。
+```
+splice(in=0, out=6, len=524288) = 12            stdin -> 中转 pipe
+splice(in=5, out=1, len=524288) = 12            中转 pipe -> stdout
+splice(in=0, out=6, len=524288) = -1 errno=32   stdin 已 EOF -> EPIPE
+```
+
+独立 C 探针（完全脱离 bun 和 cat）确认这是内核行为：
+
+| 操作 | OHOS | Linux 语义 |
+|---|---|---|
+| `splice()` 源端有数据 | 返回字节数 ✅ | 同 |
+| `splice()` 源端 EOF | **-1 / EPIPE** ❌ | **0** |
+| 同一个耗尽 pipe 上 `read()` | 0 ✅ | 同 |
+
+`read()` 正确报 EOF，只有 `splice()` 把 EOF 报成错误。GNU cat 于是打印 `cat: -: Broken pipe`（`-` 是 stdin 的显示名，errno 32 就是 "Broken pipe"）并 exit 1。
+
+**影响面远大于这一个测试**：任何用 splice 做拷贝循环的程序（GNU coreutils 的 cat/cp、多种 I/O 库）在本机都会在 EOF 处误报错误。bun 只是因为 `--parallel` 把 stdout 接成管道，才让 cat 走上这条路径。归 class B，测试侧无需改动。
+
+#### 这条的排查过程值得留档：连续 8 个假设被证伪
+
+| # | 假设 | 怎么倒的 |
+|---|---|---|
+| 1 | 与 `spawn-pipe-read-error-leak` 同根因（都是 cat + Broken pipe）| 读测试代码：那个用例是**故意** dup2 制造 EBADF 来测泄漏，Broken pipe 是人为破坏的副产品 |
+| 2 | toybox cat 的行为 | `cat` 其实是 brew 的 GNU coreutils 9.11 |
+| 3 | bun 用 socketpair 而非 pipe 导致 | C 探针：socketpair 下同样正常 |
+| 4 | OHOS 不产生 SIGPIPE，只给 EPIPE | C 探针：pipe 和 socketpair 写关闭读端**都**正确产生 SIGPIPE |
+| 5 | bun 把 SIGPIPE 设成 SIG_IGN 并继承给子进程 | 读 `/proc/self/status`：bun 子进程与纯 `/bin/sh` 的 SigIgn 完全一致，且不含 SIGPIPE |
+| 6 | 是 Bun Shell 的 builtin cat 在报错 | `Builtin.rs:196` 写着 `posix_disabled: [Cat, Cp]` |
+| 7 | bash 的 double close 搞坏了 fd | 那是 bash 的常规模式，第二次 EBADF 无害 |
+| 8 | **纯 shell 也能复现，ohos-compat-shim 才是根因** | **12 次复测 0 次复现** —— 见下 |
+
+第 8 条是这轮最严重的一次失误。我看到 `echo x \| cat \| cat` 报了一次错，就据此построил了一整张 "GNU cat vs toybox cat" 的四象限表格，还得出"禁用 compat-shim 任一拦截器即可修复"的结论 —— 而那七行"禁用后干净"其实只是问题没在那一次出现。补做复现率统计才看清：纯 shell **0/12**，bun `--parallel` **8/8**。那张表格整个是噪音。
+
+**教训**：我在本轮早些时候刚因为 `node-net`（误判转绿）和 `spawn-pipe-leak`（误判回归）两次强调过"单次运行不足以判定"，紧接着在这里又犯了同一个错，而且这次是在单次观测之上叠了五六层推论。**凡是要写进结论的对照实验，先给复现率，再谈机制。** 后面九成的时间都花在推翻自己前面几步上，如果一开始就先跑 10 次基线，能省掉整条弯路。
 
 余下 14 个文件复测后仍失败，维持原状。逐个独立，尚未查根因，按文件列出，后续 triage 从这里挑：
 

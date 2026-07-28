@@ -142,7 +142,7 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 
 # --- OHOS spawn overhead: fork+exit_group path 2-3x slower than vfork ---
 # cli/run parallel/pre-post scripts all hit 5000ms default timeout
-[ OPENHARMONY ] test/cli/run/multi-run.test.ts [ Failure ] # parallel output-formatting / pre-post / pipe tests timeout (spawn overhead)
+[ OPENHARMONY ] test/cli/run/multi-run.test.ts [ Failure ] # "scripts with pipes work": the kernel returns EPIPE instead of 0 from splice() at EOF, so GNU cat (which splices when stdin and stdout are both pipes, as --parallel makes them) exits 1 with "cat: -: Broken pipe". Kernel-side, not a bun defect -- see OHOS_TEST_TODO.md T29
 
 # --- OHOS hmdfs recursive glob slow (30–60s timeout) ---
 [ OPENHARMONY ] test/js/bun/glob/glob.test.ts [ Failure ] # leaks > scanSync/scan/GlobWalker + glob.match > *node_modules* (hmdfs slow)
