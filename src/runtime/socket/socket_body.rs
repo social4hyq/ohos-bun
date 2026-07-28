@@ -2,24 +2,6 @@
 
 use core::cell::Cell;
 use core::ffi::{c_int, c_uint, c_void};
-
-/// TEMPORARY (T37 diagnosis): `BUN_DEBUG_NETWRITE=1` traces the node:net write
-/// buffer through flush/drain/teardown. Revert once the device-vs-container
-/// divergence is located.
-pub(crate) fn netwrite_debug() -> bool {
-    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| {
-        std::env::var_os("BUN_DEBUG_NETWRITE").is_some_and(|v| !v.is_empty() && v != "0")
-    })
-}
-
-macro_rules! netlog {
-    ($($arg:tt)*) => {
-        if netwrite_debug() {
-            eprintln!("[netwrite] {}", format_args!($($arg)*));
-        }
-    };
-}
 use core::ptr::{self, NonNull};
 
 use bun_io::KeepAlive;
@@ -295,6 +277,14 @@ pub struct NewSocket<const SSL: bool> {
     pub server_name: JsCell<Option<Box<[u8]>>>,
     pub buffered_data_for_node_net: JsCell<Vec<u8>>,
     pub bytes_written: Cell<u64>,
+    /// Positive errno of a fatal send that `internal_flush` already reacted to
+    /// (buffer dropped, writable no longer re-armed) but whose caller was not
+    /// in a position to surface it. `internal_flush` has five callers and only
+    /// `on_writable` reads its return value; the other four discard it, so
+    /// whichever one happens to run first used to consume the error along with
+    /// the undeliverable bytes. Latching it here makes the report independent
+    /// of who triggered the flush. Cleared by whoever delivers it.
+    pub pending_fatal_send_errno: Cell<i32>,
 
     pub native_callback: JsCell<NativeCallbacks>,
     /// `upgradeTLS` produces two `TLSSocket` wrappers over one
@@ -920,13 +910,21 @@ impl<const SSL: bool> NewSocket<SSL> {
         // response teardown into an RST. Until that detection is verified on
         // Windows, keep the legacy contract there (the close path still fails
         // the pending write callback when the socket is torn down).
-        let fatal_send_errno = this.internal_flush();
-        netlog!(
-            "on_writable: fatal={} buffered_after={} detached={}",
-            fatal_send_errno,
-            this.buffered_data_for_node_net.get().len(),
-            this.socket.get().is_detached()
-        );
+        let flushed = this.internal_flush();
+        // A flush driven by one of the callers that discards the return value
+        // (`flush()`/`end()` from JS, or the post-open deferred flush) already
+        // dropped the undeliverable bytes and latched the errno. Without
+        // draining that latch here the socket went on to dispatch 'drain' —
+        // telling JS the write completed — and closed cleanly, so the peer saw
+        // a silently truncated stream. Measured on device: a 10MB write with
+        // the peer resetting mid-flight delivered 1MB, dropped 9.4MB, and
+        // reported success.
+        let fatal_send_errno = if flushed != 0 {
+            this.pending_fatal_send_errno.set(0);
+            flushed
+        } else {
+            this.pending_fatal_send_errno.replace(0)
+        };
         // On POSIX the fatal signal is trustworthy: us_socket_write_check_error
         // only reports an errno that is either known peer-gone or persisted
         // across its bounded unclassified-errno retry window. internal_flush
@@ -1280,10 +1278,6 @@ impl<const SSL: bool> NewSocket<SSL> {
 
     pub fn close_and_detach(&self, code: uws::CloseCode) {
         let socket = self.socket.get();
-        netlog!(
-            "close_and_detach: dropping buffered={}",
-            self.buffered_data_for_node_net.get().len()
-        );
         self.buffered_data_for_node_net
             .with_mut(|b| b.clear_and_free());
 
@@ -2890,12 +2884,6 @@ impl<const SSL: bool> NewSocket<SSL> {
                     .with_mut(|b| b.append_slice(remaining)); // OOM/capacity: fire-and-forget
             }
         }
-        netlog!(
-            "write_or_end: asked={} wrote={} buffered_now={}",
-            bytes.len(),
-            wrote,
-            self.buffered_data_for_node_net.get().len()
-        );
 
         WriteResult::Success {
             wrote,
@@ -2934,13 +2922,6 @@ impl<const SSL: bool> NewSocket<SSL> {
     /// fatal made Windows servers reset FIN-terminated responses (see
     /// a5e7ba5905) - until the Windows fatal-write detection is verified.
     fn internal_flush(&self) -> i32 {
-        netlog!(
-            "internal_flush: enter buffered={} bypass_tls={} shutdown={} closed={}",
-            self.buffered_data_for_node_net.get().len(),
-            self.flags.get().contains(Flags::BYPASS_TLS),
-            self.socket.get().is_shutdown(),
-            self.socket.get().is_closed()
-        );
         // A TLS socket whose handshake was rejected has no usable transport:
         // never push the buffered tail at it, and report no error (the
         // rejection is surfaced by the handshake path, not by the flush).
@@ -2969,7 +2950,6 @@ impl<const SSL: bool> NewSocket<SSL> {
                     .socket
                     .get()
                     .write_check_error(self.buffered_data_for_node_net.get().slice());
-                netlog!("internal_flush: write_check_error res={res} fatal={fatal_errno}");
                 if fatal_errno != 0 {
                     // Same rule as write_maybe_corked: drop the undeliverable
                     // buffer, stop re-arming the writable retry, and report the
@@ -2977,6 +2957,11 @@ impl<const SSL: bool> NewSocket<SSL> {
                     // already acknowledged to JS, so only an 'error' can).
                     self.buffered_data_for_node_net
                         .with_mut(|b| b.clear_and_free());
+                    // Returning the errno only reaches `on_writable`; the other
+                    // four callers discard it, and by then the bytes are gone.
+                    // Latch it so the report does not depend on which caller
+                    // happened to drive this flush.
+                    self.pending_fatal_send_errno.set(fatal_errno);
                     return fatal_errno;
                 }
                 res
@@ -3521,6 +3506,7 @@ impl<const SSL: bool> NewSocket<SSL> {
             poll_ref: JsCell::new(KeepAlive::init()),
             ref_pollref_on_connect: Cell::new(true),
             buffered_data_for_node_net: JsCell::new(Vec::new()),
+            pending_fatal_send_errno: Cell::new(0),
             bytes_written: Cell::new(0),
             native_callback: JsCell::new(NativeCallbacks::None),
             twin: JsCell::new(None),
@@ -3628,6 +3614,7 @@ impl<const SSL: bool> NewSocket<SSL> {
             poll_ref: JsCell::new(KeepAlive::init()),
             ref_pollref_on_connect: Cell::new(true),
             buffered_data_for_node_net: JsCell::new(Vec::new()),
+            pending_fatal_send_errno: Cell::new(0),
             bytes_written: Cell::new(0),
             native_callback: JsCell::new(NativeCallbacks::None),
             twin: JsCell::new(None),
@@ -4556,6 +4543,7 @@ pub fn js_upgrade_duplex_to_tls(
         poll_ref: JsCell::new(KeepAlive::init()),
         ref_pollref_on_connect: Cell::new(true),
         buffered_data_for_node_net: JsCell::new(Vec::new()),
+        pending_fatal_send_errno: Cell::new(0),
         bytes_written: Cell::new(0),
         native_callback: JsCell::new(NativeCallbacks::None),
         twin: JsCell::new(None),

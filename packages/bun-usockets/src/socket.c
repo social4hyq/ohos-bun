@@ -19,7 +19,6 @@
 #include "libusockets.h"
 #include "internal/internal.h"
 #include <stdlib.h>
-#include <stdio.h>
 #include <string.h>
 #include <stdint.h>
 #include <errno.h>
@@ -536,23 +535,9 @@ static int us_internal_send_errno_is_peer_gone(int e) {
 #define US_UNCLASSIFIED_SEND_RETRY_LIMIT 32
 #endif
 
-/* TEMPORARY (T37 diagnosis): BUN_DEBUG_NETWRITE=1 traces the write-error
- * classification. Revert once the device-vs-container divergence is found. */
-static int bun_netwrite_debug(void) {
-    static int cached = -1;
-    if (cached < 0) {
-        const char *e = getenv("BUN_DEBUG_NETWRITE");
-        cached = (e && *e && *e != '0') ? 1 : 0;
-    }
-    return cached;
-}
-
 int us_socket_write_check_error(struct us_socket_t *s, const char *data, int length, int *fatal_write_error) {
     if (fatal_write_error) *fatal_write_error = 0;
     if (us_socket_is_closed(s) || us_socket_is_shut_down(s)) {
-        if (bun_netwrite_debug())
-            fprintf(stderr, "[netwrite] check_error: len=%d EARLY-RETURN closed=%d shutdown=%d\n",
-                    length, us_socket_is_closed(s) ? 1 : 0, us_socket_is_shut_down(s) ? 1 : 0);
         return 0;
     }
     if (s->ssl) {
@@ -561,13 +546,6 @@ int us_socket_write_check_error(struct us_socket_t *s, const char *data, int len
     }
 
     int written = bsd_send(us_poll_fd(&s->p), data, length);
-    if (bun_netwrite_debug())
-        fprintf(stderr, "[netwrite] check_error: len=%d send=%d errno=%d would_block=%d transient=%d peer_gone=%d unclassified=%d\n",
-                length, written, written < 0 ? errno : 0,
-                written < 0 ? (bsd_would_block() ? 1 : 0) : 0,
-                written < 0 ? (bsd_send_is_transient_error() ? 1 : 0) : 0,
-                written < 0 ? (us_internal_send_errno_is_peer_gone(errno) ? 1 : 0) : 0,
-                (int)s->unclassified_send_failures);
     if (written < 0) {
         /* bsd_send already retries EINTR; bsd_would_block() reads errno on
          * POSIX and WSAGetLastError() on Windows. ENOBUFS/ENOMEM are
