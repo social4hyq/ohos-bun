@@ -273,6 +273,40 @@ T07 被撤回后做了一次系统复核 —— 台账里所有仍标"待查/待
 
 ---
 
+## T31 — T21 长尾深挖：三项收口（两个测试假设 + 一个 fork 有意差异）
+
+T21 复核确认 13 项里 10 项是稳定真失败后，逐个深挖。前三项都不是 bun 缺陷，但成因各不相同：
+
+### `filesink.test.ts` — 硬编码的 socket 缓冲假设（已修）
+
+`end() after a backpressured write() with the reader drained` 断在**第一行** `expect(writePromise).toBeInstanceOf(Promise)`，收到的是 `307200`——写入压根没 backpressure，300KB 一次写完了。
+
+测试注释假设 "Linux default ~200KB"，但 AF_UNIX 缓冲不是常数：
+
+| | 本机 HarmonyOS | OpenHarmony 容器 |
+|---|---|---|
+| `SO_SNDBUF` | **524288（512KB）** | 229376（224KB）|
+| 实测可灌入 | 512KB | 228KB |
+| 300KB 写入 | **不 backpressure** ❌ | backpressure ✅ |
+
+于是测试在本机连它要覆盖的那个 orphan-promise bug 都没走到就挂了。写入量必须落在**一到两个缓冲之间**（超过容量才 backpressure，剩余又要小到能被一次 flush 清空），所以改成先量再取 1.5 倍。fd 本来就是非阻塞的（测试自己的 drain 循环就依赖 `readSync` 抛异常而非阻塞），灌到 `writeSync` 报 EAGAIN 就是容量。
+
+两种缓冲下都验证过：512KB→768KB、228KB→349KB，`write()` 均正确 backpressure。**50 pass / 0 fail，3/3 稳定**，基线二进制同样通过。
+
+### `resolver-permission-denied-ancestor.test.ts` — 我们自己 fork 的有意差异（已 skip）
+
+`errors on the requested directory itself stay fatal` 期望 execute-only 的 cwd 让 `bun run` 以 `error loading current directory` 致命退出；本机报的是 `Script not found "start"`。
+
+**这是有意的**：`run_command.rs` 有 `#[cfg(target_env = "ohos")]` 分支，读不到当前目录时回退到 `$HOME`（或 `/`）的 root DirInfo 而不是中止——因为 OHOS 上 SELinux 可能挡住某些挂载点的 `getcwd`/`openat`，一律致命会让 bun 在正常场景里直接不可用。`36dbc7630` 特意把这个 fallback 从"影响所有平台"收窄到只在 OHOS 生效，就是为了让其他平台保留本用例断言的致命行为。
+
+平台本身没问题——C 探针确认 0o111 目录语义完全正确（`chdir` 成功、`opendir` EACCES、按已知文件名 `open` 成功）。同文件的兄弟用例（不可读**祖先**目录下 `bun run` 仍要能工作，正是该 fallback 要保护的那一半）照常通过。
+
+已降级为带根因的文件内 skip，1 fail → **1 pass / 1 skip**。
+
+**遗留的可改进点**：这个 fallback 是**静默**的，于是真正"当前目录不可读"的场景对用户表现为误导性的 `Script not found`。加一句提示是合理的，但会改动 `bun run` 的输出、可能牵连其他 run_command 测试，故未在本轮动手。
+
+---
+
 ## T30 — 内核把 TCP RST 呈现成正常 EOF，bun 的读侧错误检测因此失效（平台限制 + bun 可改进）
 
 从 T21 复核里挑 `test-net-error-twice.js` 深挖得到。测试逻辑：client 连上后立即 `destroy()`（RST），server 往这条死连接写 10MB，期望 server 端 `error` 事件**恰好一次**。
