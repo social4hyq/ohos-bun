@@ -236,7 +236,69 @@ T@5b2f182bc0   -> EARLY RETURN (READER_DONE already set)
 
 **收尾踩的坑（记下来防止再犯）**：移除插桩的 commit `7b260119a` 把紧邻插桩块的 `pub mod js { ... }` 一起删了 —— 那是原有的 generated bindings re-export，不是插桩，只是位置挨着。16 个 `cannot find module js` 编译错误，浪费一轮 18min 构建。`4baab5bcb` 恢复。**教训**：声称"diff 是纯删除"不够，还要确认删除的**每一段**都属于插桩本身；`git diff <修复commit> -- <文件> | grep "^+"` 应为空是必要条件而非充分条件。
 
+**干净版复验（`7f42ebc2d`，插桩全部移除）**：`terminal.test.ts` **94 pass / 2 fail**，与插桩版逐数字一致；`exit callback` 组连跑 5 次 **5×(4 pass / 0 fail)**。移除插桩没有影响修复。
+
 **结论**：T03 拆成两个独立根因，**两个都已真修** —— T03a raw mode（`738701916`，OHOS 平台特有）、T03b exit 回调竞争（`4c3bee75b`，上游共享缺陷）。剩下的 `handles Unicode characters` 等属于前面记录的"审计开销下整体摇摆"，是 class C 且已证明不是调预算能解决的。
+
+### T03 簇余下三个文件的归宿（逐个查清，两个转出 T03、一个成为新根因）
+
+| 文件 | 实际根因 | 与 PTY 有关？ | 归宿 |
+|---|---|---|---|
+| `18239.test.ts` | fixture `data-generator.sh` shebang 硬编码 `#!/bin/bash`，本机 bash 在 `/data/service/hnp/bin/bash` | 无关 | **已修**（`7f42ebc2d`，改 `#!/usr/bin/env bash`），0 pass/1 fail → **1 pass/0 fail** |
+| `no-orphans.test.ts` 的 Ctrl-Z 用例 | 测试靠 `/proc/<pid>/stat` 的 `tty_nr`/`tpgid`/`state` 三个字段判断作业控制，OHOS procfs 这三个字段全不可用 | 无关 | **class C**（观测手段不可移植），详见下方 T25 |
+| `no-orphans.test.ts` 的 setsid daemon 用例 | bun 的后代枚举依赖 `CONFIG_PROC_CHILDREN`，OHOS 内核没开 → `--no-orphans` 整个特性静默失效 | 无关 | **class A 新根因**，详见下方 T26 |
+
+三个都跟 PTY 没关系 —— 当初归进 T03 是因为症状（TTY/超时）像，不是因为查过根因。
+
+---
+
+## T25 — OHOS procfs 不报告 `tty_nr` / `tpgid` / `state`（平台限制，class B）
+
+`no-orphans.test.ts` 的 Ctrl-Z 用例断言全部建立在 `/proc/<pid>/stat` 之上，在 OHOS 上无法成立。四个独立 C 探针（完全脱离 bun）把边界划清楚了：
+
+| 能力 | 结果 |
+|---|---|
+| `ioctl(TIOCSCTTY)` | ✅ rc=0，且生效（`tcgetpgrp` 随即返回 session leader 的 pgid）|
+| `tcsetpgrp` / `tcgetpgrp` 前台进程组切换与交还 | ✅ 完全正常 |
+| `SIGTSTP` / `SIGSTOP` 停止、`SIGCONT` 恢复 | ✅ 正常（`waitpid` 报 `WIFSTOPPED=1` / `WIFCONTINUED=1`）|
+| `open(slave)` 自动获取 ctty（Linux 语义）| ❌ 不发生，需显式 `TIOCSCTTY` |
+| `/proc/<pid>/stat` 字段 `tty_nr` | ❌ 恒为 0（即便 `TIOCSCTTY` 已成功）|
+| `/proc/<pid>/stat` 字段 `tpgid` | ❌ 恒为 0（即便 `tcgetpgrp` 返回正确值）|
+| `/proc/<pid>/stat` 字段 `state` | ❌ 进程被 `SIGSTOP` 停止后仍持续报 `S`，500ms 内不变 |
+
+**作业控制的功能层完好，只有 procfs 的观测层缺失。** 所以这个用例在 OHOS 上既不能证明 bun 对、也不能证明 bun 错 —— 它测不到东西。归 class B/C，保留 quarantine 并在注释里指向本节；不改测试（改成 `waitpid` 口径要重写整个用例，且上游没有这个需求）。
+
+`/proc/<pid>/stat` 的 `ppid` 字段**是准的**（T26 的修复正依赖它）——不要把本节读成"OHOS procfs 全不可信"。
+
+---
+
+## T26 — `--no-orphans` 在 OHOS 上完全静默失效（`CONFIG_PROC_CHILDREN` 缺失，已修 `e76b0d3a8`）
+
+从 `no-orphans.test.ts` 的 setsid daemon 用例（30s 超时）挖出来，实际影响远超一个用例。
+
+**症状链**：用例 `stderr: "pipe"`，daemon 继承写端且 `sleep 1 while 1` 永不退出 → 若 bun 没把 daemon 杀掉，`await proc.stderr.text()` 就永不返回 → 30s 超时。手动复现证实：`bun run --no-orphans` **exit=0**，但它 spawn 的 setsid daemon **3s 后仍存活**。
+
+**根因**：`list_child_pids_linux()`（`src/io/ParentDeathWatchdog.rs`）读 `/proc/<pid>/task/<tid>/children`，该文件只在内核开了 `CONFIG_PROC_CHILDREN` 时存在。OHOS 内核没开 —— 实测该路径**不存在**。于是每次 `read_file_once` 返回 `None` → `continue` → 循环走完 → 函数返回 **`Some(0)`**，与"这个进程没有子进程"**完全无法区分**。
+
+这一个返回值让四个调用方全部空转：`kill_descendants()`（退出时的主清理路径）、`kill_subreaper_adoptees()`、`kill_tree_rooted_at()`、`snapshot_children()`。**整个 `--no-orphans` 特性在 OHOS 上不工作，且不报任何错。**
+
+**先排除了平台限制**（否则就该归 class B 而不是修 bun）：
+
+| 能力 | 结果 |
+|---|---|
+| `prctl(PR_SET_CHILD_SUBREAPER, 1)` | ✅ rc=0，`PR_GET` 读回 1 |
+| 孤儿孙进程是否真的 reparent 到 subreaper | ✅ 是 |
+| `/proc/<pid>/stat` 的 `ppid` 字段 | ✅ 准确 |
+| 扫 `/proc` 按 ppid 找子进程 | ✅ 可行（探针看到 224 个 pid，精确找出 3 个直接子进程）|
+| `/proc/<pid>/task/<tid>/children` | ❌ 不存在 |
+
+平台该有的都有，缺的只是一个内核配置项暴露的快捷文件。所以是 class A，可修。
+
+**修复**：加 `children_file_usable` 标志区分"文件存在但为空"（真没子进程）和"文件根本不存在"（内核不支持），后者回退到扫 `/proc` 读每个 `stat` 的 ppid —— `pgrep`/`pstree` 的传统做法。快路径在有该文件的内核上完全不变；回退是 O(进程数)，但四个调用方全在退出/拆除路径上（进程退出，或 spawnSync 的 disarm defer），不在稳态执行路径。
+
+**这不是 OHOS 特有的修复** —— 任何没开 `CONFIG_PROC_CHILDREN` 的内核（不少嵌入式/精简内核配置）上，`--no-orphans` 都同样静默失效。
+
+待验证：构建中。
 
 **另外**：`tty-reopen-after-stdin-eof` 和 `tui-app-tty-pattern` 实测**已经通过**——上面表格里原先列为"可能同根因"，应从 T03 簇移出。
 
