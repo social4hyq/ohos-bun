@@ -298,6 +298,80 @@ T@5b2f182bc0   -> EARLY RETURN (READER_DONE already set)
 
 **这不是 OHOS 特有的修复** —— 任何没开 `CONFIG_PROC_CHILDREN` 的内核（不少嵌入式/精简内核配置）上，`--no-orphans` 都同样静默失效。
 
+**验证（`e76b0d3a8`）**：最小复现 A/B 一目了然 —— 修复前 `daemon 3965 仍存活`，修复后 `daemon 4027 已被 reap`。测试文件从 2 fail → **1 pass / 1 fail**（剩余的是 Ctrl-Z，属 T25/T27）。
+
+### 顺带打掉一层隐藏跳过：`isPosix` 不认 openharmony
+
+`no-orphans.test.ts:23` 的 `isPosix` 硬编码只认 linux/darwin，14 个 `skipIf(!isPosix)` 用例在本机全部静默跳过 —— 正是本轮要消灭的那类"从分母里消失"。加上 openharmony 后：
+
+| | 修复前 | 解锁后 |
+|---|---|---|
+| pass | 1 | **15** |
+| skip | 21 | 5 |
+| fail | 1 | 3 |
+
+新恢复的 14 个用例**全部通过**。新增的 2 个 fail 是解锁后才第一次被执行到的（不是回归），分别归入 T25 和下面的 T27。
+
+---
+
+## T27 — OHOS 的 PTY 行规程不生成信号（平台限制，class B）
+
+解锁 `isPosix` 后暴露：`Ctrl-Z stop observed by outer shell's waitpid(WUNTRACED)` 超时。这个用例**不依赖 T25 那些 procfs 字段**（它走 `waitpid(WUNTRACED)`，而探针已证明该语义正常），所以是另一回事。
+
+线索来自输出本身：`"BUN_PGID 8412\r\nREADY 8507\r\n^Z"` —— `^Z` 被**回显成字面字符**，`BUN_STOPPED` 从未出现。行规程认出了控制字符（ECHOCTL 生效），却没有据此发信号。
+
+独立 C 探针（建 PTY → 子进程 setsid + TIOCSCTTY + 成为前台组 → 从 master 写控制字符 → `waitpid(WUNTRACED)`）：
+
+| 写入 master 的字符 | 子进程 termios | 结果 |
+|---|---|---|
+| `^Z` (0x1a, VSUSP) | `ISIG=1 VSUSP=0x1a` | **无任何信号** |
+| `^C` (0x03, VINTR) | `ISIG=1 VINTR=0x03` | **无任何信号** |
+| `^\` (0x1c, VQUIT) | `ISIG=1` | **无任何信号** |
+
+三个都不生成。`ISIG` 是开的、控制字符配置正确、前台进程组也设对了 —— OHOS 的 PTY 行规程就是不做字符→信号这一步。
+
+对照 T25：那里缺的是**观测**（procfs 字段），这里缺的是**功能**（信号生成）。两者都不是 bun 的问题，但性质不同，所以分开记。任何依赖"往 PTY 写 ^C/^Z 来控制子进程"的测试在本机都不可能通过。
+
+---
+
+## T28 — OHOS 补丁自身的缺陷：`bun run` 下 PDEATHSIG 被清除且无人接手（已修 `822f3121d`）
+
+`no-orphans.test.ts` 的 `supervisor SIGKILLed > bun run and the script exit` 用例：SIGKILL 掉外层 `sh` 后，`bun run` 10s 不退出。
+
+**这个根因在我们自己的 fork 里**，不是上游缺陷 —— `src/spawn/process.rs` 那段 `#[cfg(target_env = "ohos")]` 的 no_orphans 分支。
+
+**逐步二分**（每一步都推翻了上一步的假设，值得留档）：
+
+| 实验 | 结果 | 排除了什么 |
+|---|---|---|
+| C 探针：`prctl(PR_SET_PDEATHSIG)` 是否生效 | ✅ 父死后 100ms 内子进程消失 | 平台不支持 PDEATHSIG |
+| `bun script.js` + env var | ✅ 正常退出 | bun 完全不 arm |
+| `bun run --no-orphans go`（flag 路径）| ❌ 不退出 | — |
+| `bun run` + env var（**排除 flag/env 差异**）| ❌ 同样不退出 | "是 flag 路径解析太晚" |
+| `bun spawner.js`（脚本内 `Bun.spawn`）+ env var | ✅ 正常退出 | "spawn 这个动作破坏 PDEATHSIG" |
+
+到这里锁定在 `bun run` 特有的 **spawnSync** 路径。用 ohos-trace-shim 拦 `prctl`（Rust 侧是 `libc::prctl`，走符号，不像 rustix 的 `linux_raw` read/write 那样隐形）拿到决定性序列：
+
+```
+6:  pid=36527 prctl(PR_SET_PDEATHSIG, 9) = 0    ← bun run arm SIGKILL ✓
+8:  pid=36527 fork() = 36531
+10: pid=36531 prctl(PR_SET_PDEATHSIG, 9) = 0    ← 子进程设自己的 ✓ 正常
+11: pid=36531 execve(bash)
+12: pid=36527 prctl(PR_SET_PDEATHSIG, 0) = 0    ← ★ 父进程把自己的清成 0
+```
+
+**清除本身是有意为之**（SIGKILL 不可捕获，会让 cleanup defer 跑不了），代码打算用 `pidfd_open(ppid)` + `getppid()` 兜底来接手。两条退路的平台可用性也都用探针确认过：`pidfd_open` 成功、`poll` 正确唤醒、`getppid()` 在父死后 200ms 内变 1。
+
+**真正的缺陷是那段接手代码的入口条件**：
+
+```rust
+while out_fds_to_wait_for[0] != Fd::INVALID || out_fds_to_wait_for[1] != Fd::INVALID
+```
+
+父死检测整个写在这个循环体里，而循环只在**有管道 stdio 要 drain** 时才执行。`bun run <script>` 用的是**继承** stdio，两个 fd 都是 INVALID，循环体一次都不进 —— PDEATHSIG 已经交出去了，接手的人却从没上班。`--no-orphans` 在它最常见的用法下静默失效。
+
+**修复**：只有在那个循环确实会跑时才做这笔交易；否则保留 PDEATHSIG。代价是 SIGKILL 情形下 cleanup defer 不执行 —— 而这正是上游 Linux 路径既有的行为（`enable()` 的注释写明该情形靠 env-var 继承来做后代清理）。两害相权，"父死我死"是 `--no-orphans` 的第一语义，不能为了次要的 defer 把它丢掉。
+
 待验证：构建中。
 
 **另外**：`tty-reopen-after-stdin-eof` 和 `tui-app-tty-pattern` 实测**已经通过**——上面表格里原先列为"可能同根因"，应从 T03 簇移出。

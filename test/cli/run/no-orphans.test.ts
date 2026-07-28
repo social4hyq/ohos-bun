@@ -20,7 +20,8 @@ setDefaultTimeout(30_000);
 // Tree under test: test → sh (the "parent" we SIGKILL) → bun-debug → grandchild.
 // We SIGKILL sh and observe bun-debug and the grandchild.
 
-const isPosix = process.platform === "linux" || process.platform === "darwin";
+const isPosix =
+  process.platform === "linux" || process.platform === "darwin" || process.platform === "openharmony";
 const isSupported = isPosix || isWindows;
 
 // Shared fixture dir — child.js spawns grandchild.js, prints
