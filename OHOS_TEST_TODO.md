@@ -447,6 +447,8 @@ pid=56104  wait4(56116, WNOHANG) = 0   ← 反复轮询，孙进程还活着
 
 挖 `test-net-autoselectfamily.js`（Happy Eyeballs / RFC 8305）时撞上的，**不是 bun 缺陷，是本机网络环境**。
 
+> **2026-07-28 复核：仍然成立，而且比原记录更严重。** 代理是环境状态、会变，所以重测了一次 —— 连 **`192.0.2.1`（TEST-NET-1，保留给文档用、绝不应可路由）都"连接成功"**，`1.1.1.1:9` 和 `104.20.22.46:9` 同样。只有回环地址正常给 `ECONNREFUSED`。任何期待"连接失败"的网络测试在本机都会拿到假成功。
+
 测试用 mock lookup 给出 6 个地址（v6/v4 交替），期望 `autoSelectFamilyAttemptedAddresses` 记录全部 6 次尝试；实测只有 1 个。但把它抽成不依赖 node test harness 的最小复现后，**node 在同一台机器上给出完全相同的结果**：
 
 ```
@@ -1029,9 +1031,19 @@ RangeError: The value of "err" is out of range. It must be a negative integer. R
 
 ---
 
-## T11 — IPv6 / `localhost` DNS 解析 gap（class E，复核确认仍成立）
+## T11 — `localhost` 缺 AAAA 映射（class D，结论成立但**原记的原因是错的**，2026-07-28 更正）
 
-`expectations.txt` 里已有同类条目（`fetch family:6` 系列），本轮独立触发的几个也是同一个根因：这台沙盒缺少可用的 IPv6 回环/`/etc/hosts` 条目。
+> **更正。** 原文写"这台沙盒缺少可用的 IPv6 回环/`/etc/hosts` 条目"。实测（`496fdb61a`）：
+>
+> - `/etc/hosts` **有**条目，含 `::1 ip6-localhost ip6-loopback`
+> - **IPv6 回环完全可用**：`ping6 ::1` 通、`listen("::1")` 成功、`dns.lookup("::1")` 正确
+> - 真正缺的只有一条：**`localhost` 没有 AAAA 映射**（`/etc/hosts` 里只有 `127.0.0.1 localhost`）
+>
+> 逐项与同机 node 对照，`lookup` 的 6 种调用方式 + `net.connect`（含 `autoSelectFamily`）**全部逐项一致**，唯一失败的是 `family:6`，node 同样 `ENOTFOUND`。所以是环境限制、不是 bun 缺陷 —— 结论不变，但"缺 IPv6 回环"这个说法要作废，它把一个窄问题写成了宽问题。
+>
+> **无便宜修法**：`/etc/hosts` 是指向 `/data/service/el1/public/hosts_user/hosts` 的符号链接，非 root 不可写，补不了 `::1 localhost`。
+
+原表如下（症状描述仍有效）：
 
 | 文件 | 症状 |
 |---|---|
