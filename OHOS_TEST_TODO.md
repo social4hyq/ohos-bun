@@ -607,14 +607,14 @@ RangeError: The value of "err" is out of range. It must be a negative integer. R
 
 ---
 
-## T15 — 深路径 / 长路径缓冲区问题（复查完毕：一个是 T01 的连带受益者，另一个是独立的测试算术问题）
+## T15 — 深路径 / 长路径缓冲区问题（**两项均已收口**：一个随 T01 修复，一个是测试算术已修）
 
 最初怀疑两个文件是同一类"固定缓冲区在深 TMPDIR 下截断"的 Rust bug（类比历史上的 128 字节 shebang 缓冲区 bug）。用 `e39db04d6`（T01 修复后的二进制）复查,结论分岔：
 
 | 文件 | 结论 | 分类 | 层级 | 状态 |
 |---|---|---|---|---|
 | `test/js/bun/glob/path-length.test.ts` | **已修复（T01 的连带副作用）**：`buildDeepTree()` 用 `Bun.spawn({cmd:["bash",...], cwd: root})` 建深目录树,`root` 落在 EL2——这正是 T01 的触发模式。真机复测（`e39db04d6`）：**6 pass, 0 fail**。之前的失败根本不是"缓冲区溢出",是 T01 的 getcwd 噪音污染了 `buildDeepTree` 内部 bash 循环的 stderr,间接搞乱了后续断言。 | — | — | 已随 T01 一起修复 |
-| `test/js/bun/net/unix-socket-long-path.test.ts` | **不是同一类 bug，是测试自身的路径长度算术假设**：`makeSockPath()` 用 `pad = total - 60` 反推需要填多少字节让 `tempDir()` 产出的目录名凑到 `total` 长度,这个"60"是针对其他平台/更浅 TMPDIR 校准的常量。这台环境里 runner 给每个测试文件套了一层 `TMPDIR=.../buntmp-XXXXXX/` 嵌套,实际 `tempDir()` 产出的绝对路径比假设的深,导致 `total=150` 时 `basenameLen = total - dir.length - 1` 算出负数,`Buffer.alloc(-2, ...)` 直接抛 `RangeError`（真机复测确认：`total=108` 正常,`total=150` 才炸)。分类改判 C（测试算术脆弱,不是 Rust 层 bug），层级 test | C | test | 待修（低成本：把硬编码的 padding 常量换成先量出 `tempDir()` 实际长度再反推,而不是假设固定 60）|
+| `test/js/bun/net/unix-socket-long-path.test.ts` | **已修（测试层）**：根因是 `makeSockPath()` 里硬编码的 `pad = total - 60`。`tempDir()` 实际是 `mkdtemp(realpath(os.tmpdir()) + "/" + basename + "_XXXXXX")`，长度随 TMPDIR 深度变化，runner 又在其下多套了一层 `buntmp-XXXXXX/`；于是 `basenameLen` 算成负数，`Buffer.alloc(-2)` 在建 socket 之前就抛 RangeError（`total=108` 侥幸没事，`total=150` 必炸）。改成先用一次不带 pad 的 `tempDir()` 量出实际长度，再反推 padding —— `tempDir(prefix + pad)` 的长度恰好是 `probeLen + pad.length`，所以给 `/` 和 basename 各留一字节就能把 `sock.length` 精确钉在 `total`。复测 **4 pass / 0 fail，3/3 稳定**；用**基线二进制**跑同样通过，证明纯属测试层、与 bun 版本无关。 | C | test | **已修** |
 
 ---
 
