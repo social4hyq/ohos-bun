@@ -379,7 +379,17 @@ return fchmodat(dirfd, path, mode, 0);
 
 **验证**：shim 功能测试新增 `test_fchmodat2_symlink_not_followed`（断言目标 mode 不变），报 `ret=-1 errno=95 (ENOTSUP), target mode=600`；原有的 `fchmodat2_bun_lchmod`（普通文件）照常通过，因为 NOFOLLOW 在那里本就是 no-op。套件 **ALL PASS (0/35)**。bun 侧该文件 **1 fail → 0 fail，3/3 稳定**。
 
-发布：tap PR [#87](https://github.com/social4hyq/homebrew-core/pull/87)，`ohos-compat-shim` 0.2.1 → **0.2.2**。
+**已发布并装机**：tap PR [#87](https://github.com/social4hyq/homebrew-core/pull/87) 已合并，`ohos-compat-shim` 0.2.1 → **0.2.2**（bottle tag `-r1`），本机已 `brew upgrade` 到位。用**生产版**（非本地构建）复验：
+
+| 检查 | 结果 |
+|---|---|
+| 探针：普通文件 / 目录 + NOFOLLOW | 均正确应用 ✅ |
+| 探针：symlink + NOFOLLOW | `ENOTSUP`，目标 mode 不变 ✅ |
+| `symlink-path-traversal.test.ts` ×3 | **3/3 全 0 fail** |
+| `bun-install` / `bun-add` 回归 | 各 3 0 通过 |
+| `fs.test.ts` | 1 fail —— 是 T06 已记录的 `readdir(recursive)` 系列，与 `fchmodat2` 无调用关系，**非回归** |
+
+**升级时踩到的遗留问题**（与本条无关，但值得记）：`brew upgrade` 报 `Cellar/opencode/1.18.7 is not a directory`。原因是更早一次 `brew upgrade` 被我的 115s timeout 中断，brew 已把旧版重命名为 `<version>.reinstall` 准备重装却没跑完，留下半截状态；`opencode@2` 同样中招。把两个 `.reinstall` 目录改回原名即恢复（内容完整，含 `INSTALL_RECEIPT.json`）。**教训：给 `brew upgrade` 设短 timeout 有风险**——它中断的可能是不可重入的重命名步骤，而报错信息（"is not a directory"）完全看不出这个来历。
 
 **遗留边界**：bun **静态内嵌**了一份 compat-shim，所以 `bun build --compile` 的产物（运行时没有 ambient `LD_PRELOAD`）在 bun 重新编译前仍是旧行为。普通 `bun` 调用走预加载库，立即修复。
 
