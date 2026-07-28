@@ -273,6 +273,35 @@ T07 被撤回后做了一次系统复核 —— 台账里所有仍标"待查/待
 
 ---
 
+## T30 — 内核把 TCP RST 呈现成正常 EOF，bun 的读侧错误检测因此失效（平台限制 + bun 可改进）
+
+从 T21 复核里挑 `test-net-error-twice.js` 深挖得到。测试逻辑：client 连上后立即 `destroy()`（RST），server 往这条死连接写 10MB，期望 server 端 `error` 事件**恰好一次**。
+
+三方对照，同一段最小复现：
+
+| 环境 | 结果 |
+|---|---|
+| 本机 HarmonyOS + bun | `errs.length = 0`，无 error 事件，`close` 的 `hadError = false` ❌ |
+| OpenHarmony 容器 + bun（同一份二进制）| `ERROR event: EPIPE read`，`hadError = true` ✅ |
+| 本机 HarmonyOS + node | `ERROR event: EPIPE write` ✅ |
+
+同一台机器上 node 行得通、bun 行不通，所以**不是单纯的平台缺陷**；但换个内核 bun 又行得通，所以**也不是单纯的 bun 缺陷**。独立 C 探针把交叉点找出来了 —— RST 之后本机各检测信道的表现：
+
+| 手段 | 本机 | 标准 Linux |
+|---|---|---|
+| `write()` | `-1 ECONNRESET` ✅ | 同 |
+| `read()` | **`0`（干净 EOF）** ❌ | `-1 ECONNRESET` |
+| `SO_ERROR` | **`0`（无错误）** ❌ | `ECONNRESET` |
+| `epoll` 事件 | `EPOLLIN\|EPOLLOUT\|EPOLLRDHUP\|EPOLLHUP`，**无 `EPOLLERR`** ❌ | 含 `EPOLLERR` |
+
+**内核把 RST 导致的终止呈现成了正常 EOF**：三个读侧信道全部丢掉错误信息，只有 `write()` 还留着 `ECONNRESET`。于是 bun（读侧检测，容器日志里的 `EPIPE read` 是直接证据）把它当成对端正常关闭，node（写侧检测，报 `EPIPE write`）则不受影响。
+
+**errno 分类不是问题**：`us_internal_send_errno_is_peer_gone()`（`packages/bun-usockets/src/socket.c:515`）的名单里有 `ECONNRESET`。bun 也确实有写侧的 fatal 派发路径（`socket_body.rs:~906`，`internal_flush()` 返回 fatal errno → 派发 error handler → close），只是它挂在 **drain 派发**上，而这个场景里 RST 让 socket 先走了 close，那条路径没被走到。
+
+**可修，但要动上游共享的 socket 关闭路径**（class A + B 混合）：既然 `write()` 仍然带着 `ECONNRESET`，bun 完全可以像 node 那样在关闭前从写侧取错误。风险在于"关闭前尝试 flush 并检查 fatal errno"要嵌进 close 流程，误判会把正常关闭报成错误。**本轮未修**，建议单独立项。
+
+---
+
 ## T25 — OHOS procfs 不报告 `tty_nr` / `tpgid` / `state`（平台限制，class B）
 
 `no-orphans.test.ts` 的 Ctrl-Z 用例断言全部建立在 `/proc/<pid>/stat` 之上，在 OHOS 上无法成立。四个独立 C 探针（完全脱离 bun）把边界划清楚了：
