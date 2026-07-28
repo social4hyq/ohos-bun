@@ -2,6 +2,24 @@
 
 use core::cell::Cell;
 use core::ffi::{c_int, c_uint, c_void};
+
+/// TEMPORARY (T37 diagnosis): `BUN_DEBUG_NETWRITE=1` traces the node:net write
+/// buffer through flush/drain/teardown. Revert once the device-vs-container
+/// divergence is located.
+pub(crate) fn netwrite_debug() -> bool {
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var_os("BUN_DEBUG_NETWRITE").is_some_and(|v| !v.is_empty() && v != "0")
+    })
+}
+
+macro_rules! netlog {
+    ($($arg:tt)*) => {
+        if crate::runtime::socket::socket_body::netwrite_debug() {
+            eprintln!("[netwrite] {}", format_args!($($arg)*));
+        }
+    };
+}
 use core::ptr::{self, NonNull};
 
 use bun_io::KeepAlive;
@@ -903,6 +921,12 @@ impl<const SSL: bool> NewSocket<SSL> {
         // Windows, keep the legacy contract there (the close path still fails
         // the pending write callback when the socket is torn down).
         let fatal_send_errno = this.internal_flush();
+        netlog!(
+            "on_writable: fatal={} buffered_after={} detached={}",
+            fatal_send_errno,
+            this.buffered_data_for_node_net.get().len(),
+            this.socket.get().is_detached()
+        );
         // On POSIX the fatal signal is trustworthy: us_socket_write_check_error
         // only reports an errno that is either known peer-gone or persisted
         // across its bounded unclassified-errno retry window. internal_flush
@@ -1256,6 +1280,10 @@ impl<const SSL: bool> NewSocket<SSL> {
 
     pub fn close_and_detach(&self, code: uws::CloseCode) {
         let socket = self.socket.get();
+        netlog!(
+            "close_and_detach: dropping buffered={}",
+            self.buffered_data_for_node_net.get().len()
+        );
         self.buffered_data_for_node_net
             .with_mut(|b| b.clear_and_free());
 
@@ -2862,6 +2890,12 @@ impl<const SSL: bool> NewSocket<SSL> {
                     .with_mut(|b| b.append_slice(remaining)); // OOM/capacity: fire-and-forget
             }
         }
+        netlog!(
+            "write_or_end: asked={} wrote={} buffered_now={}",
+            bytes.len(),
+            wrote,
+            self.buffered_data_for_node_net.get().len()
+        );
 
         WriteResult::Success {
             wrote,
@@ -2900,6 +2934,13 @@ impl<const SSL: bool> NewSocket<SSL> {
     /// fatal made Windows servers reset FIN-terminated responses (see
     /// a5e7ba5905) - until the Windows fatal-write detection is verified.
     fn internal_flush(&self) -> i32 {
+        netlog!(
+            "internal_flush: enter buffered={} bypass_tls={} shutdown={} closed={}",
+            self.buffered_data_for_node_net.get().len(),
+            self.flags.get().contains(Flags::BYPASS_TLS),
+            self.socket.get().is_shutdown(),
+            self.socket.get().is_closed()
+        );
         // A TLS socket whose handshake was rejected has no usable transport:
         // never push the buffered tail at it, and report no error (the
         // rejection is surfaced by the handshake path, not by the flush).
@@ -2928,6 +2969,7 @@ impl<const SSL: bool> NewSocket<SSL> {
                     .socket
                     .get()
                     .write_check_error(self.buffered_data_for_node_net.get().slice());
+                netlog!("internal_flush: write_check_error res={res} fatal={fatal_errno}");
                 if fatal_errno != 0 {
                     // Same rule as write_maybe_corked: drop the undeliverable
                     // buffer, stop re-arming the writable retry, and report the
