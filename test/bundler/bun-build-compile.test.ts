@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { bunEnv, bunExe, isArm64, isLinux, isMacOS, isMusl, isPosix, isWindows, tempDir } from "harness";
+import { bunEnv, bunExe, isArm64, isLinux, isMacOS, isMusl, isOHOS, isPosix, isWindows, tempDir } from "harness";
 import { chmodSync } from "node:fs";
 import { join } from "path";
 
@@ -11,8 +11,12 @@ describe("Bun.build compile", () => {
 
     const os = isMacOS ? "darwin" : isLinux ? "linux" : isWindows ? "windows" : "unknown";
     const arch = isArm64 ? "aarch64" : "x64";
-    const musl = isMusl ? "-musl" : "";
-    const target = `bun-${os}-${arch}${musl}` as any;
+    // OpenHarmony reports itself through `isLinux`/`isMusl`, but its runtime
+    // is published as `-ohos`; `bun-linux-<arch>-musl` is a genuinely
+    // different platform with no build to download, so composing it here
+    // made this test ask for a cross-compile it could never satisfy.
+    const suffix = isOHOS ? "-ohos" : isMusl ? "-musl" : "";
+    const target = `bun-${os}-${arch}${suffix}` as any;
     const outdir = join(dir + "", "out");
 
     const result = await Bun.build({

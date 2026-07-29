@@ -18,6 +18,9 @@ import { dirname, isAbsolute, join } from "path";
 export const BREAKING_CHANGES_BUN_1_2 = false;
 
 export const isMacOS = process.platform === "darwin";
+/** OpenHarmony is Linux-like enough that `isLinux` covers it, but its
+ *  `--compile` target string is `-ohos`, not `-musl`. */
+export const isOHOS = process.platform === "openharmony";
 export const isLinux = process.platform === "linux" || process.platform === "openharmony";
 export const isFreeBSD = process.platform === "freebsd";
 export const isPosix = isMacOS || isLinux || isFreeBSD || process.platform === "openharmony";
