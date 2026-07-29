@@ -715,11 +715,28 @@ while out_fds_to_wait_for[0] != Fd::INVALID || out_fds_to_wait_for[1] != Fd::INV
 
 **归属**：`src/jsc/web_worker.rs` 的 worker 拆解路径**我们 fork 一行没改**（最近三个 commit 全是上游的 #35320 / #35002 / #34455），`git diff` 对上游基线在该文件上为空。判定为**上游缺陷**，class A，与 OHOS 无关。
 
+### 已定位到分配器（2026-07-28 续）
+
+用 `/proc/self/smaps` 在第 0 轮和第 30 轮取快照、按映射区间配对做差，增长的去向很集中：
+
+| 映射 | 30 轮增量 | 每 worker |
+|---|---|---|
+| **`[anon:WKFastMalloc]`** | **+28.5MB**（9.0 → 37.6MB）| **~0.95MB** |
+| `[anon:mimalloc]` | +11.5MB（2.9 → 14.4MB）| ~0.38MB |
+| `[anon:JSJITCode]` | +1.4MB | ~47KB（JIT 代码未释放）|
+| 二进制 `r-xp` | +3.3MB | 代码页换入，**不是泄漏** |
+
+**主因是 WKFastMalloc（WebKit 的分配器），不是 mimalloc** —— 先前"mimalloc 线程退出后 abandoned segment"的首选嫌疑**不成立**，mimalloc 占比不到一半。前两项相加 ~1.33MB/worker，与实测的 1.4MB 吻合。
+
+即：每个被销毁的 worker 留下约 **1MB 的 WebKit C++ 对象**没释放，且与 worker 执行了多少 JS 无关（0 / 8 / 32MB 堆三种负载下每 worker 泄漏量相同）。
+
+**排除"可回收高水位"**：30 轮后调 `emitMemoryPressure()` 两次并等待，RSS 只从 95.8 掉到 93.5MB、WKFastMalloc 38.4 → 36.1MB —— 46MB 的增长里只放掉 ~2.3MB。**是真持有，不是缓存**。（这一步是刻意做的：本轮在主线程场景已经栽过一次"把高水位误判成泄漏"。）
+
 ### 尚未定位的部分
 
-固定 ~1.4–1.8MB/worker，与负载无关、与退出路径无关，且增长在已有映射内部而非新映射 —— 指向分配器持有的、不可复用的常驻内存（mimalloc 线程退出后的 abandoned segment 是首选嫌疑，但未证实：bun 走 `_exit`，`MIMALLOC_SHOW_STATS=1` 拿不到退出统计，`MIMALLOC_VERBOSE=1` 只能看到选项表）。
+具体是哪些 WebKit 对象没释放，未定位。`bun:internal-for-testing` 的 69 个入口里没有 FastMalloc 统计（只有 `getEventLoopStats` / `emitMemoryPressure`），要往下走需要带 `WTF::fastMallocStatistics()` 或 bmalloc 统计的构建。
 
-下一步若继续，两条路：① 找一台 glibc x86-64 跑官方 bun 复现，确认与平台无关后向上游报；② 在 fork 里临时给 mimalloc 加 stats 编译开关，直接读 abandoned 计数。
+容器对照尚未做（对照时容器里的 bun 正在重编）。
 
 **测试处置**：`message-port-context-destroy-leak.test.ts` 目前的失败是真实的，但它测的阈值实际上被 worker 泄漏主导。在根因修掉之前不动它，也**不**塞进 `expectations.txt`。
 
