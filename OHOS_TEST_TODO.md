@@ -1118,7 +1118,21 @@ RangeError: The value of "err" is out of range. It must be a negative integer. R
 
 ---
 
-## T13 — `bun build --compile` 自身平台 target 不可下载
+## T13 — ~~`bun build --compile` 自身平台 target 不可下载~~ **措辞过宽，已收窄**（2026-07-28 复核）
+
+> **更正。** 实测：**不带显式 target 的 `bun build --compile` 在真机上完全可用** —— 编译成功（1.58s），产物运行正常（exit 0）。`bun-build-compile.test.ts` 是 **10 pass / 1 fail**，不是"不可用"。
+>
+> 原条目把三个不同原因的失败混成了一条：
+>
+> | 失败用例 | 真实原因 |
+> |---|---|
+> | `compile with current platform target string` | **确属下载路径**：显式传平台 target 串时 bun 去下载预编译运行时，`bun-linux-aarch64-musl-v1.4.0` 没有 OHOS 发布。class B/D 成立 |
+> | `compiled binary in a deleted cwd > exits cleanly instead of crashing` | **与下载无关**，是 deleted-cwd 场景 |
+> | `24742` / `29290`（PT_INTERP 读回空串）| **与下载无关**，是 **T23**（patchelf 在签名后二进制上静默失效）|
+>
+> 收窄后的正确表述：**只有"显式指定自身平台 target 串"这一条下载路径不可用**，`--compile` 本身可用。另两项应各自归到 deleted-cwd 和 T23 名下。
+
+原文如下（仅第一行结论过宽）：
 
 `bun-linux-aarch64-musl-v1.4.0` 目标没有为 OHOS 发布，`--compile` 自编译走的正是这个下载路径。`24742`/`29290` 是同一路径的下游症状（PT_INTERP 断言收到空字符串,而不是一个清晰的报错——编译步骤静默失败了）。
 
@@ -1499,7 +1513,25 @@ if ISFIFO(stat.st_mode) && ISFIFO(dest.mode)
 
 ---
 
-## T22 — `fs-oom.test.ts`：memfd + readFileSync 交互差异（复核：不是陈旧 quarantine）
+## T22 — memfd 的 fd 上 `fstat` 被沙箱拒绝（**class B，2026-07-28 定性完成**）
+
+> **原"A/B 待定"已解决 → B。** C 探针 + 容器对照：
+>
+> | | 真机 HarmonyOS | OpenHarmony 容器 |
+> |---|---|---|
+> | `memfd_create` | 成功 | 成功 |
+> | `write` / `read` | 正常 | 正常 |
+> | **`fstat`** | **-1 EACCES** ❌ | **0 OK**（size=5 mode=100777）✅ |
+> | `statx` | -1 EFAULT ❌ | 0 OK ✅ |
+> | `stat(/proc/self/fd/N)` | -1 EACCES ❌ | 0 OK ✅ |
+>
+> 同一份 C 代码，容器全过、真机全挂 —— **本机沙箱特有**，与 bun 无关。fd 本身可读（`read` 拿到完整内容），只是拿不到元数据。
+>
+> 于是 `readFileSync` 在 fstat 这一步就抛 `EACCES: permission denied, fstat`，**根本走不到它要测的 OOM 路径**（测试期望 `ENOMEM: not enough memory`）。
+>
+> **潜在改进（未做）**：`fstat` 失败时 `readFileSync` 可以退化成增量读——fd 明明可读。这与 T04 的修复同型（statx 失败就回退到 fstat）。做了之后这个测试反而能真正测到它想测的 OOM 路径。属上游共享路径，需权衡。
+
+原文如下（判断仍有效，仅分类由"A/B 待定"收敛为 B）：
 
 `expectations.txt` 把这个文件标注为"bun:internal-for-testing unavailable"（和下面"陈旧 quarantine 确认"里那批一样的理由），但**放回来复测后确认这条 quarantine 依然成立**——只是理由错了。真实原因：`memfd_create` 产生的 fd 配合 `setSyntheticAllocationLimitForTesting` 后调用 `readFileSync`，OHOS 上报 `EACCES: permission denied, fstat`，而不是预期的 `ENOMEM: not enough memory`。分类 A/B（待定,需要判断是 bun 对 memfd fd 的 fstat 逻辑问题还是 OHOS memfd 实现本身的差异），层级 rust，状态：待查。
 
