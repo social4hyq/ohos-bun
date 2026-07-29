@@ -1016,11 +1016,11 @@ on_writable: fatal=0                                    ← 错误在这里丢�
 
 ---
 
-## T40 — `fs.watch` 超长相对路径报 ENOENT 而非 ENAMETOOLONG（class C 测试 fixture 缺陷，分析完毕待修）
+## T40 — ~~`fs.watch` 超长相对路径报 ENOENT 而非 ENAMETOOLONG~~（class C 测试 fixture 缺陷，**已修复** `d88b34a6f`）
 
 `fs.watch.test.ts` 的 `reports an error for relative paths that no longer fit in the path buffer`：fixture 的 per-platform 路径上限表 `{linux:4096, darwin:1024, win32:...} ?? 1024` **缺 `openharmony` 条目**，落到 1024 兜底；但 OHOS 构建走 `cfg!(target_os="linux")` 分支，`MAX_PATH_BYTES=4096`（`src/bun_core/util.rs:706`）。1022 字节相对路径合法通过校验、join 后约 1082 字节也放得下 → 真正去 watch 一个不存在的路径 → **ENOENT 是运行时的正确行为**（实测报错即 ENOENT）。
 
-运行时无修法和不该修（把 OHOS 缓冲区砍到 1024 会背离 Linux、截断真实长路径）。唯一修法是 fixture 表补 `openharmony: 4096`——属于"测试自身缺陷"类，按"不擅自改测试"的约定**待用户确认后动手**。
+修复：fixture 表补 `openharmony: 4096`（经用户确认后改动）。修后 `fs.watch.test.ts` **3/3 = 44 pass / 0 fail**，整文件全绿。
 
 ---
 
