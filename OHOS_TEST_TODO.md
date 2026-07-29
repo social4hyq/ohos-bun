@@ -983,7 +983,7 @@ on_writable: fatal=0                                    ← 错误在这里丢�
 
 ---
 
-## T39 — HongMeng 内核在建 inode 时于 IN_CREATE 前排一个 IN_ATTRIB，新建文件首个 watch 事件变成 `change`（class B 平台行为差异，**已在 bun 运行时层修复并真机验证**）
+## T39 — HongMeng 内核在建 inode 时于 IN_CREATE 前排一个 IN_ATTRIB，新建文件首个 watch 事件变成 `change`（class B 平台行为差异，**已在 bun 运行时层修复并真机验证，已发布 r41**）
 
 **入口**：`fs.watch.test.ts` 三个用例 + vendored `test-fs-watch.js`，真机 3/3 确定性失败，全是同一签名：**新建文件的第一个 `fs.watch` 事件是 `("change", name)`，而 Linux 语义（node 与 bun 在所有其他平台）是 `("rename", name)` 先行**。
 
@@ -1026,7 +1026,7 @@ on_writable: fatal=0                                    ← 错误在这里丢�
 
 ---
 
-## T41 — lockb v2 迁移把"老 bun 不认识的 os token"愈合成 `os:none`，本平台包永远不被安装（class A，已定位待修）
+## T41 — ~~lockb v2 迁移把"老 bun 不认识的 os token"愈合成 `os:none`~~（class A，**已修复 `fdbe807e2` + 快照重生成，3/3 验证，已发布 r41**）
 
 **入口**：`migrate-bun-lockb-v2.test.ts`（`migrate-bun-lockb-v2-most-features`），确定性失败 2/2——`bun install` 退出码 1，因为 esbuild postinstall 找不到 `@esbuild/openharmony-arm64`。
 
@@ -1043,7 +1043,7 @@ on_writable: fatal=0                                    ← 错误在这里丢�
 
 ---
 
-## T42 — ~~bun-install-registry prereleases "manifest is invalid"~~ **根因在 compat-shim：linkat 拷贝回退非原子，已修（`3f5121b`）**
+## T42 — ~~bun-install-registry prereleases "manifest is invalid"~~ **根因在 compat-shim：linkat 拷贝回退非原子，已修（`3f5121b`），已发布 shim 0.2.4 并装机验证**
 
 **入口**：`bun-install-registry.test.ts` 的 prereleases-3/4 "should fail" 系列，缓存 manifest 报 "manifest is invalid"。
 
