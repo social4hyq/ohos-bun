@@ -1041,6 +1041,25 @@ on_writable: fatal=0                                    ← 错误在这里丢�
 
 ---
 
+## T42 — ~~bun-install-registry prereleases "manifest is invalid"~~ **根因在 compat-shim：linkat 拷贝回退非原子，已修（`3f5121b`）**
+
+**入口**：`bun-install-registry.test.ts` 的 prereleases-3/4 "should fail" 系列，缓存 manifest 报 "manifest is invalid"。
+
+### 根因链（A/B 实证）
+
+1. 失败时 `.bun-cache` 里留下 **0 字节** `.npm` 文件（同包的成功缓存是 1928 字节）；
+2. bun 的缓存写入路径是 O_TMPFILE → `linkat(/proc/self/fd/N)`；真 linkat 在沙箱 EPERM → **shim 的字节拷贝回退**；拷贝回退直接 `O_CREAT|O_EXCL` 创建目标再写数据——**目标在 0 字节时即可见**；
+3. "should fail" 的 install 解析失败 → `quick_exit()`，此刻 worker 线程若正在 shim 拷贝窗口内（已 O_CREAT、未写完）→ 永久性 0 字节缓存；下一个用例加载即 "manifest is invalid"。确定性机制 + 时序窗口解释了它只在快速失败的用例后出现；
+4. **A/B 确认**：`OHOS_COMPAT_SHIM_DISABLE=linkat` 重跑同 describe → 13/13 通过、0 个 0 字节文件（落到 bun 自带的 tmp+rename 第三路径，本来就是原子的）。
+
+### 修复（ohos-compat-shim `3f5121b`）
+
+linkat/symlinkat 拷贝回退改为**同目录隐藏临时文件 + renameat 原子落位**；临时文件必须放 `newpath` 同目录（renameat 不跨 fs——首版放进程 CWD 被功能测试抓住 EXDEV）；EEXIST 用 fstatat 预检保留。验证：功能套件 36/36;"should fail" describe **3/3 = 17 pass / 0 fail** 且零 0 字节文件；**整文件 228 pass / 0 fail**。
+
+**注意**：装机 shim 还是 0.2.3（非原子）。复测环境用的是新构建的 `.so`；发布 0.2.4（repin tap formula + CI bottle）是独立动作。
+
+---
+
 ## 2026-07-29 长尾全量复核（二进制 `1.4.0+72bc3a80b` = r40 + T39；25 个候选文件隔离复测 + 转绿项 3/3 确认）
 
 ### 3/3 确认转绿（8 个，r40 修复的连带受益）
@@ -1058,7 +1077,7 @@ on_writable: fatal=0                                    ← 错误在这里丢�
 | `test-net-autoselectfamily.js` | 摇摆 | **T32 透明代理**：mocked lookup 测试期望 6 地址逐个尝试，代理让首个假地址瞬间"连上"，只尝试 1 个 | D |
 | `process.test.js` | 1（确定）| 硬编码期望宿主机 node = `v26.3.0`，本机是 26.5.0；任何 node 版本不符的机器都失败 | D |
 | `test-child-process-execsync.js` | 摇摆 | **T34** 既有定性（杀 shell 杀不到孙进程，node 一致）| D |
-| `bun-install-registry.test.ts` | 3（确定）| prereleases 系列 verdaccio 缓存 "manifest is invalid"——**唯一未定位根因的** | F |
+| `bun-install-registry.test.ts` | ~~3（确定）~~ | **已收口 → T42**：根因在 shim 非原子 linkat，修复后整文件 228 pass / 0 fail | ~~F~~ ✅ |
 | `node-http2.test.js` | 1（确定）| maxSessionMemory 15s 超时，未深挖 | F |
 | `message-port-context-destroy-leak.test.ts` | 1（确定）| MessagePort/worker 泄漏，T35 谱系（上游缺陷）| A-family |
 | `pnpm.test.ts` | 1（确定）| fixture 钉死 **esbuild@0.21.5**，其 install.js 平台表不认识 openharmony（0.25.6 才加）| E |
