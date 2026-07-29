@@ -1530,7 +1530,7 @@ if ISFIFO(stat.st_mode) && ISFIFO(dest.mode)
 
 ---
 
-## T22 — memfd 的 fd 上 `fstat` 被沙箱拒绝（**class B，2026-07-28 定性完成**）
+## T22 — memfd 的 fd 上 `fstat` 被沙箱拒绝（class B 平台事实；**bun 侧已加回退并真机验证**）
 
 > **原"A/B 待定"已解决 → B。** C 探针 + 容器对照：
 >
@@ -1546,7 +1546,11 @@ if ISFIFO(stat.st_mode) && ISFIFO(dest.mode)
 >
 > 于是 `readFileSync` 在 fstat 这一步就抛 `EACCES: permission denied, fstat`，**根本走不到它要测的 OOM 路径**（测试期望 `ENOMEM: not enough memory`）。
 >
-> **潜在改进（未做）**：`fstat` 失败时 `readFileSync` 可以退化成增量读——fd 明明可读。这与 T04 的修复同型（statx 失败就回退到 fstat）。做了之后这个测试反而能真正测到它想测的 OOM 路径。属上游共享路径，需权衡。
+> **已修（`be38b72d9`，真机验证）**：`readFileSync` 里 `Syscall::fstat(fd)?` 把 EACCES 直接抛了出去，而这个 fd 明明可读。改为**只有 EACCES/EPERM 退化成"大小未知"**，其余 errno（EBADF 等）照常传播——那些情况下读本身也没有意义。
+>
+> 不需要新逻辑：读循环本来就有一条"stat 大小不对/过期"的无界尾部阶段（issue #1220），未知大小天然落到那条路，从已读到的字节开始按需增长。
+>
+> 结果：`fs-oom.test.ts` **0 fail / 11 pass，3/3 稳定**（此前卡在 fstat，根本走不到它要测的 OOM 路径）。回归：`bun-write` 38 pass、`fs-stream` 0 fail、`node-http` 143 pass 全绿；`fs.test.ts` 修改前后**同为 1 fail / 414 pass**（既有失败，是 `readdir(recursive)` 与 Node 结果不一致的一簇，与本改动无关，未立项）。
 
 原文如下（判断仍有效，仅分类由"A/B 待定"收敛为 B）：
 
