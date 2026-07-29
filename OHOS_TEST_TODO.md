@@ -1062,7 +1062,7 @@ linkat/symlinkat 拷贝回退改为**同目录隐藏临时文件 + renameat 原�
 
 ---
 
-## T43 — HongMeng 内核 EPOLLONESHOT 不自动解除,子进程 stdin 管道监视让事件循环 100% 空转（class B 内核缺陷,**bun 侧已修复 `ca2bb787e`+`deb827a3b` 并真机验证**）
+## T43 — HongMeng 内核 EPOLLONESHOT 不自动解除,子进程 stdin 管道监视让事件循环 100% 空转（class B 内核缺陷,**bun 侧已修复 `ca2bb787e`+`deb827a3b`,已发布 r42 并装机验证**）
 
 **入口**：`spawn_waiter_thread.test.ts`（issue #9404）,fixture 1s 墙钟烧掉 1.37s CPU（阈值 750ms)。**与 waiter 线程无关**——`BUN_FEATURE_FLAG_FORCE_WAITER_THREAD` 两条路径同样烧。
 
