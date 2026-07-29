@@ -421,6 +421,13 @@ export const isMemoryPressureWatcherInstalled: () => boolean = $newCppFunction(
   0,
 );
 
+/** TEMPORARY (T35 diagnosis). "reserved=N,committed=N,freeList=N" from WTF. */
+export const getFastMallocStats: () => string = $newCppFunction(
+  "InternalForTesting.cpp",
+  "jsFunction_getFastMallocStats",
+  0,
+);
+
 export const getEventLoopStats: () => { activeTasks: number; concurrentRef: number; numPolls: number } =
   $newRustFunction("event_loop.rs", "getActiveTasks", 0);
 

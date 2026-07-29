@@ -8,6 +8,11 @@
 #include "webcore/HTTPHeaderMap.h"
 #include <wtf/text/StringImpl.h>
 #include <wtf/text/WTFString.h>
+// TEMPORARY (T35 diagnosis): WebKit's allocator is where the per-worker
+// growth lands. Revert with the binding below once the retained objects are
+// identified.
+#include <wtf/FastMalloc.h>
+#include <wtf/text/MakeString.h>
 
 #if ASAN_ENABLED
 #include <sanitizer/lsan_interface.h>
@@ -122,6 +127,25 @@ JSC_DEFINE_HOST_FUNCTION(jsFunction_emitMemoryPressure, (JSC::JSGlobalObject * g
 JSC_DEFINE_HOST_FUNCTION(jsFunction_isMemoryPressureWatcherInstalled, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
 {
     return JSValue::encode(jsBoolean(Bun__MemoryPressure__isInstalled(defaultGlobalObject(globalObject))));
+}
+
+// TEMPORARY (T35 diagnosis): every terminated Worker leaves ~1MB behind in
+// [anon:WKFastMalloc] (paired /proc/self/smaps snapshots). These three numbers
+// separate the two possibilities the smaps view cannot: `freeList` growing
+// means the allocator is sitting on memory it already reclaimed, while
+// `committed` growing with a flat `freeList` means the objects are still
+// allocated and something is still holding them.
+//
+// Returned as a string so this probe needs no object-construction headers.
+JSC_DEFINE_HOST_FUNCTION(jsFunction_getFastMallocStats, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+{
+    auto& vm = globalObject->vm();
+    auto stats = WTF::fastMallocStatistics();
+    WTF::String out = WTF::makeString(
+        "reserved="_s, WTF::String::number(static_cast<unsigned long long>(stats.reservedVMBytes)),
+        ",committed="_s, WTF::String::number(static_cast<unsigned long long>(stats.committedVMBytes)),
+        ",freeList="_s, WTF::String::number(static_cast<unsigned long long>(stats.freeListBytes)));
+    return JSValue::encode(JSC::jsString(vm, out));
 }
 
 }
