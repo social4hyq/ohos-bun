@@ -1062,6 +1062,39 @@ linkat/symlinkat 拷贝回退改为**同目录隐藏临时文件 + renameat 原�
 
 ---
 
+## T43 — HongMeng 内核 EPOLLONESHOT 不自动解除,子进程 stdin 管道监视让事件循环 100% 空转（class B 内核缺陷,**bun 侧已修复 `ca2bb787e`+`deb827a3b` 并真机验证**）
+
+**入口**：`spawn_waiter_thread.test.ts`（issue #9404）,fixture 1s 墙钟烧掉 1.37s CPU（阈值 750ms)。**与 waiter 线程无关**——`BUN_FEATURE_FLAG_FORCE_WAITER_THREAD` 两条路径同样烧。
+
+### 根因链（全部实测,含独立 C 探针）
+
+1. **自旋只在有存活子进程且其 stdin 是 pipe 时出现**：纯 sleepSync/定时器循环/TCP server/Bun.spawn 默认 stdio 全部 0 CPU;`stdio:["pipe",...]` 立即 ~145 ticks/s（主线程 100%+)。关掉 stdin(`stdin.end()`）或把 pipe 写满（POLLOUT 不再就绪）自旋即停。
+2. 机制：子进程 stdin 在 spawn 时以 `EPOLLOUT|HUP|ERR|**EPOLLONESHOT**` 注册。正确内核在首次唤醒后**自动解除** ONESHOT → 空缓冲的 `on_poll` 触发一次即静默 → 循环安睡。pipe 有空即 POLLOUT 常亮,不解除就是每轮 epoll_wait 都唤醒 = 100% 空转。
+3. **独立 C 探针**(pipe 写端 `EPOLLOUT|EPOLLONESHOT`,wait 三次）：真机 `1,1,1`(**不解除**)，容器 `1,0,0`（正常）。EPOLLET、CTL_DEL、CTL_MOD 在该内核全部正常——坏的是 ONESHOT 的自动解除。
+4. 交叉验证：同一二进制（r41）容器 0 ticks、真机 ~145 ticks;uname 伪装 6.6.0 无效（不是版本门）;shim 无关；GC/JIT/scavenger 均排除（mi-scavenger 是被自旋驱动的乘客）。
+
+### 修复与验证
+
+`PipeWriter::on_poll` 空缓冲唤醒时**显式 `unregister(force=true)`(CTL_DEL)，不再依赖内核的 ONESHOT 自动解除**;`force` 是因为坏内核下 fd 仍 armed,needs_rearm 快路径会跳过 syscall。后续有数据时 `register_poll()` 重新注册（语义不变；正常内核上只是额外清掉一个已被内核解除的注册）。
+
+验证（`1.4.0+deb827a3b`):spin 探针 145 → **0 ticks/s**;`spawn_waiter_thread` **3/3 通过**;stdin 4MB drain 数据完整；`spawn.test.ts` 134+135 pass / 0 fail 无回归。
+
+**影响面与遗留**：该内核缺陷影响所有 EPOLLONESHOT 用户(本内核上任何依赖 oneshot 自动解除的程序都会忙等)。bun 内其他 Writable 路径（如 socket 写）未观察到同类自旋,暂不预防性改动。**适合报告给内核方**:EPOLLONESHOT 解除语义未实现。
+
+---
+
+## node-http2 `minimal maxSessionMemory` 15s 超时 —— class C,非 OHOS 问题（2026-07-29 分析完毕）
+
+**结论先行**：与 OHOS 无关。容器（Linux 内核）完整复现同样慢速（i=8000 @ 14.1s vs 真机 14.6s)，是该测试自身 15s 预算在 runner 环境下的边际超时。
+
+- 单用例隔离:1.94s 通过;`--timeout 60000`:整文件全过 → **是慢,不是卡死**。
+- 慢的必要条件三联:runner 注入的 **`BUN_GARBAGE_COLLECTOR_LEVEL=1`**(GCLevel::Mild)× **前置测试累积状态**（单个前置测试不中毒,~8 个起毒,与具体哪个测试无关)× **1 万次顺序请求的分配搅动**。
+- 形态:GC 搅动——目标用例期间 220% CPU,主线程 + 3 个 HeapHelper(GC worker）满负荷。GC=1 下每次 GC 周期成本随存活对象图增长,1 万请求持续触发周期。
+- `BUN_JSC_randomIntegrityAuditRate=1.0`(runner 同注入）排除:单独使用不影响。
+- 处置:不动测试(按约定)。上游 x86 CI 机器更快所以压在 15s 内。若要绿只能平台倍率放宽超时(同 `ASAN_MULTIPLIER` 模式),属测试修改,留待需要时与用户确认。
+
+---
+
 ## 2026-07-29 长尾全量复核（二进制 `1.4.0+72bc3a80b` = r40 + T39；25 个候选文件隔离复测 + 转绿项 3/3 确认）
 
 ### 3/3 确认转绿（8 个，r40 修复的连带受益）
