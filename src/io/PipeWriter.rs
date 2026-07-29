@@ -144,7 +144,7 @@ pub trait PosixPipeWriter {
                 // `force` because on such a kernel the fd is still armed —
                 // the needs_rearm fast path skips the syscall entirely.
                 // The next buffered write re-registers via register_poll().
-                _ = poll.unregister(self.parent_event_loop().loop_(), true);
+                _ = poll.unregister(crate::Loop::get(), true);
             }
             return;
         }
