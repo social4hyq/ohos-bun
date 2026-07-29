@@ -736,7 +736,18 @@ while out_fds_to_wait_for[0] != Fd::INVALID || out_fds_to_wait_for[1] != Fd::INV
 
 具体是哪些 WebKit 对象没释放，未定位。`bun:internal-for-testing` 的 69 个入口里没有 FastMalloc 统计（只有 `getEventLoopStats` / `emitMemoryPressure`），要往下走需要带 `WTF::fastMallocStatistics()` 或 bmalloc 统计的构建。
 
-容器对照尚未做（对照时容器里的 bun 正在重编）。
+**容器对照（2026-07-28 补做，同一份 `be38b72d9`）：泄漏不是本机特有，容器里严重约 9 倍。**
+
+| | 每 worker | 40 轮 RSS |
+|---|---|---|
+| 真机 HarmonyOS | ~1.39MB | 46.3 → 104.5MB |
+| **OpenHarmony 容器** | **~12.8MB** | **118.9 → 632.1MB** |
+
+两边都完全线性、都不趋平。容器内核不支持 `[anon:NAME]` 命名，所以那边分不出分配器归属（全是匿名映射），但总量的可复现性更强 —— **后续定位应该在容器里做**。
+
+`--smol`（缩小 JSC 堆配置）下容器仍是 ~11.9MB/worker，与默认的 12.8MB 无实质差别 —— **泄漏不随堆配置缩放**，与真机"0/8/32MB 负载结果相同"互相印证：这是固定的每 worker 分配，不是堆残留。
+
+这条对照同时强化了 class A 上游定性：**与 OHOS 无关**。
 
 **测试处置**：`message-port-context-destroy-leak.test.ts` 目前的失败是真实的，但它测的阈值实际上被 worker 泄漏主导。在根因修掉之前不动它，也**不**塞进 `expectations.txt`。
 
