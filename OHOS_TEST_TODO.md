@@ -979,6 +979,51 @@ on_writable: fatal=0                                    ← 错误在这里丢�
 
 `+3 绿 / 0 红`：`node-dns.test.js` 转绿、`test-http2-invalid-last-stream-id.js` 转绿、`node-http.test.ts` 由 142 pass+1 fail 变 **143 pass**（修掉测试自身缺陷后）。改动建议保留 —— `/etc/hosts` 现在与主流发行版一致，且它暴露出的是一个真实的测试脆弱点。
 
+---
+
+## T39 — HongMeng 内核在建 inode 时于 IN_CREATE 前排一个 IN_ATTRIB，新建文件首个 watch 事件变成 `change`（class B 平台行为差异，**已在 bun 运行时层修复并真机验证**）
+
+**入口**：`fs.watch.test.ts` 三个用例 + vendored `test-fs-watch.js`，真机 3/3 确定性失败，全是同一签名：**新建文件的第一个 `fs.watch` 事件是 `("change", name)`，而 Linux 语义（node 与 bun 在所有其他平台）是 `("rename", name)` 先行**。
+
+### 根因与证据链
+
+裸 inotify C 探针（脱离任何运行时，直接读内核事件流）：
+
+| 场景 | 真机（HongMeng 内核） | 容器（宿主机 openEuler Linux 内核） |
+|---|---|---|
+| `open(O_CREAT)`+write 新文件 | **ATTR**, CRE, OPEN, MOD, CW | CRE, OPEN, MOD, CW |
+| mkdir | **ATTR(d)**, CRE(d) | CRE(d) |
+| chmod 已存在文件 | ATTR（单独） | ATTR（单独） |
+| symlink 创建 | CRE（单独） | CRE（单独） |
+| unlink | DEL（单独） | DEL（单独） |
+
+真机内核在建 inode 时先排一个 IN_ATTRIB（疑似创建时打安全标签），node(libuv) 与 bun 都把 IN_ATTRIB 映射为 `change`，于是该平台**任何运行时**新建文件都是 `change` 先行。证据链按方法论补齐：同机 node 行为完全一致 ✓；独立 C 探针 ✓；`env -u LD_PRELOAD` 重跑探针排除 compat-shim ✓；容器/真机对照定位到设备内核 ✓。
+
+**这不是 bun 缺陷，但 bun 自己测试套件把 "rename 先行" 当作行为契约，且生态 app 全部按 Linux 语义编写** —— 因此在 bun 的 inotify reader 里把该平台行为归一化，而不是改测试迁就。
+
+### 修复（`src/runtime/node/path_watcher.rs`，两个 commit）
+
+- `48152d25e`：reader 派发时，若同 read 批次内同 (wd, name) 的 ATTRIB 被后续 CREATE 遮蔽则丢弃（真实 chmod 的 ATTR 没有 CRE 跟随，不受影响；前瞻窗口 16 事件，防 ATTRIB 风暴 O(n²)）。
+- `72bc3a80b`：补上读边界竞态——安静队列下 reader 会被 ATTR 唤醒并在同一 syscall 排到 CREATE **之前**读完（首轮修复后 symlink→symlink→dir 过、symlink dir 仍挂，正是这个分裂场景）。同批次前瞻未命中时 poll(fd, 2ms) 等一拍、追加读一次再复查；CREATE 与 ATTRIB 同一 syscall 微秒级相继，2ms 裕量充足。真 chmod 在安静队列上最多多付一次 2ms poll，事件本身照发。
+
+### 验证（真机，二进制 `1.4.0+72bc3a80b`，容器构建取回）
+
+- 原始事件流探针：修复前 `[change, rename, change]` → 修复后 **`[rename, change]`**，与 Linux 一致
+- `fs.watch.test.ts`：4 fail → **1 fail**（3/3 复跑稳定；仅剩 T40 的 ENAMETOOLONG fixture 问题，与本条无关）
+- `test-fs-watch.js`：**3/3 转绿**（此前第 104 行 `assert.strictEqual(event, renameEv)` 稳定失败）
+- 回归：其余 5 个 watch 文件全绿；vendored `test-fs-watch-*` parallel 套件 **37/37 通过**
+- 注意：容器内核不产生该 ATTRIB，**此修复在容器里无法验证**，只能真机验证（与 T22 同类）
+
+---
+
+## T40 — `fs.watch` 超长相对路径报 ENOENT 而非 ENAMETOOLONG（class C 测试 fixture 缺陷，分析完毕待修）
+
+`fs.watch.test.ts` 的 `reports an error for relative paths that no longer fit in the path buffer`：fixture 的 per-platform 路径上限表 `{linux:4096, darwin:1024, win32:...} ?? 1024` **缺 `openharmony` 条目**，落到 1024 兜底；但 OHOS 构建走 `cfg!(target_os="linux")` 分支，`MAX_PATH_BYTES=4096`（`src/bun_core/util.rs:706`）。1022 字节相对路径合法通过校验、join 后约 1082 字节也放得下 → 真正去 watch 一个不存在的路径 → **ENOENT 是运行时的正确行为**（实测报错即 ENOENT）。
+
+运行时无修法和不该修（把 OHOS 缓冲区砍到 1024 会背离 Linux、截断真实长路径）。唯一修法是 fixture 表补 `openharmony: 4096`——属于"测试自身缺陷"类，按"不擅自改测试"的约定**待用户确认后动手**。
+
+---
+
 ## T04 — `statx(2)` 对 socket 型 fd 报 EBADF，bun 的 `fstatSync` 误当真错误抛出（已修复并真机验证）
 
 对应 `OHOS_TEST_STATUS.md` 第八/九轮记录的"字面 fd 数字作 stdio 导致父进程自身 fd 失效"。本轮排查**完全推翻了"spawn fd 所有权"的原始假设**——fd 从头到尾都没坏，是 bun 的 `fstatSync()` 实现在特定条件下给出了错误答案。
@@ -1025,7 +1070,7 @@ on_writable: fatal=0                                    ← 错误在这里丢�
 > | `js/node/watch/fs.watch.test.ts` | **40 pass / 1 fail** | `inotify queue overflow is delivered as ('change', null)`，另有 `symlink -> symlink -> dir` 期望 `rename` |
 > | `js/node/test/sequential/test-fs-watch.js` | 1 fail | `AssertionError`，未细查 |
 >
-> 失败的是 **inotify 队列溢出的投递语义**和符号链接事件类型，与"递归不支持"无关。整条 class B 定性**作废**，剩余失败应作为独立问题重新立项（未做）。
+> 失败的是 **inotify 队列溢出的投递语义**和符号链接事件类型，与"递归不支持"无关。整条 class B 定性**作废**，剩余失败已作为独立问题立项并修复（**T39**：内核 IN_ATTRIB 先于 IN_CREATE，运行时层归一化，2026-07-29 真机验证转绿）。
 >
 > 与 T30 同类错误：**把一个没验证过的机制假设写成了平台限制**，然后据此不再追查。
 
@@ -1057,8 +1102,8 @@ test/js/node/test/parallel/test-fs-watch-recursive-sync-write.js
 | 文件 | 症状 | 分类 | 层级 | 状态 |
 |---|---|---|---|---|
 | `test/js/node/fs/fs.test.ts` | `readdir(recursive)`/`readdirSync(...recursive)` 与 Node.js 结果不一致（3 个子用例）+ `readdir(recursive) x100` 遇 `ELOOP` | F | rust? | 待与真实 Node.js 对照 |
-| `test/js/node/test/sequential/test-fs-watch.js` | `assert.strictEqual(event, renameEv)` 事件分类不对 | F | rust | 待查（可能与 T05 同属 inotify 差异,但这个不是 recursive）|
-| `test/js/node/watch/fs.watch.test.ts` | `inotify queue overflow`→`(change, null)`断言；`fs.promises.watch` symlink 场景（2）| F | rust | 待查 |
+| `test/js/node/test/sequential/test-fs-watch.js` | `assert.strictEqual(event, renameEv)` 事件分类不对 | B | rust | **已修复（T39，`48152d25e`+`72bc3a80b`）**——内核 IN_ATTRIB 先于 IN_CREATE，3/3 转绿 |
+| `test/js/node/watch/fs.watch.test.ts` | `inotify queue overflow`→`(change, null)`断言；`fs.promises.watch` symlink 场景（2）| B | rust | **已修复（T39，同两 commit）**——三个排序用例全转绿；另剩 1 条 ENAMETOOLONG fixture 问题独立记为 T40 |
 | `test/js/node/test/parallel/test-fs-link.js` | ~~未取得具体断言~~ | ~~E~~ | n/a | **已修复（`ade348ec6`）**——实际是 OHOS 内核拒绝裸 `SYS_linkat`，bun 直调 `libc::link()`（musl 直发裸 syscall）绕过 shim 的 `linkat` 符号拦截，详见 T21 表格里的完整根因记录 |
 | `test/js/node/test/parallel/test-fs-promises.js` | ~~同上~~ | ~~E~~ | n/a | **已修复（`ade348ec6`，同根因）** |
 | `test/js/node/test/parallel/test-fs-stat-date.mjs`（+ 未在基线清单的 `test-fs-stat-temporal.mjs`） | ~~同上~~ | ~~E~~ | test | **已修复（`64bf8ea35`）**——两个独立问题叠加：① vendored 测试的容忍守卫 `actual === 0` 对 BigInt 路径有类型洞（`0n === 0` 为 false）；② 这台设备文件系统的钳制边界比守卫预设的 NFSv3（仅 1970 前）更宽：**tv_sec=0 任意纳秒全部钳为 0**（1ms/355ms/999999999ns 实测皆然），tv_sec≥1 纳秒精度完整。守卫按实测边界（expected<1000ms）放宽并改数值比较 |
