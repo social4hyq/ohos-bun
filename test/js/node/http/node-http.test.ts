@@ -987,6 +987,12 @@ describe("node:http", () => {
       const options: https.RequestOptions = {
         method: "GET",
         url: httpsServer.url.href as string,
+        // `https.request(options)` ignores `url` — it reads `hostname`/`host`,
+        // which otherwise default to "localhost". exampleSite() binds
+        // 127.0.0.1, so the request only reached it on hosts where localhost
+        // resolves to the v4 address first; with a standard dual-stack
+        // /etc/hosts it goes to ::1 and fails with ECONNREFUSED.
+        hostname: httpsServer.url.hostname,
         port: httpsServer.url.port,
         ca: httpsServer.ca,
       };

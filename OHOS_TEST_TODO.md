@@ -880,39 +880,52 @@ on_writable: fatal=0                                    ← 错误在这里丢�
 
 ---
 
-## T38 — `dns.lookup(..., {all:true})` 只返回一个地址，双栈回退因此失效（class A，未修）
+## T38 — ~~`dns.lookup({all:true})` 只返回一个地址~~ **已撤回：结论建立在异常值上**（真实原因是测试自身缺陷，已修）
 
-2026-07-28 把 `/etc/hosts` 补成标准双栈（`::1 localhost ip6-localhost ip6-loopback`，人工改，见 T11）之后暴露出来的。
+> **本条初稿是错的，撤回。** 它声称"bun 的 `dns.lookup(all:true)` 只返回一个地址、双栈回退因此失效"，据此把 `node-http.test.ts` 的失败定为 class A bun 缺陷。两项都不成立。
 
-### 现象
+### 怎么错的（方法论，比结论本身值得留档）
 
-`localhost` 现在同时有 A 和 AAAA。server 只监听 `127.0.0.1`，client 连 `"localhost"`：
+同一个对照实验，我在三个时间点各跑了 3–5 次，得到三种互相矛盾的结果，并且**每次都据此下了确定结论**：
 
-| | `lookup(localhost,{all:true})` | `net.connect(host:"localhost")` |
-|---|---|---|
-| **bun** | **`[::1]` —— 只有一条** | `ECONNREFUSED ::1`，3/3 失败 |
-| **node**（同机） | `[::1, 127.0.0.1]` —— 两条 | 连 `::1` 被拒 → **回退 127.0.0.1**，3/3 成功 |
+| 时间点 | bun | node | 我当时写下的 |
+|---|---|---|---|
+| 最初 | 3/3 失败 | 3/3 成功 | "bun 缺陷" → 写进台账并 push |
+| 之后 | 5/5 成功 | 5/5 失败 | —— |
+| 再后 | 3/3 失败 | 3/3 失败 | "两者一致" |
 
-`all: true` 的语义就是"返回全部地址"，bun 返回了 2 条里的 1 条。
+两个错误叠加：**分块跑**（bun 跑完再跑 node，中间系统状态漂移）+ **样本太小**。工作区早有"A-B 对比必须交替 + 配对"的记录，我没有照做。
 
-**返回哪一条不确定**：另一次测量里 bun 给的是 `[127.0.0.1]`（于是同样的连接反而成功了）。这个不确定性一度让我以为两个脚本行为不一致，实际上两次都是"只返回一条"，只是挑中的那条不同。
+改成**交替配对、20 轮**之后，结果立刻干净且稳定：
 
-**Happy Eyeballs 不是没实现，是它手上从来只有一个地址可试。** 回退需要候选列表里有第二个地址。
+| | 20 轮交替 |
+|---|---|
+| bun connect | **20/20 成功**（走 127.0.0.1）|
+| node connect | **20/20 失败**（`ECONNREFUSED ::1`，不回退）|
+| 两者一致 | 0/20 |
 
-### 影响
+方向与初稿**完全相反** —— 这个场景里 bun 反而比 node 更稳。最初那次"bun 失败/node 成功"是异常值。
 
-- `js/node/http/node-http.test.ts` 的 `https.request with custom tls options > supports custom tls args` 从 0 fail 变成 **3/3 稳定失败**（`connect ECONNREFUSED ::1:<port>`）。这是补 hosts 之后唯一的回归。
-- 任何"server 绑单一地址族、client 连 `localhost`"的代码在双栈 hosts 下都会随机失败 —— 取决于 bun 那次挑中了哪个地址族。标准 Linux 发行版的 `/etc/hosts` **本来就是双栈**，所以这个缺陷在正常环境里一直存在，只是本机此前缺 AAAA 条目把它掩盖了。
+同 API 复测 `require("dns").lookup(localhost,{all:true})`，bun 与 node **各 10/10 都返回两条**，完全一致。初稿之所以看到差异，是因为我拿 `Bun.dns.lookup`（原生 API）去和 node 的 `dns.lookup` 比 —— **两个不同的 API**。
 
-### 与 T32 的边界
+### 真实原因：测试自身缺陷（class C，已修）
 
-T32（透明代理）解释的是 `test-net-autoselectfamily.js` 里 `attemptedAddresses` 只有 1 条：那个测试用 **mock lookup** 提供 6 个地址，bun 的解析器根本不参与，且 node 同机结果相同 —— 那条结论不受本条影响，仍然成立。本条是独立缺陷：真实解析路径下候选列表被截断成 1 条。
+`node-http.test.ts` 的 `https.request with custom tls options > supports custom tls args`：
 
-### 未做
+- `exampleSite()` 绑的是 `hostname: "127.0.0.1"`（仅 v4）
+- 测试把地址塞在 `url` 字段里，而 **`https.request(options)` 不认 `url`**，只读 `hostname`/`host`，于是 host 落到默认的 `"localhost"`
 
-未定位到具体代码，未修。下一步应从 `dns.lookup` 的 `all` 分支查起（bun 的 `resolve4/resolve6` 单独调用都正常，说明底层拿得到两族地址，丢失发生在 `lookup` 的合并/返回环节）。
+补上 AAAA 之后 `localhost` 可能解析到 `::1`，请求就打不到只绑 v4 的服务器。因果验证（同目录探针，唯一差别是 hostname）：**变体 A（原样）3/3 失败，变体 B（显式 hostname）3/3 通过**。
 
-**复现脚本**（`/data/storage/el2/base/tmp/`）：`ds2.js`（同进程内同时打印 lookup 与 connect 结果，最短复现）、`dualstack.js`（只测连接）、`lhchk.js`（6 种 lookup 调用方式对照）。
+修法是给 `options` 补 `hostname: httpsServer.url.hostname`（并注释清楚 `url` 会被忽略）。修后 `node-http.test.ts` **3/3 = 0 fail / 143 pass**。这个测试此前一直靠"`localhost` 恰好只解析到 127.0.0.1"侥幸通过，与 bun 无关，**其他平台同样脆弱**，适合提上游。
+
+### 顺带确认的真实环境事实（未定性为缺陷）
+
+本机系统 `getaddrinfo("localhost", AF_UNSPEC, SOCK_STREAM)` **返回条数不确定**：20 轮交替采样中 **19 次只返回 1 条（`127.0.0.1`）、1 次返回 2 条**。这是实测事实，但**没有**证据表明它导致了上面任何一个失败 —— 上层 `dns.lookup` 稳定返回两条。记在这里是为了将来排查网络问题时知道这个底层不稳定性存在，**不要**据此编因果。
+
+### hosts 改动的最终账（见 T11）
+
+`+3 绿 / 0 红`：`node-dns.test.js` 转绿、`test-http2-invalid-last-stream-id.js` 转绿、`node-http.test.ts` 由 142 pass+1 fail 变 **143 pass**（修掉测试自身缺陷后）。改动建议保留 —— `/etc/hosts` 现在与主流发行版一致，且它暴露出的是一个真实的测试脆弱点。
 
 ## T04 — `statx(2)` 对 socket 型 fd 报 EBADF，bun 的 `fstatSync` 误当真错误抛出（已修复并真机验证）
 
@@ -1077,7 +1090,7 @@ RangeError: The value of "err" is out of range. It must be a negative integer. R
 >
 > 逐项与同机 node 对照，`lookup` 的 6 种调用方式 + `net.connect`（含 `autoSelectFamily`）**全部逐项一致**，唯一失败的是 `family:6`，node 同样 `ENOTFOUND`。所以是环境限制、不是 bun 缺陷 —— 结论不变，但"缺 IPv6 回环"这个说法要作废，它把一个窄问题写成了宽问题。
 >
-> **已由用户人工补上**（2026-07-28）：`/etc/hosts` 现为 `::1  localhost ip6-localhost ip6-loopback`，与主流发行版一致。效果实测：`node-dns.test.js` 和 `test-http2-invalid-last-stream-id.js` **转绿**；`resolve-dns.test.ts` / `22712.test.ts` 无变化；代价是暴露出一个真实的 bun 缺陷（**T38**，`node-http.test.ts` 由 0 fail 变 1 fail）。该回归不是环境改坏了，而是此前被单栈 hosts 掩盖的双栈缺陷现形。
+> **已由用户人工补上**（2026-07-28）：`/etc/hosts` 现为 `::1  localhost ip6-localhost ip6-loopback`，与主流发行版一致。效果实测：`node-dns.test.js` 和 `test-http2-invalid-last-stream-id.js` **转绿**；`resolve-dns.test.ts` / `22712.test.ts` 无变化；代价是 `node-http.test.ts` 由 0 fail 变 1 fail —— 追查后确认那是**测试自身的缺陷**（把地址塞在 `https.request` 会忽略的 `url` 字段里，host 落到默认 `localhost`，而 server 只绑 127.0.0.1），已修，修后 143 pass。详见 **T38**（该条初稿把它误判成 bun 缺陷，已撤回）。最终账：**+3 绿 / 0 红**。
 
 原表如下（症状描述仍有效）：
 
