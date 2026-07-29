@@ -1024,6 +1024,60 @@ on_writable: fatal=0                                    ← 错误在这里丢�
 
 ---
 
+## T41 — lockb v2 迁移把"老 bun 不认识的 os token"愈合成 `os:none`，本平台包永远不被安装（class A，已定位待修）
+
+**入口**：`migrate-bun-lockb-v2.test.ts`（`migrate-bun-lockb-v2-most-features`），确定性失败 2/2——`bun install` 退出码 1，因为 esbuild postinstall 找不到 `@esbuild/openharmony-arm64`。
+
+### 根因链（逐环实证）
+
+1. fixture 的 v2 二进制 lockfile 是**老 bun 写的**，老 bun 的 os 枚举里没有 `openharmony` token（同样没有 `netbsd`）→ 这些包的 os 位写成 **0**；
+2. 迁移忠实搬运 → 文本 lock 里 `@esbuild/openharmony-arm64` 记录为 `{ "os": "none", "cpu": "arm64" }`（对照：`linux-arm64` 是 `"os": "linux"`，平台无关包是 `{}`=ALL）；
+3. `bun install` 平台过滤（`Tree.rs:577`）对 os:NONE 全平台跳过 → 在 OHOS 本机跳过自家二进制（verbose 实测："Skip installing @esbuild/openharmony-arm64 - os mismatch"）；
+4. esbuild postinstall（trusted dep）报 "Failed to find package @esbuild/openharmony-arm64" → exit 1。
+
+整个迁移 lock 里 os:none 共 3 包：`@esbuild/openharmony-arm64`、`@esbuild/netbsd-arm64`、`@esbuild/netbsd-x64`。**注意 netbsd 也中招——当前 bun 的 os 枚举（`install_types/resolver_hooks.rs:820-828`）至今没有 netbsd token。**
+
+**不是 fixture 陈旧问题**：真实用户拿老 bun 的 v2 lockfile 迁移，只要含老 bun 不认识的 os token，该平台包迁移后永远不会被安装。对 OHOS 这是必经路径（所有现存 v2 lock 都早于 openharmony token）。修法方向：迁移时 os:NONE 愈合成 ALL（信息损失的安全默认；平台无关包本来就是 ALL，NONE 只可能来自这种损失）。在 Linux 上无法复现（linux token 一直存在），**OHOS 独有**。
+
+---
+
+## 2026-07-29 长尾全量复核（二进制 `1.4.0+72bc3a80b` = r40 + T39；25 个候选文件隔离复测 + 转绿项 3/3 确认）
+
+### 3/3 确认转绿（8 个，r40 修复的连带受益）
+
+`bunshell.test.ts`(416 pass)、`resolver-permission-denied-ancestor.test.ts`、`filesink.test.ts`、`run-quote.test.ts`、**`bun-run.test.ts`（T02 整体收口，292 pass）**、`child_process.test.ts`、`fetch-tls-abortsignal-timeout.test.ts`、`express-memory-leak.test.ts`。另 `unix-socket-long-path.test.ts` 2/2 绿（T15 遗留的 class C 未动手项，实测已被顺带治好）。
+
+### 仍失败 —— 全部根因到位
+
+| 文件 | 失败 | 根因 | 分类 |
+|---|---|---|---|
+| `migrate-bun-lockb-v2.test.ts` | 1（确定）| **T41**（本条，class A 待修）| A |
+| `fs.test.ts` | 8（确定）| 7 条 readdir(recursive) 簇 = T06 既有；新增 1 条 `utimesSync` 负时间戳：本机文件系统把 pre-epoch 时间**钳为 0**，**同机 node 实测一致**（上游 e6697ffbe 新测试通过 merge 进入）| F + B |
+| `fetch.unix.test.ts` | 4（确定）| 3 条：相对路径 AF_UNIX bind EPERM——**hmdfs 不支持 AF_UNIX 特殊文件**，cwd 在仓库（hmdfs）即 EPERM，cwd 换 el2 即成功，**node 实测一致**；1 条：ENAMETOOLONG fixture 表缺 `openharmony: 108`（T40 同类）| B + C |
+| `node-net.test.ts` #13126 | 3/3 失败 | **T32 透明代理**：`example.com:999` ~20ms"连接成功"（node 一致），< 100ms abort 窗口；历史"摇摆"= abort 与代理应答的竞速 | D |
+| `test-net-autoselectfamily.js` | 摇摆 | **T32 透明代理**：mocked lookup 测试期望 6 地址逐个尝试，代理让首个假地址瞬间"连上"，只尝试 1 个 | D |
+| `process.test.js` | 1（确定）| 硬编码期望宿主机 node = `v26.3.0`，本机是 26.5.0；任何 node 版本不符的机器都失败 | D |
+| `test-child-process-execsync.js` | 摇摆 | **T34** 既有定性（杀 shell 杀不到孙进程，node 一致）| D |
+| `bun-install-registry.test.ts` | 3（确定）| prereleases 系列 verdaccio 缓存 "manifest is invalid"——**唯一未定位根因的** | F |
+| `node-http2.test.js` | 1（确定）| maxSessionMemory 15s 超时，未深挖 | F |
+| `message-port-context-destroy-leak.test.ts` | 1（确定）| MessagePort/worker 泄漏，T35 谱系（上游缺陷）| A-family |
+| `pnpm.test.ts` | 1（确定）| fixture 钉死 **esbuild@0.21.5**，其 install.js 平台表不认识 openharmony（0.25.6 才加）| E |
+| `test-integration-rspack.ts` | 1（确定）| `@rspack/binding` 无 `linux-arm64-ohos` 预编译 | E |
+| `regression/issue/24364.test.ts` | 1（确定）| `bun add typescript` 现解析到 **7.x（tsgo 原生）**，无 `@typescript/typescript-openharmony-arm64` 包；历史上 typescript 5.x 纯 JS 时能通过 | E |
+| `bun-security-scanner-matrix` | 摇摆（2/500+ 格）| 个别矩阵格 150s 超时（慢环境下安装耗时边际）| C/D |
+| `node-dns.test.js` | 摇摆（1/4）| 依赖外部真实 DNS（`ptr.socketify.dev` 等 13 处），本机外网解析不稳定 | D |
+| `spawn_waiter_thread.test.ts` | 1（确定）| cpuTime 阈值实测超 83%，统计口径与阈值假设不匹配（T21 已记）| C/F |
+
+### 分类汇总（仍失败 16 个文件）
+
+- **bun 可修**：T41（迁移愈合，1 文件）
+- **平台行为（node 一致）**：fs utimesSync、fetch.unix×3、execsync、node-net、autoselectfamily（后两者 T32 代理）→ 这些只能改测试适应环境或接受失败
+- **第三方包缺 OHOS 支持**：pnpm(esbuild 0.21.5)、rspack、24364(typescript 7)→ T09 类，只能靠上游加包
+- **环境**：process(node 版本钉)、node-dns(外网)、scanner-matrix(超时边际)
+- **待定位**：bun-install-registry（3 子用例）、node-http2（超时）、spawn_waiter_thread（阈值）
+
+---
+
 ## T04 — `statx(2)` 对 socket 型 fd 报 EBADF，bun 的 `fstatSync` 误当真错误抛出（已修复并真机验证）
 
 对应 `OHOS_TEST_STATUS.md` 第八/九轮记录的"字面 fd 数字作 stdio 导致父进程自身 fd 失效"。本轮排查**完全推翻了"spawn fd 所有权"的原始假设**——fd 从头到尾都没坏，是 bun 的 `fstatSync()` 实现在特定条件下给出了错误答案。
