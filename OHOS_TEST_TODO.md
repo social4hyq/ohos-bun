@@ -760,6 +760,8 @@ while out_fds_to_wait_for[0] != Fd::INVALID || out_fds_to_wait_for[1] != Fd::INV
 
 具体是哪些 JIT 数据结构没释放，未定位。WTF 不提供可用的分配器自省（见上表第 6 条），再往下要么重编 WebKit 开 `MallocCallTracker`，要么在 `teardownJSCVM` 前后对比 JSC 自身的统计。剩余那 38%（0.54MB/worker）也还没有着落。
 
+**处置决定（2026-07-29，用户拍板）**：不为诊断修改 WebKit（MallocCallTracker 路线已动工后撤销，工作树已复原），**等上游更新**。T35 挂起，台账保留全部已证伪假设和复现脚本，上游 webkit/bun 版本推进后重新评估。
+
 **容器对照（2026-07-28 补做，同一份 `be38b72d9`）：泄漏不是本机特有，容器里严重约 9 倍。**
 
 | | 每 worker | 40 轮 RSS |
