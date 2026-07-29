@@ -732,9 +732,33 @@ while out_fds_to_wait_for[0] != Fd::INVALID || out_fds_to_wait_for[1] != Fd::INV
 
 **排除"可回收高水位"**：30 轮后调 `emitMemoryPressure()` 两次并等待，RSS 只从 95.8 掉到 93.5MB、WKFastMalloc 38.4 → 36.1MB —— 46MB 的增长里只放掉 ~2.3MB。**是真持有，不是缓存**。（这一步是刻意做的：本轮在主线程场景已经栽过一次"把高水位误判成泄漏"。）
 
+### 定位续：约 62% 来自 JIT（2026-07-28）
+
+`BUN_JSC_useJIT=0` 与默认交替配对跑 3 组，40 轮空 worker：
+
+| | 40 轮 RSS | 每 worker |
+|---|---|---|
+| 默认 | ~46.9 → ~104.5MB | **1.44MB** |
+| 关 JIT | ~41.6 → ~63.2MB | **0.54MB** |
+
+3/3 一致。**JIT 相关结构占每 worker 泄漏的 ~62%（0.90MB）**，剩余 0.54MB 与 JIT 无关。注意真机 smaps 里 `[anon:JSJITCode]` 只涨 47KB/worker —— 泄漏的是 JIT 的**数据结构**（在 WKFastMalloc 里），不是生成的机器码本身。
+
+### 已证伪的假设（逐条留档，避免重走）
+
+| # | 假设 | 怎么倒的 |
+|---|---|---|
+| 1 | mimalloc 线程退出后 abandoned segment | smaps 配对做差：主因是 WKFastMalloc，mimalloc 占比不到一半 |
+| 2 | 只是可回收的高水位，不是泄漏 | 两次 `emitMemoryPressure()` 只放掉 46MB 里的 2.3MB |
+| 3 | 与 JSC 堆大小相关 | `--smol` 无实质差别；worker 内分配 0/8/32MB 结果相同 |
+| 4 | `Worker` 对象因 `hasPendingActivity()` 恒真而永不析构 | close 事件派发时会置 `State::Closed`；测试本就等到 `close` 才继续 |
+| 5 | worker 线程的 C++ `thread_local` 析构不执行（**代码注释自己这么写的**）| C++ 探针：std::thread / pthread / **detached** 三种方式析构**全都执行**。注释写的是 "on glibc"，本平台是 musl |
+| 6 | 用 `WTF::fastMallocStatistics()` 分辨"对象仍存活"还是"分配器攥着" | **工具本身是假的**：Linux 上 `freeListBytes`/`reservedVMBytes` 硬编码为 0，`committedVMBytes` 就是 `getrusage` 的峰值 RSS。为此加的绑定已撤销（`291105159`）。`fastMallocDumpMallocStats()` 未开 `MallocCallTracker` 时是空函数 |
+
+第 5 条值得单独记：**我们自己代码里的"已知损失"注释未必成立**，本轮 T28/T29 也是这么挖出来的。
+
 ### 尚未定位的部分
 
-具体是哪些 WebKit 对象没释放，未定位。`bun:internal-for-testing` 的 69 个入口里没有 FastMalloc 统计（只有 `getEventLoopStats` / `emitMemoryPressure`），要往下走需要带 `WTF::fastMallocStatistics()` 或 bmalloc 统计的构建。
+具体是哪些 JIT 数据结构没释放，未定位。WTF 不提供可用的分配器自省（见上表第 6 条），再往下要么重编 WebKit 开 `MallocCallTracker`，要么在 `teardownJSCVM` 前后对比 JSC 自身的统计。剩余那 38%（0.54MB/worker）也还没有着落。
 
 **容器对照（2026-07-28 补做，同一份 `be38b72d9`）：泄漏不是本机特有，容器里严重约 9 倍。**
 
