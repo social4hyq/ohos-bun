@@ -29,7 +29,7 @@ echo "bun $(BUN=$BUN && $BUN --version)" | tee -a "$OUT/SUMMARY.txt"
 run_batch B1 --include=js/bun
 run_batch B2 --include=regression --include=napi --include=internal --include=v8 --include=config
 run_batch B3 --include=cli --include=bundler
-run_batch B4 --include=js/web --include=js/third_party --include=js/first_party --include=js/sql --include=js/valkey --include=js/deno
+run_batch B4 --include=js/web --include=js/third_party --include=js/first_party --include=js/sql --include=js/valkey --include=js/deno --include=snippets --include=runners --include=scripts --include=snapshots --include=js/junit-reporter --include=js/workerd --include=package-json-lint
 run_batch B5 --include=js/node --exclude=js/node/test
 run_batch B6 --include=js/node/test
 run_batch B7 --include=integration --include=bake
