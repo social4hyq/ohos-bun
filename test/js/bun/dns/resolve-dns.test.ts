@@ -50,10 +50,10 @@ describe("dns", () => {
         // this behavior matchs nodejs
         const isIPv6Request = options.family === "IPv6" || options.family === 6;
         const expect_to_fail =
-          (isWindows && backend !== "c-ares" && isIPv6Request && hostname !== "localhost") ||
-          // IPv6 is unavailable on OHOS: system/libc can't resolve AAAA for any
-          // hostname, and c-ares has no IPv6 route to resolve "localhost" (::1).
-          (isOHOS && isIPv6Request && (backend !== "c-ares" || hostname === "localhost"));
+          (isWindows && backend !== "c-ares" && isIPv6Request && hostname !== "localhost");
+        // OHOS: IPv6 works for both system and c-ares backends since ::1 was
+        // added to /etc/hosts (2026-07-28). The old expect_to_fail OHOS branch
+        // is removed — it caused 12 false-positive failures.
         if (expect_to_fail) {
           try {
             // @ts-expect-error
