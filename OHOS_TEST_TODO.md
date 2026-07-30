@@ -1909,6 +1909,22 @@ r42 基线 94 失败全部分析完毕后，对平台限制类（class B）和�
 
 **净结果**：83 → 29 条，删 54 条过时/误判条目。剩余 29 条全部有据可查。
 
+### 基线排除清单（run-baseline.sh）
+
+基线脚本排除了会在 OHOS 上导致进程悬挂的测试目录——这些不是因为断言失败，而是测试进程本身卡死，阻塞整个批次。排除后可正常跑完全量。
+
+| 排除路径 | 文件数 | 原因 | 分类 |
+|---------|--------|------|------|
+| `js/bun/terminal/` | 3 | PTY `setRawMode` 不可用，进程挂死 | B |
+| `js/bun/repl/repl` | 1 | PTY-based REPL，进程挂死 | B |
+| `cli/install/bun-security-scanner-matrix-without-node-modules` | 1 | 测试内悬挂超时 | F |
+| `js/valkey/` | 15 | Docker Compose v2 不可用，启动 Redis 挂死 | D |
+| `bake/` | 24 | bake dev server 不支持 OHOS，dev server 不退出 | B |
+| `integration/bun-types` | 1 | tsgo 无 openharmony-arm64 二进制 | D |
+| `internal/source-lints` | — | 内部代码检查工具，非功能测试 | n/a |
+
+**合计排除**：~45 个测试文件（不影响通过率统计——它们根本没进 runner）。
+
 ---
 
 ## T45-T48 — ~~bundler class A 簇~~ **全部关闭：环境污染（stale pkg.json），非 bun bug**
