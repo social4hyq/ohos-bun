@@ -137,7 +137,7 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # uv_pipe bind), so common.PIPE-based http tests cannot run there.
 
 # ============================================================
-# OpenHarmony (arm64_ohos, hmusl) — validated 2026-07-07 r16
+# OpenHarmony (arm64_ohos, hmusl) — validated 2026-07-30 r42
 # ============================================================
 
 # --- OHOS spawn overhead: fork+exit_group path 2-3x slower than vfork ---
@@ -191,21 +191,25 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # unrelated, still-real reason (memfd_create + readFileSync EACCES vs the
 # expected ENOMEM; see OHOS_TEST_TODO.md T22) and keeps its own entry below.
 
-# The following cli/install/lifecycle-scripts, bun-workspaces, bun-pack,
-# bun-install-registry, migrate-bun-lockb-v2, bun-upgrade, and
-# integration/next-pages entries carried the same disproven
-# "bun:internal-for-testing unavailable" label but are NOT stale — they still
-# fail on real-machine reruns, just for different, still-uninvestigated-or-
-# tracked reasons (see OHOS_TEST_TODO.md T01/T14/T21). Left in place with the
-# old label until their real root cause lands here; do not read the label on
-# those entries as accurate.
-[ OPENHARMONY ] test/cli/install/bun-pack.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build — SUPERSEDED, see OHOS_TEST_TODO.md T01
-[ OPENHARMONY ] test/cli/install/bun-install-registry.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build — SUPERSEDED, see OHOS_TEST_TODO.md T21
-[ OPENHARMONY ] test/cli/install/bun-upgrade.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build — SUPERSEDED, see OHOS_TEST_TODO.md T14
+# bun-pack: the "bun:internal-for-testing unavailable" quarantine was
+# disproven 2026-07-26. Re-verified 2026-07-30 against r42: 76 pass / 0 fail.
+# Entry removed.
+#
+# bun-install-registry: 1/?? tests fails ("missing package on reinstall, some
+# with binaries") — output format differs by 2 lines from expected, real root
+# cause still uninvestigated. Keeping quarantine.
+[ OPENHARMONY ] test/cli/install/bun-install-registry.test.ts [ Skip ] # "missing package on reinstall, some with binaries" output mismatch (class C, uninvestigated)
+# bun-upgrade: 2/8 tests fail. One: "recreates the staging directory" —
+# Expected false, Received true. Two: "verifies the downloaded release archive" —
+# OHOS has no bun release binary, so upgrade reports "not for this platform".
+# Both class D. Keeping quarantine.
+[ OPENHARMONY ] test/cli/install/bun-upgrade.test.ts [ Skip ] # OHOS has no bun release binary for upgrade download + staging dir recreation differs
 
-[ OPENHARMONY ] test/integration/next-pages/test/dev-server.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build — SUPERSEDED, see OHOS_TEST_TODO.md T14
-[ OPENHARMONY ] test/integration/next-pages/test/dev-server-ssr-100.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build — SUPERSEDED, see OHOS_TEST_TODO.md T14
-[ OPENHARMONY ] test/integration/next-pages/test/next-build.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build — SUPERSEDED, see OHOS_TEST_TODO.md T14
+# next-pages: next-swc has no openharmony-arm64 binary; all 3 tests fail at
+# "unsupported platforms openharmony/arm64". Class D. Keeping quarantine.
+[ OPENHARMONY ] test/integration/next-pages/test/dev-server.test.ts [ Skip ] # next-swc unsupported platform openharmony/arm64 + puppeteer install fails
+[ OPENHARMONY ] test/integration/next-pages/test/dev-server-ssr-100.test.ts [ Skip ] # next-swc unsupported platform openharmony/arm64
+[ OPENHARMONY ] test/integration/next-pages/test/next-build.test.ts [ Skip ] # next-swc unsupported platform openharmony/arm64
 
 # --- cli/install migration: network-dependent tests ---
 # "bun pm migrate -f" and "bun install --lockfile-only" resolve from npm registry;
