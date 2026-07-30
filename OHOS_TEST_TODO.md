@@ -1861,6 +1861,56 @@ test/napi/node-napi-tests/**（60 个子文件）
 
 ---
 
+## 2026-07-30 全量 Class B/D 验证
+
+r42 基线 94 失败全部分析完毕后，对平台限制类（class B）和环境依赖类（class D）逐项验证。
+
+### Class B 验证（平台硬限制）
+
+| 类别 | 条目 | 隔离验证 | 根因 | shim 可修？ |
+|------|------|---------|------|-----------|
+| **PTY** | terminal/×3 + repl/×1 + tty/×1 + 26286/×1 + shell-load | 全挂（排除或超时） | `/dev/ptmx` seccomp 拦，无 PTY 子系统。容器（openEuler 内核）PTY 完整可用 | ❌ shim 最多救 tty 1 个用例，ROI 太低 |
+| **FUSE** | glob-on-fuse + run-file-on-fuse | 全挂 | `/dev/fuse` seccomp 拦 + Python fuse 包缺失 | ❌ shim 可拦截 open() 但 FUSE 协议需要内核驱动 |
+| **hmdfs** | fetch.unix + wasi | EPERM + EACCES | hmdfs 不支持 AF_UNIX；WASI open('/') 沙箱拦 | ⚠️ fetch.unix 可改 EL2 路径；wasi 需 preopen |
+| **hmdfs** | shell/ls recursive | 26p/1f | hmdfs 遍历大目录慢（性能不是功能） | ❌ |
+| **PT_INTERP** | 29290 + 24742 | 全挂 | binary-sign-tool 签名后 ELF 结构变化，readInterp() 返空 | ❌ |
+| **Kernel race** | node-http-with-ws (T49) | 1f 超时 | HongMeng connect() 同步 ECONNREFUSED 打断 autoSelectFamily JS 重试 | ❌ |
+| **Docker** | valkey/×15 | 全挂（已排除） | docker compose v2 不可用 | ❌ |
+
+### Class D 验证（缺外部服务/二进制）
+
+| 类别 | 条目 | 说明 |
+|------|------|------|
+| **缺原生二进制** | sharp, astro, prisma, resvg, napi-rs/canvas, rspack, tsgo(×2) | 第三方包未发布 OHOS 预编译 `.node`/`.so` |
+| **平台不支持** | next-auth, next-pages(×3), bun-build-compile | next-swc/turbo 不支持 openharmony-arm64 |
+| **TLS/网络** | bunx, bun-install | npm TLS cert / git clone TLS EOF 偶发 |
+
+### 关键发现
+
+1. **PTY 容器 vs 真机**：用 `script -q -c` 在容器内分配 PTY → `isTTY=true`, `setRawMode: OK`。容器（openEuler Linux 6.6）PTY 完整，真机（HongMeng）被 seccomp 拦。CI 可正常运行 terminal/repl 测试。
+
+2. **T44 误诊**：uSockets `start_connections()` 并行 4 地址 + Node `autoSelectFamily` 逐个回落均正常工作。stderr 上的 `ECONNREFUSED ::1` 是第一次尝试的日志噪音。T44 完全闭合，9 个原标注全重分类。
+
+3. **T45-T48 污染**：bundler 7 个 class A 标注实为 `/data/storage/el2/base/tmp/package.json`（opencode 残留）导致 workspace 解析失败。删除后隔离全绿（bundler_cjs2esm 16/0, esbuild/dce 73/0, esbuild/default 151/0, esbuild/importstar 72/0, cache-node-compat 5/0）。
+
+4. **DNS 验证**：`dns.lookup("localhost")` 正常（getaddrinfo 走 /etc/hosts），`dns.resolve4/resolve6("localhost")` → ENOTFOUND（res_nquery 不走 hosts）。gRPC resolver 19p/2f（2 个 localhost 边缘测试）。22712 隔离全绿。
+
+5. **孤儿条目清理**：glob.test.ts（文件不存在）、valkey test-utils（不是 .test. 文件）从 expectations.txt 删除。
+
+### expectations.txt 收口
+
+| 阶段 | 条目数 | 操作 |
+|------|--------|------|
+| r16 基线 | 83 | — |
+| r42 基线前 | 50 | 删 33 条过期 |
+| r42 基线后（pass 清理）| 32 | 删 18 条水货 |
+| SUPERSEDED 更新 | 31 | 删 bun-pack |
+| 孤儿清理 | 29 | 删 glob + valkey test-utils |
+
+**净结果**：83 → 29 条，删 54 条水货。剩余 29 条全部有据可查。
+
+---
+
 ## T45-T48 — ~~bundler class A 簇~~ **全部关闭：环境污染（stale pkg.json），非 bun bug**
 
 **关闭日期**：2026-07-30
