@@ -1814,26 +1814,28 @@ test/napi/node-napi-tests/**（60 个子文件）
 
 ---
 
-## T44 — `net.createConnection` / `tls.connect` 无地址回落：`localhost` → `::1` ECONNREFUSED 后不试 `127.0.0.1`（class A，待修，需容器重编）
+## T44 — ~~::1 ECONNREFUSED 集群~~ **已关闭：误诊，uSockets + autoSelectFamily 均正常工作**
 
 **发现日期**：2026-07-30 r42 全量基线  
-**更正日期**：2026-07-30 深入分析后大幅缩小范围
+**关闭日期**：2026-07-30 深入分析后推翻
 
-**原始判断**（已推翻）：以为 `http.request` / `fetch` 也没有回落。实测 uSockets 的 `start_connections()` + `us_internal_socket_after_open()` 在 HTTP 路径正确实现了并行连接 + 失败替换，`http.request({host:"localhost"})` → server on `127.0.0.1` **能成功**。
+**误诊原因**：stderr 上的 `ECONNREFUSED ::1:<port>` 是 uSockets 第一次尝试 ::1 时的日志噪音，但回落机制（uSockets `start_connections` 并行 + net 模块 `autoSelectFamily` 逐个）都正常工作。多次测试确认 `http.request`、`net.createConnection`、`tls.connect` 连接 `localhost` 时都能回落到 `127.0.0.1`。
 
-**修正后根因**：回落机制在不同连接 API 之间不统一：
-- `http.request` / `fetch` → `HTTPContext::connect()` → uSockets `connect_group` → **有回落** ✅
-- `net.createConnection({host:"localhost"})` → Node 兼容层 → **无回落** ❌
-- `tls.connect({port})` → Node 兼容层 → **无回落** ❌
+**实际验证结果**（9 个原标注文件）：
+- 6 个隔离全绿：`node-http-transfer-encoding`、`test-http-should-allow-numbers-headers`(×2)、`test-http-should-support-localAddress`、`http2-wrapper`、`remix`
+- 1 个 class C：`ssl-ctx-cache`（`bun:internal-for-testing` ENOENT，需 runner env vars）
+- 1 个 class F：`node-http-with-ws`（**不是 ::1，是 WebSocket upgrade 90s 超时**，见 T49）
+- 1 个未验证：`test-http-proxy-request-no-proxy-domain`（vendored node test）
 
-**实际受影响文件**（缩小到 3 个）：
-- `test/js/node/http/node-http-with-ws.test.ts` — 使用 `tls.connect({port})`
-- `test/js/node/tls/ssl-ctx-cache.test.ts` — ENOENT `bun:internal-for-testing`（**不是 ::1**，缺 env var）
-- 其他 7 个原标注文件 → 隔离验证全绿或使用 `http.request`（有回落）
+---
 
-**修复方向**：在 Node 兼容层的 `net`/`tls` 模块的连接路径中，实现与 uSockets HTTP 路径同等的地址回落。
+## T49 — TLS WebSocket upgrade 超时（`node-http-with-ws.test.ts` test 2），class F
 
-**状态**：待修（需容器重编，src/ 改动）
+**发现日期**：2026-07-30
+
+**现象**：`should not crash when closing sockets after upgrade` 测试 90s 超时。HTTPS server on 127.0.0.1，`tls.connect` → 写 HTTP 请求 + WebSocket upgrade → 等待回包。连接成功（autoSelectFamily 回落生效），但 WebSocket upgrade 响应永不返回。
+
+**状态**：待深挖（非 ::1 问题，新 class F）
 
 ---
 
