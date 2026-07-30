@@ -1106,16 +1106,16 @@ linkat/symlinkat 拷贝回退改为**同目录隐藏临时文件 + renameat 原�
 | 文件 | 失败 | 根因 | 分类 |
 |---|---|---|---|
 | `migrate-bun-lockb-v2.test.ts` | 1（确定）| **T41**（本条，class A 待修）| A |
-| `fs.test.ts` | 8（确定）| 7 条 readdir(recursive) 簇 = T06 既有；新增 1 条 `utimesSync` 负时间戳：本机文件系统把 pre-epoch 时间**钳为 0**，**同机 node 实测一致**（上游 e6697ffbe 新测试通过 merge 进入）| F + B |
-| `fetch.unix.test.ts` | 4（确定）| 3 条：相对路径 AF_UNIX bind EPERM——**hmdfs 不支持 AF_UNIX 特殊文件**，cwd 在仓库（hmdfs）即 EPERM，cwd 换 el2 即成功，**node 实测一致**；1 条：ENAMETOOLONG fixture 表缺 `openharmony: 108`（T40 同类）| B + C |
+| `fs.test.ts` | ~~8（确定）~~ ✅ | **已全部收口**:readdir 簇=T06 历史 .tmp 残骸（清理后全过）;utimesSync 负时间戳=fs 钳 pre-epoch 为 0(node 一致),skipIf(isOHOS) `e28258da2`。**现 422 pass / 0 fail** | — |
+| `fetch.unix.test.ts` | 4→3（确定）| 3 条 hmdfs EPERM 保留（class B,node 一致）;ENAMETOOLONG 条已修 `92b7669c7`(表补 `openharmony: 108`,T40 同类）| B（剩 3) |
 | `node-net.test.ts` #13126 | 3/3 失败 | **T32 透明代理**：`example.com:999` ~20ms"连接成功"（node 一致），< 100ms abort 窗口；历史"摇摆"= abort 与代理应答的竞速 | D |
 | `test-net-autoselectfamily.js` | 摇摆 | **T32 透明代理**：mocked lookup 测试期望 6 地址逐个尝试，代理让首个假地址瞬间"连上"，只尝试 1 个 | D |
 | `process.test.js` | 1（确定）| 硬编码期望宿主机 node = `v26.3.0`，本机是 26.5.0；任何 node 版本不符的机器都失败 | D |
 | `test-child-process-execsync.js` | 摇摆 | **T34** 既有定性（杀 shell 杀不到孙进程，node 一致）| D |
 | `bun-install-registry.test.ts` | ~~3（确定）~~ | **已收口 → T42**：根因在 shim 非原子 linkat，修复后整文件 228 pass / 0 fail | ~~F~~ ✅ |
-| `node-http2.test.js` | 1（确定）| maxSessionMemory 15s 超时，未深挖 | F |
+| `node-http2.test.js` | ~~1（确定）~~ ✅ | class C:GC=1×累积状态×1 万请求,容器同现非 OHOS;超时 ×4 `8e0a88129`,**整文件 313 pass / 0 fail** | — |
 | `message-port-context-destroy-leak.test.ts` | 1（确定）| MessagePort/worker 泄漏，T35 谱系（上游缺陷）| A-family |
-| `pnpm.test.ts` | 1（确定）| fixture 钉死 **esbuild@0.21.5**，其 install.js 平台表不认识 openharmony（0.25.6 才加）| E |
+| `pnpm.test.js`→`.ts` | ~~1（确定）~~ ✅ | fixture 升 vite 7（拉 esbuild 0.28 + rollup 4.62,均有 openharmony 包）+ ohos-signpost 签名 hook,**3/3 通过** `87c51463b` | — |
 | `test-integration-rspack.ts` | 1（确定）| `@rspack/binding` 无 `linux-arm64-ohos` 预编译 | E |
 | `regression/issue/24364.test.ts` | 1（确定）| `bun add typescript` 现解析到 **7.x（tsgo 原生）**，无 `@typescript/typescript-openharmony-arm64` 包；历史上 typescript 5.x 纯 JS 时能通过 | E |
 | `bun-security-scanner-matrix` | 摇摆（2/500+ 格）| 个别矩阵格 150s 超时（慢环境下安装耗时边际）| C/D |
