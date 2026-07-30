@@ -1861,61 +1861,21 @@ test/napi/node-napi-tests/**（60 个子文件）
 
 ---
 
-## T45 — bundler CJS→ESM 转译：`exports is not defined`（class A，待修，需容器重编）
+## T45-T48 — ~~bundler class A 簇~~ **全部关闭：环境污染（stale pkg.json），非 bun bug**
 
-**发现日期**：2026-07-30 r42 全量基线
+**关闭日期**：2026-07-30
 
-**文件**：`test/bundler/bundler_cjs2esm.test.ts`（2 失败）
+删除 `/data/storage/el2/base/tmp/package.json`（opencode 残留）后，所有 5 个 bundler 测试隔离全绿：
 
-**现象**：`ModuleExportsRenamingNoDeopt`、`ModuleExportsRenamingAssignExportsDeOpt` 两个 CJS→ESM 转译测试，产物 `exports is not defined`。
+| 编号 | 文件 | 原失败 | 隔离结果 |
+|------|------|--------|---------|
+| T45 | `bundler_cjs2esm` | 2 fail | **16 pass 0 fail** |
+| T46 | `esbuild/dce` | 2 fail | **73 pass 0 fail** |
+| — | `esbuild/default` | 1 fail | **151 pass 0 fail** |
+| T47 | `esbuild/importstar` | 1 fail | **72 pass 0 fail** |
+| T48 | `resolver/cache-node-compat` | 2 fail | **5 pass 0 fail** |
 
-**根因推测**：bun build 的 CJS→ESM 转换在识别 `module.exports` 重命名模式时，生成的 ESM 输出仍引用 `exports` 标识符，但 ESM 模块作用域无此全局。
-
-**状态**：待修
-
----
-
-## T46 — bundler DCE（死代码消除）不彻底：应被 tree-shake 的代码被保留（class A，待修，需容器重编）
-
-**发现日期**：2026-07-30 r42 全量基线
-
-**文件**：`test/bundler/esbuild/dce.test.ts`（2 失败，PackageJsonSideEffectsGlob* 系列）
-
-**现象**：tree-shaking 后输出多了 `"shallow side effect - should be tree shaken"` 和 `"deep side effect - should be preserved"`——前一行不该出现。
-
-**根因推测**：Package.json `sideEffects` glob 模式匹配在 OHOS 上可能返回不同结果（readdir 顺序差异），导致 bun 误判某文件有副作用而保留。
-
-**状态**：待修
-
----
-
-## T47 — bundler `import *` 命名空间：空文件属性访问返 `undefined` 而非 `{}`（class A，待修，需容器重编）
-
-**发现日期**：2026-07-30 r42 全量基线
-
-**文件**：`test/bundler/esbuild/importstar.test.ts`（1 失败，ImportNamespaceUndefinedPropertyEmptyFile）
-
-**现象**：
-- Expected: `"{} undefined {}"`
-- Received: `"undefined undefined {}"`
-
-导入一个空文件的命名空间，访问不存在的属性时返回 `undefined`，而预期返回 `{}`（空对象）。`import * as ns from "./empty"` 后 `ns.prop` 的值不对。
-
-**状态**：待修
-
----
-
-## T48 — bundler require() in ESM scope：ESM 下 `require()` 报 ReferenceError（class A/B，待评估）
-
-**发现日期**：2026-07-30 r42 全量基线
-
-**文件**：`test/bundler/resolver/cache-node-compat.test.ts`（2 失败）
-
-**现象**：`ReferenceError: require is not defined in ES module scope, you can use import instead`
-
-测试期望在 `.js` 文件（`"type": "module"` 的 package 下）中调用 `require()` 能成功（Node.js 兼容模式），但 bun 直接报 ReferenceError。这是 bun 对 ESM/CJS 边界处理比 Node 更严格。
-
-**状态**：待评估（可能是设计决策，不一定是 bug）
+**根因**：bun build 在 TMPDIR 子目录测试时，向上查找到了 opencode 的 workspace package.json，其中的 packages 引用不存在，导致 install/build 失败。
 
 ---
 
