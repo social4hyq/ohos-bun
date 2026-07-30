@@ -103,11 +103,11 @@ execlp("bash", "bash", "-c", "pwd", (char*)NULL);
 
 ---
 
-## T02 — `bun run` 退出码/信号语义边缘用例（未深挖，与 T01 同文件不同断言）
+## T02 — ~~`bun run` 退出码/信号语义边缘用例~~ **已收口：07-29 复核 3/3 全绿**（r40 修复的连带受益，详见 2026-07-29 长尾全量复核）
 
 | 文件 | 具体断言 | 分类 | 层级 | 状态 |
 |---|---|---|---|---|
-| `test/cli/install/bun-run.test.ts` | `invalid tsconfig.json is ignored`（x2 不同 describe 路径）、`exit code message works above 128`、`--silent > exit signal works` | F | rust? | 待查 |
+| `test/cli/install/bun-run.test.ts` | ~~`invalid tsconfig.json is ignored`（x2 不同 describe 路径）、`exit code message works above 128`、`--silent > exit signal works`~~ | ~~F~~ | n/a | **3/3 通过（292 pass）** |
 
 ---
 
@@ -1203,13 +1203,19 @@ test/js/node/test/parallel/test-fs-watch-recursive-sync-write.js
 
 ---
 
-## T06 — fs 递归遍历 / ELOOP 自引用符号链接 fixture
+## T06 — ~~fs 递归遍历 / ELOOP 自引用符号链接 fixture~~ **已收口：真凶是历史残留的 vendored 测试临时目录**（2026-07-29 复核）
 
-`test/js/node/` 目录树里为其他 vendored 测试准备的自引用符号链接 fixture（`fixtures/follow/cycle/...`），被 `fs.test.ts`/`fs.watch.test.ts` 的全目录 `readdir(recursive:true)` 扫到导致 `ELOOP`。历史记录过（第八轮）未定论是真 bug 还是 musl `SYMLOOP_MAX` 差异,本轮未新增证据。
+**根因（合成探针 + 清理实证）**：`test/js/node/test/.tmp.2569/` 是 **7 月 12 日一次被杀的 vendored 测试运行留下的残骸**，内含 node 套件故意创建的 `fixtures/follow/cycle → 指向自己父目录` 的符号链接环。`fs.test.ts` 的 "readdir 整棵 `test/js/node` 树并与 Node 对比" 用例扫到它就 ELOOP——与平台无关，CI 上树是干净的所以一直绿。`.tmp.<pid>` 目录只在测试**自然结束**时才被 common/tmpdir 清理，被杀的运行就会留下它们。
+
+**清理后（`rm -rf test/js/node/test/.tmp.*`）`fs.test.ts` 3/3 = 422 pass / 1 fail**(8 fail → 1 fail，仅剩 utimesSync 负时间戳一条，即下表最后一行的 class B 钳制）。跑完无新 .tmp 残留。
+
+**操作教训**：`fs.test.ts` 失败先检查 `test/js/node/test/.tmp.*` 有没有历史残骸，别急着查代码。
+
+顺带实测的一个**全平台**行为差异（非 OHOS、非本修复对象）：对带符号链接环的目录树，node 的 `readdir(recursive)` 会下钻并限量返回（合成探针 123 项，含 `cycle/cycle/cycle` 路径）,bun 在**真机和容器（Linux)都直接 ELOOP**。上游 bun 也没有环容忍——是上游行为差异，不是本 fork 的缺陷，fs.test.ts 在干净树上两边结果一致。
 
 | 文件 | 症状 | 分类 | 层级 | 状态 |
 |---|---|---|---|---|
-| `test/js/node/fs/fs.test.ts` | `readdir(recursive)`/`readdirSync(...recursive)` 与 Node.js 结果不一致（3 个子用例）+ `readdir(recursive) x100` 遇 `ELOOP` | F | rust? | 待与真实 Node.js 对照 |
+| `test/js/node/fs/fs.test.ts` | ~~`readdir(recursive)` 与 Node 不一致（3）+ x100 ELOOP（4）~~ | ~~F~~ | n/a | **已收口**——历史 .tmp 残骸里的 cycle fixture，清理后 3/3 全过 |
 | `test/js/node/test/sequential/test-fs-watch.js` | `assert.strictEqual(event, renameEv)` 事件分类不对 | B | rust | **已修复（T39，`48152d25e`+`72bc3a80b`）**——内核 IN_ATTRIB 先于 IN_CREATE，3/3 转绿 |
 | `test/js/node/watch/fs.watch.test.ts` | `inotify queue overflow`→`(change, null)`断言；`fs.promises.watch` symlink 场景（2）| B | rust | **已修复（T39，同两 commit）**——三个排序用例全转绿；另剩 1 条 ENAMETOOLONG fixture 问题独立记为 T40 |
 | `test/js/node/test/parallel/test-fs-link.js` | ~~未取得具体断言~~ | ~~E~~ | n/a | **已修复（`ade348ec6`）**——实际是 OHOS 内核拒绝裸 `SYS_linkat`，bun 直调 `libc::link()`（musl 直发裸 syscall）绕过 shim 的 `linkat` 符号拦截，详见 T21 表格里的完整根因记录 |
