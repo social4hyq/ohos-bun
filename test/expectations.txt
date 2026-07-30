@@ -147,7 +147,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 [ OPENHARMONY ] test/js/bun/glob/glob.test.ts [ Failure ] # leaks > scanSync/scan/GlobWalker + glob.match > *node_modules* (hmdfs slow)
 
 # --- OHOS shell: recursive node_modules ops + parallel spawn timeout ---
-[ OPENHARMONY ] test/js/bun/shell/bunshell.test.ts [ Failure ] # shell load > immediate exit; bunshell ls/rm > node_modules (spawn + hmdfs)
 
 # --- OHOS IPv6 DNS unavailable ---
 # dns.test.ts was renamed/merged upstream into resolve-dns.test.ts; this entry
@@ -191,7 +190,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # carried the same (wrong) label but is NOT in this list — it fails for an
 # unrelated, still-real reason (memfd_create + readFileSync EACCES vs the
 # expected ENOMEM; see OHOS_TEST_TODO.md T22) and keeps its own entry below.
-[ OPENHARMONY ] test/js/node/fs/fs-oom.test.ts [ Skip ] # memfd_create + readFileSync: OHOS reports EACCES on fstat instead of the expected ENOMEM (real platform difference, not a bun:internal-for-testing gate — see OHOS_TEST_TODO.md T22)
 
 # The following cli/install/lifecycle-scripts, bun-workspaces, bun-pack,
 # bun-install-registry, migrate-bun-lockb-v2, bun-upgrade, and
@@ -201,11 +199,8 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # tracked reasons (see OHOS_TEST_TODO.md T01/T14/T21). Left in place with the
 # old label until their real root cause lands here; do not read the label on
 # those entries as accurate.
-[ OPENHARMONY ] test/cli/install/bun-install-lifecycle-scripts.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build — SUPERSEDED, see OHOS_TEST_TODO.md T01
-[ OPENHARMONY ] test/cli/install/bun-workspaces.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build — SUPERSEDED, see OHOS_TEST_TODO.md T01
 [ OPENHARMONY ] test/cli/install/bun-pack.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build — SUPERSEDED, see OHOS_TEST_TODO.md T01
 [ OPENHARMONY ] test/cli/install/bun-install-registry.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build — SUPERSEDED, see OHOS_TEST_TODO.md T21
-[ OPENHARMONY ] test/cli/install/migrate-bun-lockb-v2.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build — SUPERSEDED, see OHOS_TEST_TODO.md T21
 [ OPENHARMONY ] test/cli/install/bun-upgrade.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build — SUPERSEDED, see OHOS_TEST_TODO.md T14
 
 [ OPENHARMONY ] test/integration/next-pages/test/dev-server.test.ts [ Skip ] # bun:internal-for-testing unavailable in release build — SUPERSEDED, see OHOS_TEST_TODO.md T14
@@ -243,7 +238,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # --- bun-create.test.ts github template TLS flake ---
 # 2/13 tests fetch github templates over HTTPS and hit UNKNOWN_CERTIFICATE_VERIFICATION_ERROR
 # (OHOS system CA store not in standard path). setDefaultTimeout(5min) applied for the rest.
-[ OPENHARMONY ] test/cli/install/bun-create.test.ts [ Flaky ] # github template download hits OHOS TLS cert verification error (2/13 tests)
 
 # ─────────────────────────────────────────────────────────────
 # P3 batch (2026-07-08): regression + js/web + js/node + js/third_party
@@ -253,19 +247,12 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # --- js/node: RLIMIT_NOFILE ---
 # child-process-rlimit-nofile checks specific RLIMIT values. OHOS kernel
 # defaults differ from Linux (e.g. RLIMIT_NOFILE may be 1024 vs 65536).
-[ OPENHARMONY ] test/js/node/child_process/child-process-rlimit-nofile.test.ts [ Flaky ] # OHOS RLIMIT defaults differ from Linux
 
 # --- js/web: fetch networking limitations ---
 # HTTP3 (adversarial body) 5s timeouts; HTTP/1.1 connect to 127.0.0.1
 # takes 11s+ on OHOS; TLS at localhost requires cert setup; .unix socket
 # failing on hmdfs. All networking-related, not test logic failures.
-[ OPENHARMONY ] test/js/web/fetch/fetch.test.ts [ Flaky ] # HTTP3 adversarial timeout + slow 127.0.0.1 connect (14+ tests)
 [ OPENHARMONY ] test/js/web/fetch/fetch.unix.test.ts [ Flaky ] # unix socket on hmdfs
-[ OPENHARMONY ] test/js/web/fetch/fetch.tls.test.ts [ Flaky ] # localhost TLS cert
-[ OPENHARMONY ] test/js/web/fetch/fetch-http3-adversarial.test.ts [ Flaky ] # HTTP3 adversarial 5s timeout
-[ OPENHARMONY ] test/js/web/fetch/fetch.stream.test.ts [ Flaky ] # streaming response 5s timeout
-[ OPENHARMONY ] test/js/web/streams/streams-leak.test.ts [ Flaky ] # pipe memory leak check 5s timeout
-[ OPENHARMONY ] test/js/web/request/request-clone-leak.test.ts [ Flaky ] # request clone leak check
 
 # --- "localhost" resolves to nothing when family-restricted to IPv6 ---
 # This sandbox's /etc/hosts maps `::1` to `ip6-localhost`/`ip6-loopback`, not
@@ -277,16 +264,11 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # ENOTFOUND on this host — verified directly: `dns.lookup("localhost",
 # {family: 6})` -> ENOTFOUND, `{family: 4}` -> 127.0.0.1. These are verbatim
 # upstream Node test ports; not patched to keep them byte-identical.
-[ OPENHARMONY ] test/js/node/test/parallel/test-http2-premature-close.js [ Failure ] # family:6-restricted "localhost" lookup has no /etc/hosts entry here
-[ OPENHARMONY ] test/js/node/test/parallel/test-net-socket-connect-without-cb.js [ Failure ] # family:6-restricted "localhost" lookup has no /etc/hosts entry here
 
 # --- js/third_party: HTTP2 / gRPC / pnpm / next-auth ---
 # All failures are networking-related: HTTP2 test server returns 403 on OHOS;
 # gRPC DNS resolution; pnpm directory traversal; next-auth server action timeout.
-[ OPENHARMONY ] test/js/third_party/wpt-h2/run.test.ts [ Flaky ] # H2 WPT: test server returns 403 (17 tests)
-[ OPENHARMONY ] test/js/third_party/undici-h2/run.test.ts [ Flaky ] # H2 undici: test server returns 403 (9 tests)
 [ OPENHARMONY ] test/js/third_party/grpc-js/test-resolver.test.ts [ Flaky ] # gRPC DNS resolver (2 tests)
-[ OPENHARMONY ] test/js/third_party/pnpm/pnpm.test.ts [ Flaky ] # pnpm install directory traversal (1 test)
 [ OPENHARMONY ] test/js/third_party/next-auth/next-auth.test.ts [ Flaky ] # server action timeout + unsupported OS (1 test)
 
 # ─────────────────────────────────────────────────────────────
