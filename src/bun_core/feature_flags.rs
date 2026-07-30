@@ -32,11 +32,7 @@ pub const HTTP_BUFFER_POOLING: bool = true;
 /// on macOS that specifically impacts localhost and not
 /// other ipv4 hosts. This is a workaround for that.
 /// "localhost" fails to connect.
-///
-/// OHOS (musl) also needs this: getaddrinfo sorts ::1 before 127.0.0.1
-/// per RFC 6724, and bun's HTTP client doesn't fall back to the next
-/// address when the first one fails with ECONNREFUSED.
-pub const HARDCODE_LOCALHOST_TO_127_0_0_1: bool = env::IS_OHOS;
+pub const HARDCODE_LOCALHOST_TO_127_0_0_1: bool = false;
 
 /// React will issue warnings in development if there are multiple children
 /// without keys and "jsxs" is not used.
