@@ -1829,13 +1829,23 @@ test/napi/node-napi-tests/**（60 个子文件）
 
 ---
 
-## T49 — TLS WebSocket upgrade 超时（`node-http-with-ws.test.ts` test 2），class F
+## T49 — HongMeng 内核 connect() 同步 ECONNREFUSED 打断 autoSelectFamily JS 重试（class B，内核时序问题）
 
-**发现日期**：2026-07-30
+**发现日期**：2026-07-30  
+**根因定位日期**：2026-07-30
 
-**现象**：`should not crash when closing sockets after upgrade` 测试 90s 超时。HTTPS server on 127.0.0.1，`tls.connect` → 写 HTTP 请求 + WebSocket upgrade → 等待回包。连接成功（autoSelectFamily 回落生效），但 WebSocket upgrade 响应永不返回。
+**现象**：`tls.connect({port})` 默认走 `localhost` → `::1` ECONNREFUSED，autoSelectFamily 应该回落 `127.0.0.1` 但不回落。
 
-**状态**：待深挖（非 ::1 问题，新 class F）
+**根因**：HongMeng 内核上 `connect()` 到 `::1` 的 ECONNREFUSED 完成得极快（同步返回），uSockets 的 socket 关闭触发 `Socket.prototype._destroy` → `this.connecting = false`，发生在 `afterConnectMultiple` 检查 `context.socket.connecting` **之前**。Linux 上异步延迟让 JS 重试逻辑先执行。
+
+**复现**：`net.createConnection({host:"localhost", port})` or `tls.connect({port})` with server on 127.0.0.1 — autoSelectFamily 重试有时成功有时不成功，取决于内核事件时序。
+
+**影响文件**：
+- `test/js/node/http/node-http-with-ws.test.ts` test 2 — TLS WebSocket upgrade 90s 超时（`tls.connect({port})` 连不上 server → 数据永不流动）
+
+**缓解方案**：传 `{host:"127.0.0.1"}` 或 `{autoSelectFamilyAttemptTimeout: 5000}` 给 TLS socket 可绕过。
+
+**状态**：class B（内核时序差异，非 bun 代码 bug），暂不修复。
 
 ---
 
