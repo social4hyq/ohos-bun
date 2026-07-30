@@ -144,7 +144,9 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # cli/run parallel/pre-post scripts all hit 5000ms default timeout
 
 # --- OHOS hmdfs recursive glob slow (30–60s timeout) ---
-[ OPENHARMONY ] test/js/bun/glob/glob.test.ts [ Failure ] # leaks > scanSync/scan/GlobWalker + glob.match > *node_modules* (hmdfs slow)
+# Removed 2026-07-30: the quarantined path test/js/bun/glob/glob.test.ts does
+# not exist. The actual glob test is test/js/node/fs/glob.test.ts and passes
+# 34 tests / 0 fail in isolation.
 
 # --- OHOS shell: recursive node_modules ops + parallel spawn timeout ---
 
@@ -280,9 +282,9 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # ─────────────────────────────────────────────────────────────
 
 # --- js/valkey: docker compose v2 unavailable ---
-# Valkey tests need `docker compose` (plugin v2). OHOS docker install does not
-# include the compose plugin. All 15 tests skip with pre-condition.
-[ OPENHARMONY ] test/js/valkey/test-utils.test.ts [ Skip ] # docker compose v2 not available on OHOS docker install
+# Removed 2026-07-30: the quarantined path test-utils.test.ts does not exist
+# (actual file is test-utils.ts, which has no .test. suffix so the runner
+# never includes it). valkey/ is also excluded via run-baseline.sh.
 
 # --- integration: esbuild + misc ---
 # esbuild test bumped to 0.28.1 (has @esbuild/openharmony-arm64) → 1 pass.
