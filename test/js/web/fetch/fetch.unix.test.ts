@@ -22,6 +22,9 @@ it("throws ENAMETOOLONG when socket path exceeds platform-specific limit", () =>
       android: 104,
       haiku: 104,
       cygwin: 260,
+      // Same AF_UNIX sun_path limit as the Linux ABI (108); without an entry
+      // the path was `repeat(undefined)` — an empty string that never threw.
+      openharmony: 108,
     }[process.platform],
   );
 
