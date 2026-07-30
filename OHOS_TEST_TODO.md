@@ -1858,3 +1858,82 @@ http.request({host:"localhost", port:p, agent:false})
 5. **`spawn-stdin-large-buffer.test.ts`**——数据完整性问题（大 buffer 丢数据），优先级高于其他长尾单点，值得单独立项深挖。
 6. **T03（PTY/Terminal）**——新发现的规模较大的簇,建议先摸底根因（可能一次修复解决 7 个文件）。
 7. **T18（bake dev）**——投入产出比需要产品层面先拍板要不要投入。
+
+---
+
+## T45 — bundler CJS→ESM 转译：`exports is not defined`（class A，待修，需容器重编）
+
+**发现日期**：2026-07-30 r42 全量基线
+
+**文件**：`test/bundler/bundler_cjs2esm.test.ts`（2 失败）
+
+**现象**：`ModuleExportsRenamingNoDeopt`、`ModuleExportsRenamingAssignExportsDeOpt` 两个 CJS→ESM 转译测试，产物 `exports is not defined`。
+
+**根因推测**：bun build 的 CJS→ESM 转换在识别 `module.exports` 重命名模式时，生成的 ESM 输出仍引用 `exports` 标识符，但 ESM 模块作用域无此全局。
+
+**状态**：待修
+
+---
+
+## T46 — bundler DCE（死代码消除）不彻底：应被 tree-shake 的代码被保留（class A，待修，需容器重编）
+
+**发现日期**：2026-07-30 r42 全量基线
+
+**文件**：`test/bundler/esbuild/dce.test.ts`（2 失败，PackageJsonSideEffectsGlob* 系列）
+
+**现象**：tree-shaking 后输出多了 `"shallow side effect - should be tree shaken"` 和 `"deep side effect - should be preserved"`——前一行不该出现。
+
+**根因推测**：Package.json `sideEffects` glob 模式匹配在 OHOS 上可能返回不同结果（readdir 顺序差异），导致 bun 误判某文件有副作用而保留。
+
+**状态**：待修
+
+---
+
+## T47 — bundler `import *` 命名空间：空文件属性访问返 `undefined` 而非 `{}`（class A，待修，需容器重编）
+
+**发现日期**：2026-07-30 r42 全量基线
+
+**文件**：`test/bundler/esbuild/importstar.test.ts`（1 失败，ImportNamespaceUndefinedPropertyEmptyFile）
+
+**现象**：
+- Expected: `"{} undefined {}"`
+- Received: `"undefined undefined {}"`
+
+导入一个空文件的命名空间，访问不存在的属性时返回 `undefined`，而预期返回 `{}`（空对象）。`import * as ns from "./empty"` 后 `ns.prop` 的值不对。
+
+**状态**：待修
+
+---
+
+## T48 — bundler require() in ESM scope：ESM 下 `require()` 报 ReferenceError（class A/B，待评估）
+
+**发现日期**：2026-07-30 r42 全量基线
+
+**文件**：`test/bundler/resolver/cache-node-compat.test.ts`（2 失败）
+
+**现象**：`ReferenceError: require is not defined in ES module scope, you can use import instead`
+
+测试期望在 `.js` 文件（`"type": "module"` 的 package 下）中调用 `require()` 能成功（Node.js 兼容模式），但 bun 直接报 ReferenceError。这是 bun 对 ESM/CJS 边界处理比 Node 更严格。
+
+**状态**：待评估（可能是设计决策，不一定是 bug）
+
+---
+
+## cli/install class C 快速记录（不修，仅存档）
+
+以下 cli/install 失败均为 class C（错误信息措辞/exit code 行为变化），**不列入修复计划**：
+
+| 文件 | 现象 |
+|------|------|
+| `bun-audit` | 缺 lockfile 报 "Lockfile not found" 而非 "No package.json" |
+| `bun-pack` | 空 pkg.json 报 "must have name+version" 而非 "No package.json" |
+| `bun-pm-pkg` | 缺 pkg.json 时 exit 0 而非 1 |
+| `bun-pm-scan` | 缺 pkg.json 报 "no security scanner configured" 而非 "No package.json" |
+| `bun-pm-version` | 缺 pkg.json 时 stderr 为空 |
+| `bun-info` | `pm view .` snapshot 不匹配 |
+| `run-quote` | `--filter` 空参数行为差异 |
+| `bun-upgrade` | OHOS 无对应二进制可下载（class D） |
+| `bunx` | `--no-install` 无缓存包（class D） |
+| `bun-security-scanner-matrix*` | exit 143 SIGTERM（待查，可能与 TMPDIR 残留有关） |
+| `filter-workspace` | 输出全空（待查） |
+| `bun-install-registry` | reinstall 含 "error:"（待查） |
