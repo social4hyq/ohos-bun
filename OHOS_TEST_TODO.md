@@ -1814,6 +1814,41 @@ test/napi/node-napi-tests/**（60 个子文件）
 
 ---
 
+## T44 — Bun HTTP 客户端不回落地址族：`localhost` 解析出 `::1` + `127.0.0.1`，只试 `::1` 不回落 IPv4（class A，待修，需容器重编）
+
+**发现日期**：2026-07-30 r42 全量基线
+
+**现象**：8 个文件 9 个失败，全是 `connect ECONNREFUSED ::1:<port>`。Server 绑 `127.0.0.1`（IPv4），但测试用 `http.request({host: "localhost", ...})` 连接，DNS 解析返回 `[::1, 127.0.0.1]`，客户端只试 `::1` 然后放弃，不回落 `127.0.0.1`。
+
+**最小复现**：
+```bash
+bun -e '
+const http = require("http"); const net = require("net"); const { once } = require("events");
+const s = net.createServer(); s.listen(0, "127.0.0.1"); await once(s, "listening");
+const p = s.address().port;
+http.request({host:"localhost", port:p, agent:false})
+  .on("error", e => console.log(e.code)); // ECONNREFUSED
+'
+```
+
+**根因**：Bun HTTP 客户端的 DNS 解析（内部 getaddrinfo 或 c-ares）走 musl，按 RFC 6724 排序：IPv6 优先。收到 `[::1, 127.0.0.1]` 后只用第一个地址，不回落。`--dns-result-order=ipv4first` 对 `dns.lookup` 生效但 HTTP 客户端不走那条路。`/etc/hosts` 已让 `127.0.0.1` 排在 `::1` 前，但 musl `getaddrinfo` 不遵从 hosts 顺序。
+
+**修复方向**：`src/` 网络层让 HTTP 客户端遍历 `getaddrinfo` 返回的完整地址列表，遇 ECONNREFUSED 试下一个。
+
+**受影响文件**（9 个失败，修一个全部解）：
+- `test/js/node/http/node-http-transfer-encoding.test.ts`
+- `test/js/node/http/node-http-with-ws.test.ts`
+- `test/js/node/tls/ssl-ctx-cache.test.ts`
+- `test/js/bun/test/parallel/test-http-should-allow-numbers-headers...ts` (B1+B3 各一次)
+- `test/js/bun/test/parallel/test-http-should-support-localAddress.ts`
+- `test/js/node/test/parallel/test-http-proxy-request-no-proxy-domain.mjs`
+- `test/js/third_party/http2-wrapper/http2-wrapper.test.ts`
+- `test/js/third_party/remix/remix.test.ts`
+
+**状态**：待修（需容器重编，src/ 改动）
+
+---
+
 ## 下一轮优先级建议
 
 1. ~~T01~~ —— **已修复并真机验证**（`e39db04d6`，9/9 文件转绿）。陈旧 quarantine 已清（class E 11 个文件删除）。

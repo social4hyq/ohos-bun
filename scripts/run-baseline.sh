@@ -11,6 +11,9 @@ mkdir -p "$OUT/iso"
 
 # 清理历史 vendored test 残骸（T06 教训）
 rm -rf test/js/node/test/.tmp.* 2>/dev/null
+# 清理 TMPDIR 残留（stale package.json 致 Workspace not found）
+rm -f /data/storage/el2/base/tmp/package.json 2>/dev/null
+rm -rf /data/storage/el2/base/tmp/buntmp-* 2>/dev/null
 
 run_batch() {
   name=$1; shift
