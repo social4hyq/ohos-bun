@@ -8,6 +8,7 @@ import {
   isDebug,
   isIntelMacOS,
   isLinux,
+  isOHOS,
   isPosix,
   isWindows,
   tempDir,
@@ -4390,7 +4391,11 @@ describe("utimesSync", () => {
   });
 
   // Windows wraps pre-epoch times through u32, matching Node (see Stat.rs)
-  it.skipIf(isWindows)("sets pre-epoch times from negative fractional string timestamps", () => {
+  // The device filesystem clamps pre-epoch timestamps to 0 (verified by probe:
+  // after utimesSync("-1.5"), statSync reports 0 — and node on the same device
+  // returns 0 identically), so the -1500 expectation is physically
+  // unsatisfiable there.
+  it.skipIf(isWindows || isOHOS)("sets pre-epoch times from negative fractional string timestamps", () => {
     const tmp = join(tmpdir(), "utimesSync-test-file-" + Math.random().toString(36).slice(2));
     writeFileSync(tmp, "test");
 
