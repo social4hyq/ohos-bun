@@ -986,24 +986,112 @@ node scripts/runner.node.mjs --exec-path=<bun> --results-json=logs/refail-serial
 
 ## 2026-07-31 — 全量基线重跑（本地 runner，triage 模式）
 
-**命令**：`bash scripts/run-baseline.sh`（`--ignore-expectations=OPENHARMONY`，含 quarantine 一起跑，3.2h）
+### 方法论
 
-| | 数值 |
-|---|---|
-| 总 test 数 | 5486（B1-B7 实跑） |
-| 通过 | 5433（99.03%） |
-| 失败 | 49（dedup 约 45 test 文件） |
+- **命令**：`bash scripts/run-baseline.sh`（`--ignore-expectations=OPENHARMONY`，含所有 quarantine 一起跑；正式 baseline 带 expectations 则 quarantine 文件 vanish）
+- **时长**：3.2h（11:56→15:17，OHOS fork/PTY/memory-leak 测试慢；B3 cli/bundler 86min 最慢，B6 vendored 3248 test 仅 12min 因 runner 并发）
+- **产物**：`logs/baseline-2026-07-31/`（`B1-B7.log` + `B1-B7.json`）
+- **排除**：`--exclude=js/bun/terminal --exclude=js/bun/repl/repl --exclude=js/valkey --exclude=integration/bun-types --exclude=internal/source-lints --exclude=js/node/test`（B6 单独跑）
 
-**49 fail 全部分类**：26 旧 quarantine（已在 expectations）+ 23 新：
-- 10 T49（ADDRCONFIG localhost→::1，Explore 盲区 `test/js/bun/test/parallel` / `third_party` / `node/test/parallel`）
-- 5 class B 平台（PTY 3 / exec 信号 2 / EISDIR hmdfs / spawn EPIPE / shell ls）
-- 2 class C 测试自身（process 版本硬编码 / security-scanner exitCode）
-- 4 class D 环境（外网 DNS 3 + Docker valkey + grpc timeout + expo 构建 + happy-dom 外网）
-- 1 class A 上游（T35 per-Worker 泄漏，已 quarantine，等 upstream fix）
-- 1 T49 tls-connect（:154 `tls.connect` 省略 host）
+### B1-B7 各批实际数字
 
-**0 本地 class A**（bun 代码 bug）。全 27 新 fail 已 quarantine（expectations `[OPENHARMONY]` 29→57）。
+| 批 | 内容 | total | pass | fail | 备注 |
+|---|---|---|---|---|---|
+| B1 | js/bun | 559 | 551 | 7 | |
+| B2 | regression/napi/internal/v8/config | 541 | 535 | 6 | handoff 说 ~0，实际 6（PTY/dns/issue） |
+| B3 | cli/bundler | 441 | 432 | 9 | 86min，runner timeout 重试拖慢 |
+| B4 | js/web+third_party+sql+deno | 370 | 358 | 11 | grpc/remix/http2-wrapper |
+| B5 | js/node（除 vendored）| 304 | 296 | 7 | 含 T49 quarantined（node-http-with-ws, transfer-encoding）|
+| B6 | vendored node（从 node 上游同步）| 3248 | 3245 | 3 | exec 信号/HTTP_PROXY |
+| B7 | integration | 23 | 16 | 6 | next-pages/expo/sharp/valkey |
+| **合计** | | **5486** | **5433(99.03%)** | **49（45 test 文件）** | |
 
-**正式 baseline**（quarantine 生效）：分母约 5000+ tests，0 已知未隔离 fail。跳过约 113 文件（结构性 exclude ~56 + quarantine 57）。
+### 49 fail 全部分类
 
-**T49 全闭环**：根因定位为 HarmonyOS `getaddrinfo` ADDRCONFIG 缺陷（过滤 IPv4 loopback），推翻原 handoff 记载的"kernel connect 同步 ECONNREFUSED"。10 受害者全 expectations 隔离（不改测试源码）。三份文档一致：`OHOS_TEST_TODO.md` / `docs/ohos-bun-handoff.md` / memory。
+**旧 quarantine（26）**：已在 `expectations.txt [OPENHARMONY]`，triage 跑出来，正式 baseline 已隔离。含 PT_PTRBR/PTY/wasi/astro/resvg/sharp/prisma/rspack/next-pages/bun-build-compile/grpc-js 等。
+
+**新发现（23 fail，27 条 expectations 条目）**：
+
+**T49（ADDRCONFIG localhost→::1）— 10 受害者，全 quarantine：**
+
+| 文件 | 批 | client 连 localhost？ |
+|---|---|---|
+| `test-http-should-support-localAddress.ts` | B1 | ✓ `http://localhost:...` |
+| `test-http-should-allow-numbers-headers-...ts` | B1,B3 | ✓ `http://localhost:...` |
+| `http2-wrapper.test.ts` | B4 | ✓ host:`localhost` |
+| `remix.test.ts` | B4 | ✓ `.request(http://localhost:...)` |
+| `ssl-ctx-cache.test.ts` | B5 | :189 `tls.connect({port,...})` 省略 host → localhost→::1 |
+| `node-http-with-ws.test.ts` | B5 | `tls.connect({port})` 省略 host（已 quarantine，之前 workaround 回滚） |
+| `node-http-transfer-encoding.test.ts` | B5 | `host:"localhost"`（同上） |
+| `test-http-proxy-request-no-proxy-domain.mjs` | B6 | `HTTP_PROXY: http://localhost:...` |
+| `grpc-js/test-server.test.ts` | B4 | `connect ECONNRESET ::1` |
+
+T49 根因见下节。Explore 之前只扫了 `test/js/node/` + `test/js/node/test/`，漏了 `test/js/bun/test/parallel/`、`third_party/`、`node/test/parallel/` 的 T49 受害。本轮全量跑全网筛查补全。
+
+**class B 平台（5-9）：** shell-load（90s PTY timeout）、26286（Bun.Terminal 90s）、tty（90s）、watch-many-dirs（EISDIR hmdfs）、exec-timeout-expire（exec 信号 null+143，OHOS vs Linux 差异）、execsync（同上）、spawn-stdin-destroy（EPIPE child exit before stdin flush）、shell/commands/ls（bun shell ls hmdfs 输出差异）
+
+**class C 测试自身（2）：** process.test.js（硬编码 `v26.3.0`，实际 bun node compat `v26.5.0`）、bun-security-scanner-matrix（exitCode 不匹配 OHOS env）
+
+**class D 环境/外网/缺依赖（5）：** resolve-dns/test/22712.test.ts/node-dns.test.js（getaddrinfo ESERVFAIL/queryA ENOTFOUND/queryNaptr ENOTIMP 查 example.com/dns.google/socketify.dev——沙盒外网 DNS 不可达）、happy-dom-vm-16277（ECONNREFUSED facebook IP:443）、valkey/complex-operations（Docker Redis 连不上）、grpc-js/test-outlier-detection（90s timeout 网络）、expo-app（构建 exit≠0）
+
+**class A 上游（1）：** message-port-context-destroy-leak（T35 per-Worker 泄漏 ~1.4MB/周期，MessagePort 只是放大器，ohos-bun 曾尝试修复无效 `83215c4bf`，等上游 fix）。**0 本地 class A。**
+
+### T49 完整调查路径（推翻 handoff 原记载）
+
+1. **handoff 原记载**（`ef402afa3`）：kernel connect 同步 ECONNREFUSED 打断 autoSelectFamily JS 重试，nextTick 包裹能修
+2. **trace-shim 免重编**（`libohos_trace.so` 抓 connect/close 时序）：证实 `connect(::1)` 返回 **EINPROGRESS**（errno 115）而非同步 ECONNREFUSED；失败 case 无 IPv4 回落 socket 创建
+3. **读 native socket 代码**（`socket_body.rs`）：connect 失败走 `on_connect_error`（非 `on_close`），confirm 不起 destroy
+4. **重编探针 bun**（net.ts `[T49-DIAG]` A/B/C 三探针，容器 brew build-from-source 19min）：探针全不触发 → autoSelectFamily 路径根本没走
+5. **custom lookup 诊断**（test/js/bun/test/parallel）：`connectionAttemptFailed` 来自单地址 afterConnect（:3396）非 afterConnectMultiple；`lookup("localhost", {hints:ADDRCONFIG})` 只返回 `[::1/f6]`（count=1）
+6. **hints 对比**：`hints=0` → `[::1/f6, 127.0.0.1/f4]`；`hints=ADDRCONFIG` → `[::1/f6]`（8/8 稳定）。系统 lo 接口有 `inet 127.0.0.1`——HarmonyOS `getaddrinfo` ADDRCONFIG 实现**错误过滤 IPv4 loopback**
+7. **代码链**：`toAttempt.length===1`（`net.ts:3006`）→ 切回单地址 `internalConnect` → afterConnect → ::1 fail 无回落。**非 bun 缺陷**，是平台 dns bug
+8. **受影响面**：Explore 扫描发现 3 受害者（node-http-with-ws/transfer-encoding/node-http.test.ts:983 上游已修）→ baseline 全量再挖 7 受害者（漏扫 test/js/bun/test/parallel/third_party/node/test/parallel）。共 10，全部 expectations 隔离（不改测试源码）
+9. **workaround 回滚**：host:127.0.0.1 workaround（50f3c695b/4153026ed）回滚改用 expectations（def54b130），遵循"不改测试源码绕平台 bug"原则（memory feedback_dont_modify_tests.md）
+
+### expectations 增长明细（29→57）
+
+| 阶段 | 条目数 | 操作 |
+|---|---|---|
+| 基线前 | 29 | — |
+| T49 workaround + revert | 31 | +2（node-http-with-ws/transfer-encoding）后回滚-2=31 |
+| T49 + dns 外网（batch 1） | 40 | +9（6 T49 + 3 dns class D） |
+| PTY/exec/外网/Docker（batch 2） | 51 | +11 |
+| 零星 class B/C + tls-connect（batch 3） | 56 | +5 |
+| message-port-leak T35 upstream | 57 | +1 |
+| **合计** | **57（+28）** | 新 quarantine 31 条（T49 10 + dns 3 + 平台 11 + C/D 5 + T35） |
+
+### 跳过规模
+
+| 层 | 文件数 | 说明 |
+|---|---|---|
+| 结构性 exclude | ~56 | bake 24 / valkey 15 / source-lints 10 / bun-types 4 / terminal 3 / repl 0 |
+| expectations quarantine | 57 | per-file（`runner.node.mjs:182`）整文件 vanish |
+| **合计** | **~113 文件** | test 级更大（每文件多 test） |
+
+### 处理后正式 baseline 预估
+
+正式 baseline（quarantine 生效，57 expectations 隔离，exclude ~56 目录）：分母 ~5000+ tests，0 已知未隔离 fail。PTY/Docker/缺原生二进制/平台 dns bug 整块跳过。
+
+### 本轮 commit 链（ohos-aarch64，从上轮 handoff 起始 `634e9b5da` 起）
+
+```text
+# T49 定位
+db7c128cc docs: correct T49 root cause (TODO) — ADDRCONFIG, not kernel race
+f46252ad3 docs(handoff): correct T49 root cause same (handoff 原文已删除)
+# T49 workaround 尝试（后回滚）
+50f3c695b test: node-http-with-ws workaround (host:127.0.0.1)
+588b5122f docs(T49): mark workaround applied
+4153026ed test: node-http-transfer-encoding workaround (host:127.0.0.1)
+af8df9cb6 docs(T49): list all 3 affected tests
+0e7752b56 docs(T49): vendored swept, 0 victims
+# workaround 回滚 + 改 expectations
+def54b130 test: revert host:127.0.0.1 workarounds, isolate via expectations
+# 全量 baseline + 27 fail 分类 + quarantine
+4050f8fb8 test: quarantine 6 more T49 + 3 external-DNS (batch 1)
+7b1ee86b9 test: quarantine 11 more PTY/exec/外网/Docker + grpc T49 (batch 2)
+d09f27ee0 test: quarantine 5 more process/spawn/shell/security/tls-connect (batch 3)
+d0975c65d test: quarantine message-port-context-destroy-leak (T35 upstream)
+# 文档整合
+b6be9d4f2 docs(handoff): update to post-baseline status (5486 tests, 0 local class A)
+1b8ca2792 docs: fold handoff into TODO + STATUS; remove handoff doc
+```

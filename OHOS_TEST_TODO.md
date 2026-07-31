@@ -1986,24 +1986,118 @@ r42 基线 94 失败全部分析完毕后，对平台限制类（class B）和�
 
 ## 2026-07-31 全量 baseline 重跑（triage 模式）
 
-**命令**：`bash scripts/run-baseline.sh`（含 `--ignore-expectations=OPENHARMONY`，quarantine 一起跑，3.2h，因 OHOS fork/PTY 慢）。详见 `OHOS_TEST_STATUS.md#2026-07-31`。
+`bash scripts/run-baseline.sh`（含 `--ignore-expectations=OPENHARMONY`，quarantine 一起跑），3.2h，产物 `logs/baseline-2026-07-31/`。方法/环境详见 `OHOS_TEST_STATUS.md#2026-07-31`。
 
-| | 数值 |
-|---|---|
-| 总 test 数 | 5486（B1-B7） |
-| 通过 | 5433（99.03%） |
-| 失败 | 49（dedup） |
+### B1-B7 实际数字
 
-**49 fail 分类**（26 旧 quarantine + 23 新）：
-- 10 T49（ADDRCONFIG localhost→::1；Explore 之前漏扫 js/bun/test/parallel + third_party + node/test/parallel）
-- 5 class B（PTY 3/EISDIR hmdfs/exec 信号 2/spawn EPIPE/shell ls）
-- 2 class C（process 版本硬编码 v26.3.0 vs v26.5.0 / bun-security-scanner exitCode）
-- 4 class D（外网 DNS 3 + Docker valkey + grpc + expo + happy-dom 外网）
-- 1 class A 上游（T35 per-Worker leak，已 quarantine 等 upstream fix）
-- 1 T49 node-tls-connect（:154 `tls.connect` 省略 host）
+| 批 | total | pass | fail |
+|---|---|---|---|
+| B1 js/bun | 559 | 551 | 7 |
+| B2 regression/napi/internal/v8/config | 541 | 535 | 6 |
+| B3 cli/bundler | 441 | 432 | 9 |
+| B4 js/web+third_party+sql+deno | 370 | 358 | 11 |
+| B5 js/node（除 vendored）| 304 | 296 | 7 |
+| B6 vendored node（node/t*/）| 3248 | 3245 | 3 |
+| B7 integration | 23 | 16 | 6 |
+| **合计** | **5486** | **5433(99.0%)** | **49（45 文件）** |
 
-**0 本地 class A**（bun 代码 bug）。全 23 新 fail 已 quarantine（expectations `[OPENHARMONY]` 29→57）。
+### 49 fail 分类（26 旧 quarantine + 23 新）
 
-**正式 baseline**（quarantine 生效）：分母 ~5000+，0 已知未隔离 fail。跳过 ~113 文件（结构性 exclude ~56 + quarantine 57）。
+**新 23 fail（27 expectations 条目）**：
 
-**T49 闭环**：根因 HarmonyOS `getaddrinfo` ADDRCONFIG 过滤 IPv4 loopback（推翻原"kernel connect 同步 ECONNREFUSED"假说），10 受害者全 expectations 隔离（不改测试源码）。handoff doc 已删除（整合到本文 + STATUS）。
+**① T49（ADDRCONFIG localhost→::1）— 10 受害者**（Explore 之前漏扫 js/bun/test/parallel + third_party + node/test/parallel）：
+
+| 文件 | 批 | client 连接 | 根因 |
+|---|---|---|---|
+| `test/js/bun/test/parallel/test-http-should-support-localAddress.ts` | B1 | `http.request("http://localhost:...")` (:16) | server 127.0.0.1, client localhost→::1 |
+| `test/js/bun/test/parallel/test-http-should-allow-numbers-headers-...ts` | B1,B3 | `http.request("http://localhost:...")` (:18) | 同上 |
+| `test/js/third_party/http2-wrapper/http2-wrapper.test.ts` | B4 | server/client `host:"localhost"` | localhost 错配 |
+| `test/js/third_party/remix/remix.test.ts` | B4 | `.request("http://localhost:...")` (:28) | 同上 |
+| `test/js/node/tls/ssl-ctx-cache.test.ts` | B5 | :189 `tls.connect({port,caFile})` 省略 host | 默认 localhost→::1, server 127.0.0.1 |
+| `test/js/node/http/node-http-with-ws.test.ts` | B5 | `tls.connect({port})` 无 host | 同上（曾 workaround host:127.0.0.1，已回滚改 quarantine） |
+| `test/js/node/http/node-http-transfer-encoding.test.ts` | B5 | `request({host:"localhost"})` (:41) | server 127.0.0.1, client localhost→::1 |
+| `test/js/node/test/parallel/test-http-proxy-request-no-proxy-domain.mjs` | B6 | `HTTP_PROXY: http://localhost:...` | proxy server 127.0.0.1, client localhost→::1 |
+| `test/js/third_party/grpc-js/test-server.test.ts` | B4 | grpc client `connect ECONNRESET ::1` | localhost→::1 |
+
+**② class B 平台（~9）：**
+
+| 文件 | 批 | 错误 | 根因 |
+|---|---|---|---|
+| `test/js/bun/shell/shell-load.test.ts` | B1 | 90s timeout | OHOS PTY/spawn fork 慢 |
+| `test/regression/issue/26286.test.ts` | B2 | Bun.Terminal 90s | PTY seccomp（/dev/ptmx 拦） |
+| `test/js/node/tty.test.ts` | B5 | 90s timeout | setRawMode PTY seccomp |
+| `test/cli/hot/watch-many-dirs.test.ts` | B3 | EISDIR reading dir | hmdfs watch 读目录 |
+| `test/js/node/test/parallel/test-child-process-exec-timeout-expire.js` | B6 | exec 信号 null+143 | OHOS exec 信号 vs Linux 差异（upstream TODO comment line 32） |
+| `test/js/node/test/sequential/test-child-process-execsync.js` | B6 | execSync 时序差异 | 同上 |
+| `test/js/bun/spawn/spawn-stdin-destroy.test.ts` | B1 | EPIPE broken pipe | child exits before stdin flush（OHOS spawn stdin 时序较快） |
+| `test/js/bun/shell/commands/ls.test.ts` | B1 | ShellError exit 1 | bun shell ls hmdfs 输出差异 |
+| `test/js/node/vm/happy-dom-vm-16277.test.ts` | B5 | ECONNREFUSED 69.171.235.22:443 | **class D**：连 facebook 外网，沙盒禁 |
+
+**③ class C 测试自身（2）：**
+
+| 文件 | 批 | 错误 |
+|---|---|---|
+| `test/js/node/process/process.test.js` | B5 | expect v26.3.0, received v26.5.0（测试硬编码 node 版本，bun node compat 升级未更新测试） |
+| `test/cli/install/bun-security-scanner-matrix-with-node-modules.test.ts` | B3 | exitCode 不匹配（OHOS env） |
+
+**④ class D 环境/外网/缺依赖（3）：**
+
+| 文件 | 批 | 错误 |
+|---|---|---|
+| `test/js/bun/dns/resolve-dns.test.ts` | B1 | getaddrinfo ESERVFAIL example.com（沙盒外网 DNS 不可达） |
+| `test/regression/issue/22712.test.ts` | B2 | queryA ENOTFOUND dns.google（外网 DNS 受限） |
+| `test/js/node/dns/node-dns.test.js` | B5 | queryNaptr ENOTIMP / queryPtr ENOTFOUND socketify.dev（同上） |
+| `test/js/third_party/grpc-js/test-outlier-detection.test.ts` | B4 | 90s timeout（gRPC 网络/慢） |
+| `test/integration/expo-app/expo.test.ts` | B7 | 构建 exit≠0（慢/失败） |
+
+**⑤ class A 上游（1）：** `test/js/web/workers/message-port-context-destroy-leak.test.ts`（B4）— per-Worker 泄漏 ~1.4MB/周期，MessagePort（64000 个，每个 ~1KB）放大到 66MB RSS 增长。ohos-bun 曾尝试 contextDestroyed 清除 m_closeEventPending 标志（`44f5ac5cb`）实测无效（64→63MB 噪音），已确认为上游缺陷非 OHOS 特定。quarantine 等 upstream fix。详见 T35。
+
+**⑥ 其余（B6 vendored exec + B7 valkey）：** `test/js/node/test/parallel/test-http-proxy-request-no-proxy-domain.mjs` 归 T49；`test/js/valkey/integration/complex-operations.test.ts`（B7，Docker Redis 不可用，class D）。
+
+### T49 完整调查链（纠正 handoff 错误记载）
+
+1. **handoff 原说**：kernel connect 同步 ECONNREFUSED 打断 autoSelectFamily JS 重试，nextTick 包裹能修。
+2. **trace-shim**（`libohos_trace.so`，免重编）：证实 `connect(::1)` 返回 EINPROGRESS（errno 115，标准非阻塞），**非**同步 ECONNREFUSED；失败 case 无 IPv4 回落 socket。
+3. **读 native socket_body.rs**：connect 失败走 `on_connect_error`（非 `on_close`）→ 不起 destroy，connecting 不变。
+4. **重编探针 bun**（net.ts `[T49-DIAG]` A/B/C 三探针，容器 build-from-source 19min）：探针全不触发 → autoSelectFamily 根本未进入。
+5. **custom lookup 探测**：`connectionAttemptFailed` 来自单地址 afterConnect（:3396）；`lookup("localhost", {hints:ADDRCONFIG})` 只返回 `[::1/f6]`。
+6. **hints 对比**：`hints=0` → `[::1, 127.0.0.1]`；`hints=ADDRCONFIG` → `[::1]`（8/8 稳定）。系统 lo 有 `inet 127.0.0.1`。
+7. **真因**：HarmonyOS `getaddrinfo` ADDRCONFIG 实现错误过滤 IPv4 loopback → `toAttempt.length===1` → `net.ts:3006` 切单地址 `internalConnect` → afterConnect → ::1 fail 无回落。非 bun bug，平台 dns 缺陷（class B）。
+8. **受影响面**：Explore 扫出 3 个（全隔离）→ baseline 全量再挖 7 个。共 10，全 `[OPENHARMONY] [Failure]` quarantine。
+9. **原则落地**：workaround（host:127.0.0.1，改测试源码）回滚改用 expectations（不改源码）。memory `feedback_dont_modify_tests.md` 补充平台 bug expectations 兜底 + per-file quarantine 代价。
+
+### expectations 增长（29→57）
+
+| 批次 | +条 | 内容 |
+|---|---|---|
+| 基线前 | 29 | — |
+| T49 batch 1 | +9 | 6 T49 + 3 dns class D |
+| batch 2 | +11 | 3 PTY + 3 平台 + 4 class D + 1 grpc T49 |
+| batch 3 | +5 | process C / spawn B / shell ls B / security C / tls-connect T49 |
+| T35 upstream | +1 | message-port-context-destroy-leak |
+| **合计** | **57（+28）** | 旧 26 保留 + 新 31（7 T49 + 3 dns + 14 class B/C/D + T35 upstream） |
+
+### 本轮 commit 链（自 handoff 起始 `634e9b5da`）
+
+```text
+# T49 定位
+db7c128cc docs: correct T49 root cause (TODO) — ADDRCONFIG, not kernel race
+# T49 workaround 尝试（后回滚）
+50f3c695b test: node-http-with-ws workaround
+4153026ed test: node-http-transfer-encoding workaround
+# workaround → expectations
+def54b130 test: revert host:127.0.0.1 workarounds, isolate via expectations
+# 全量 baseline + 27 fail 分类 quarantine（4 batches）
+4050f8fb8 test: quarantine 6 T49 + 3 dns (9)
+7b1ee86b9 test: quarantine PTY/exec/外网/Docker + grpc (11)
+d09f27ee0 test: quarantine process/spawn/ls/security/tls-connect (5)
+d0975c65d test: quarantine message-port-context-destroy-leak T35 (1)
+# 文档整合
+b6be9d4f2 docs: update to post-baseline status
+1b8ca2792 docs: fold handoff into TODO + STATUS; remove handoff doc
+```
+
+### 处理后正式 baseline
+
+正式 baseline（quarantine 生效，57 expectations 隔离 + ~56 exclude 目录 vanish）：分母 ~5000+ tests，**0 已知未隔离 fail**。<br>
+跳过约 113 文件（结构性 exclude ~56 + quarantine 57），主要是 PTY/Docker/缺原生二进制/平台 dns bug。
