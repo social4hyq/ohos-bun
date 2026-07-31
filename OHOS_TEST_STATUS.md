@@ -988,33 +988,112 @@ node scripts/runner.node.mjs --exec-path=<bun> --results-json=logs/refail-serial
 
 ### 方法论
 
-- **命令**：`bash scripts/run-baseline.sh`（`--ignore-expectations=OPENHARMONY`，含所有 quarantine 一起跑；正式 baseline 带 expectations 则 quarantine 文件 vanish）
-- **时长**：3.2h（11:56→15:17，OHOS fork/PTY/memory-leak 测试慢；B3 cli/bundler 86min 最慢，B6 vendored 3248 test 仅 12min 因 runner 并发）
-- **产物**：`logs/baseline-2026-07-31/`（`B1-B7.log` + `B1-B7.json`）
-- **排除**：`--exclude=js/bun/terminal --exclude=js/bun/repl/repl --exclude=js/valkey --exclude=integration/bun-types --exclude=internal/source-lints --exclude=js/node/test`（B6 单独跑）
+- **命令**：`bash scripts/run-baseline.sh`（含 `--ignore-expectations=OPENHARMONY`，所有 quarantine 一起跑；正式 baseline 带 expectations 则 quarantine 文件 vanish）
+- **时长**：3.2h（11:56→15:17），B3 cli/bundler 86min 最慢（timeout 重试拖累），B6 vendored 3248 仅 12min（runner 并发）
+- **产物**：`logs/baseline-2026-07-31/`（`B1–B7.log` + `.json`）
+- **排除项**：`--exclude=js/bun/terminal --exclude=js/bun/repl/repl --exclude=js/valkey --exclude=integration/bun-types --exclude=internal/source-lints --exclude=js/node/test`（B6 单独跑）
 
-### 数字
+### B1–B7 各批实际数字
 
-5486 tests / 5433 pass (99.03%) / 49 fail（B1 559/7, B2 541/6, B3 441/9, B4 370/11, B5 304/7, B6 3248/3, B7 23/6）。
+| 批 | 内容 | total | pass | fail | 备注 |
+|---|---|---|---|---|---|
+| B1 | js/bun | 559 | 551 | 7 | |
+| B2 | regression / napi / internal / v8 / config | 541 | 535 | 6 | handoff 原说 ~0，实际 6（PTY/dns/regression） |
+| B3 | cli / bundler | 441 | 432 | 9 | 86min，runner timeout 重试拖慢 |
+| B4 | js/web + third_party + sql + deno | 370 | 358 | 11 | grpc / remix / http2-wrapper |
+| B5 | js/node（除 vendored）| 304 | 296 | 7 | 含 T49 quarantined（ws / transfer-encoding） |
+| B6 | vendored node（从 node 上游同步）| 3248 | 3245 | 3 | exec 信号 / HTTP_PROXY |
+| B7 | integration | 23 | 16 | 6 | next-pages ×3 / expo / sharp / valkey |
+| **合计** | | **5486** | **5433 (99.03%)** | **49** | |
 
-### 49 fail 分类
+### 49 fail 分类（26 旧 quarantine + 23 新）
 
-26 旧 quarantine + 23 新：10 T49/ADDRCONFIG + ~9 class B 平台 + 2 class C + 5 class D + 1 class A 上游（T35 per-Worker leak）。
-**0 本地 class A**（bun 代码 bug）。全 23 新已 quarantine，expectations `[OPENHARMONY]` 29→57。
+**新发现 23 fail 逐类清单**（全 quarantine，0 本地 class A）：
 
-各 fail 的逐文件根因分析见 [问题簿](#问题簿按-txx-索引) 对应 T 条目（T49 ADDRCONFIG / T35 / 平台 PTY / class D 外网 DNS / class C 测试自身）。
+**T49（ADDRCONFIG localhost → ::1）— 10 受害者：**
 
-### expectations 增长
+| 文件 | 批 | client 连接 |
+|---|---|---|
+| `test-http-should-support-localAddress.ts` | B1 | `http.request("http://localhost:…")` |
+| `test-http-should-allow-numbers-headers-…ts` | B1,B3 | 同上 |
+| `http2-wrapper.test.ts` | B4 | server/client `host:"localhost"` |
+| `remix.test.ts` | B4 | `.request("http://localhost:…")` |
+| `ssl-ctx-cache.test.ts` | B5 | :189 `tls.connect({port,caFile})` 省略 host |
+| `node-http-with-ws.test.ts` | B5 | `tls.connect({port})` 无 host |
+| `node-http-transfer-encoding.test.ts` | B5 | `request({host:"localhost"})` |
+| `test-http-proxy-request-no-proxy-domain.mjs` | B6 | `HTTP_PROXY: http://localhost:…` |
+| `grpc-js/test-server.test.ts` | B4 | `connect ECONNRESET ::1` |
 
-29→57（+28）：T49 workaround 尝试（+2 后回滚）→ 全量 baseline sweep 四批 quarantine（+9/+11/+5/+1）。详细见 [问题簿段尾](#expectations-收口)。
+Explore 之前只扫 `js/node/` + `js/node/test/`，漏了 `js/bun/test/parallel/`、`third_party/`、`node/test/parallel/` 的 T49 受害者。本轮全网扫全。
+
+**class B 平台（~9）：** shell-load（90s PTY）、26286（Bun.Terminal 90s）、tty（90s PTY）、watch-many-dirs（EISDIR hmdfs）、exec-timeout-expire（信号 null+143）＋ execsync（时序差异）、spawn-stdin-destroy（EPIPE child exits before stdin flush）、shell/commands/ls（bun shell ls hmdfs 输出差异）
+
+**class C 测试自身（2）：** process.test.js（硬编码 `v26.3.0`，实际 v26.5.0）、bun-security-scanner-matrix（exitCode mismatch）
+
+**class D 环境（5）：** resolve-dns / 22712 / node-dns.js（外网 DNS ESERVFAIL / ENOTFOUND / ENOTIMP）、happy-dom-vm（外网 69.171.235.22:443）、valkey/complex-operations（Docker Redis 不可达）、grpc-outlier（90s network timeout）、expo（构建 ≠0）
+
+**class A 上游（1）：** message-port-context-destroy-leak（T35 per-Worker leak ~1.4MB/cycle，ohos-bun 曾尝试修复无效，confirmed upstream bug，等上游）
+
+**处理**：23 新 fail 全 `[ OPENHARMONY ] [ Failure ]` quarantine，expectations 29→57。
+
+### T49 根因定位（九步，推翻原 handoff 记载）
+
+原 handoff 说"kernel connect 同步 ECONNREFUSED 打断 autoSelectFamily JS 重试，nextTick 能修"——全错。</br>
+1. **trace-shim**：`connect(::1)` 返回 EINPROGRESS（errno 115），非同步 ECONNREFUSED
+2. **native socket_body.rs**：connect 失败走 `on_connect_error`（非 `on_close`），不起 destroy
+3. **重编探针 bun**：`[T49-DIAG]` 三探针全不触发 → 根本没走 autoSelectFamily
+4. **lookup 探测**：`lookup("localhost", {hints:ADDRCONFIG})` 只返回 `[::1/f6]`；`hints=0` → `[::1, 127.0.0.1]`
+5. **真因**：HarmonyOS `getaddrinfo` ADDRCONFIG 错误过滤 IPv4 loopback（lo 接口有 `inet 127.0.0.1`，不该过滤）
+6. **完整链**：`toAttempt.length===1` → `net.ts:3006` 切单地址 `internalConnect` → afterConnect → ::1 fail 无回落。**非 bun 缺陷，是平台 dns bug。**
+详见 [问题簿 T49](#t49--harmonyos-getaddrinfo-addrconfig-错误过滤-ipv4-loopbackclass-b平台-dns-缺陷)。
+
+### expectations 增长（29 → 57）
+
+| 批次 | 条目 | 内容 |
+|---|---|---|
+| 基线前 | 29 | — |
+| batch 1 | +9 | 6 T49 + 3 dns class D |
+| batch 2 | +11 | PTY ×3 + 信号 ×2 + EISDIR + 外网/valkey/expo + grpc T49 |
+| batch 3 | +5 | process / spawn / ls / security-scanner / tls-connect |
+| batch 4 | +1 | T35 upstream |
+| **合计** | **57 (+28)** | 旧 26 + 新 31 |
 
 ### 跳过规模
 
-结构性 exclude ~56 文件（bake 24 / valkey 15 / source-lints 10 / bun-types 4 / terminal 3）+ expectations quarantine 57 文件（per-file vanish）= **~113 文件**。
+| 层 | 文件数 | 说明 |
+|---|---|---|
+| 结构性 exclude | ~56 | bake 24 / valkey 15 / source-lints 10 / bun-types 4 / terminal 3 |
+| expectations quarantine | 57 | per-file（`runner.node.mjs:182`）整文件 vanish |
+| **合计** | **~113** | test 级更大（每文件多 test） |
 
-### 正式 baseline
+### 正式 baseline 结论
 
-Quarantine + exclude 生效后：分母 ~5000+ tests，**0 已知未隔离 fail**。跳过整块为 PTY/Docker/缺原生二进制/平台 dns bug。
+Quarantine 生效（57 expectations 隔离）+ exclude ~56 目录 vanish → 分母 ~5000+ tests，**0 已知未隔离 fail**。</br>
+跳过整块为 PTY/Docker/缺原生二进制/平台 dns bug，无本地 class A 需修。问题簿 40+ Txx 条目覆盖每个 issue 的根因/验证/修复状态。
+
+### 本轮 commit 链（ohos-aarch64，从上轮 handoff 起）
+
+```text
+# T49 根因纠正
+db7c128cc docs: correct T49 root cause — ADDRCONFIG, not kernel race
+# T49 workaround 尝试（后回滚）
+50f3c695b test: node-http-with-ws workaround
+4153026ed test: node-http-transfer-encoding workaround
+# workaround → expectations
+def54b130 test: revert workarounds, isolate via expectations
+# 全量 baseline + 27 fail 逐批 quarantine
+4050f8fb8 test: quarantine 6 T49 + 3 dns (batch 1)
+7b1ee86b9 test: quarantine PTY/exec/外网/Docker + grpc (batch 2)
+d09f27ee0 test: quarantine process/spawn/ls/security/tls-connect (batch 3)
+d0975c65d test: quarantine message-port-context-destroy-leak T35
+# 文档整合
+b6be9d4f2 docs: update baseline status
+1b8ca2792 docs: fold handoff into TODO + STATUS
+b02eccce1 docs: merge TODO into STATUS
+a811eaeb8 docs(STATUS): fix heading hierarchy + anchors
+24119a307 docs(STATUS): fix stale references
+```
+
 ## 问题簿（按 Txx 索引）
 
 ### T01 — EL2 沙盒下子进程 `getcwd()` 内核级失效；bun 没有像 shell 一样用 `$PWD` 兜底（已修复并真机验证）
