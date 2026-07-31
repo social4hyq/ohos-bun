@@ -1844,8 +1844,12 @@ test/napi/node-napi-tests/**（60 个子文件）
 
 **推翻的原假说**：~~kernel connect 同步 ECONNREFUSED 打断重试~~、~~close→destroy 抹 connecting~~、~~nextTick 包裹重试~~——全部错层，根因在 dns 解析而非 connect 时序。
 
-**影响文件**：
-- `test/js/node/http/node-http-with-ws.test.ts` test 2 — TLS WebSocket upgrade 超时
+**受影响测试（均已 workaround）**：
+- `node-http-with-ws.test.ts` test 2 — `tls.connect` 显式 `host:"127.0.0.1"`（`50f3c695b`，2/2 pass）
+- `node-http-transfer-encoding.test.ts` — `http.request` `host:"127.0.0.1"`（`4153026ed`，23/23 pass）
+- `node-http.test.ts:983` "supports custom tls args" — 上游已修（显式 hostname，先例）
+
+Explore thorough 扫 `test/js/node/{http,net,tls,http2}` + `test/integration/`，其余均为假阳性（server 绑 0.0.0.0/localhost、client 显式 127.0.0.1、localhost 仅 header/SNI）。vendored node tests（B6）未扫。
 
 **缓解方案**：`{host:"127.0.0.1"}`、`{family:4}` 或 `{hints:0}`。bun 层可考虑对 localhost 免 ADDRCONFIG；根本是 HarmonyOS ADDRCONFIG bug。
 
