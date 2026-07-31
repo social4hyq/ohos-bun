@@ -356,6 +356,8 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # is building a FUSE mount, so nothing in them can run.
 [ OPENHARMONY ] test/cli/run/glob-on-fuse.test.ts [ Skip ] # FUSE is blocked by the OHOS app sandbox (/dev/fuse: Permission denied) and fusermount isn't installed
 [ OPENHARMONY ] test/cli/run/run-file-on-fuse.test.ts [ Skip ] # same FUSE sandbox restriction as glob-on-fuse.test.ts
+[ OPENHARMONY ] test/js/node/http/node-http-with-ws.test.ts [ Failure ] # T49: tls.connect() omits host → localhost → ::1 (ADDRCONFIG drops v4 loopback), server on 127.0.0.1; per-file quarantine also skips test 1 (would pass) — see OHOS_TEST_TODO.md T49
+[ OPENHARMONY ] test/js/node/http/node-http-transfer-encoding.test.ts [ Failure ] # T49: http.request host:localhost → ::1, server on 127.0.0.1; per-file quarantine also skips 22 passing tests — see OHOS_TEST_TODO.md T49
 
 # --- js/bun/io: Bun.file slice+write truncation ---
 # FIXED in r23 (commit 28603b97c). Root cause: copy_file_using_read_write_loop

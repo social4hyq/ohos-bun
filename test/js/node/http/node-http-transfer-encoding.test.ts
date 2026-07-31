@@ -38,9 +38,7 @@ test(`should not duplicate transfer-encoding header in request`, async () => {
 
   const serverAddress = tcpServer.address() as AddressInfo;
   const chunkedRequest = request({
-    // server binds 127.0.0.1; "localhost" resolves to ::1 only on OHOS
-    // (getaddrinfo AI_ADDRCONFIG drops the v4 loopback) — see T49.
-    host: "127.0.0.1",
+    host: "localhost",
     port: serverAddress.port,
     path: "/",
     method: "PUT",

@@ -1844,16 +1844,18 @@ test/napi/node-napi-tests/**（60 个子文件）
 
 **推翻的原假说**：~~kernel connect 同步 ECONNREFUSED 打断重试~~、~~close→destroy 抹 connecting~~、~~nextTick 包裹重试~~——全部错层，根因在 dns 解析而非 connect 时序。
 
-**受影响测试（均已 workaround）**：
-- `node-http-with-ws.test.ts` test 2 — `tls.connect` 显式 `host:"127.0.0.1"`（`50f3c695b`，2/2 pass）
-- `node-http-transfer-encoding.test.ts` — `http.request` `host:"127.0.0.1"`（`4153026ed`，23/23 pass）
-- `node-http.test.ts:983` "supports custom tls args" — 上游已修（显式 hostname，先例）
+**受影响测试（均已 expectations 隔离，非改测试源码）**：
+- `node-http-with-ws.test.ts` — `[Failure]` OPENHARMONY 隔离（per-file quarantine，test1 一并被跳过）
+- `node-http-transfer-encoding.test.ts` — `[Failure]` OPENHARMONY 隔离（per-file quarantine，22 个 pass test 一并被跳过）
+- `node-http.test.ts:983` "supports custom tls args" — 上游已修（显式 hostname，先例，不需处理）
+
+曾用 `host:"127.0.0.1"` workaround（commit `50f3c695b`/`4153026ed`）让它们 pass，但那是改测试源码绕 bug，已回滚改用 expectations（不改源码；代价：per-file quarantine 连带跳过文件内 pass 的 test，见 `scripts/runner.node.mjs:182`）。
 
 Explore thorough 扫 `test/js/node/{http,net,tls,http2}` + `test/integration/`，其余均为假阳性（server 绑 0.0.0.0/localhost、client 显式 127.0.0.1、localhost 仅 header/SNI）。vendored node tests（B6）已扫：6 候选用 runner 实测 8/8 pass，0 真受害者（`family:4` 的绕过 ADDRCONFIG；`localaddress-bind-error` 系列 connect 没真发起）。
 
 **缓解方案**：`{host:"127.0.0.1"}`、`{family:4}` 或 `{hints:0}`。bun 层可考虑对 localhost 免 ADDRCONFIG；根本是 HarmonyOS ADDRCONFIG bug。
 
-**状态**：class B（平台 dns 缺陷，非 bun 代码 bug）。node-http-with-ws test 2 已 workaround（`tls.connect` 显式 `host:"127.0.0.1"`，commit `50f3c695b`，2/2 pass）；根因（HarmonyOS ADDRCONFIG）待系统侧修复。
+**状态**：class B（平台 dns 缺陷，非 bun 代码 bug）。受影响测试已用 `expectations.txt` OPENHARMONY `[Failure]` 隔离（per-file quarantine，不改测试源码）；根因（HarmonyOS ADDRCONFIG）待系统侧修复。
 
 ---
 
