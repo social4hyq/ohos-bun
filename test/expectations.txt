@@ -358,6 +358,15 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 [ OPENHARMONY ] test/cli/run/run-file-on-fuse.test.ts [ Skip ] # same FUSE sandbox restriction as glob-on-fuse.test.ts
 [ OPENHARMONY ] test/js/node/http/node-http-with-ws.test.ts [ Failure ] # T49: tls.connect() omits host → localhost → ::1 (ADDRCONFIG drops v4 loopback), server on 127.0.0.1; per-file quarantine also skips test 1 (would pass) — see OHOS_TEST_TODO.md T49
 [ OPENHARMONY ] test/js/node/http/node-http-transfer-encoding.test.ts [ Failure ] # T49: http.request host:localhost → ::1, server on 127.0.0.1; per-file quarantine also skips 22 passing tests — see OHOS_TEST_TODO.md T49
+[ OPENHARMONY ] test/js/bun/test/parallel/test-http-should-support-localAddress.ts [ Failure ] # T49: http.request localhost→::1 (ADDRCONFIG), server 127.0.0.1 — see T49
+[ OPENHARMONY ] test/js/bun/test/parallel/test-http-should-allow-numbers-headers-to-be-set-in-server-and-client.ts [ Failure ] # T49: http.request localhost→::1 (ADDRCONFIG) — see T49
+[ OPENHARMONY ] test/js/third_party/http2-wrapper/http2-wrapper.test.ts [ Failure ] # T49: localhost server/client → ::1 (ADDRCONFIG) — see T49
+[ OPENHARMONY ] test/js/third_party/remix/remix.test.ts [ Failure ] # T49: http.request localhost→::1 (ADDRCONFIG) — see T49
+[ OPENHARMONY ] test/js/node/tls/ssl-ctx-cache.test.ts [ Failure ] # T49: tls.connect omits host (line 189) → localhost→::1 (ADDRCONFIG), server 127.0.0.1 — see T49
+[ OPENHARMONY ] test/js/node/test/parallel/test-http-proxy-request-no-proxy-domain.mjs [ Failure ] # T49: HTTP_PROXY localhost→::1 (ADDRCONFIG), proxy server 127.0.0.1 — see T49
+[ OPENHARMONY ] test/js/bun/dns/resolve-dns.test.ts [ Failure ] # class D: getaddrinfo ESERVFAIL 查 example.com（沙盒外网 DNS 不可达）
+[ OPENHARMONY ] test/regression/issue/22712.test.ts [ Failure ] # class D: queryA ENOTFOUND dns.google（外网 DNS 受限）
+[ OPENHARMONY ] test/js/node/dns/node-dns.test.js [ Failure ] # class D: queryNaptr/queryPtr ENOTIMP/ENOTFOUND socketify.dev（外网 DNS 受限）
 
 # --- js/bun/io: Bun.file slice+write truncation ---
 # FIXED in r23 (commit 28603b97c). Root cause: copy_file_using_read_write_loop

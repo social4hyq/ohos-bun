@@ -1848,6 +1848,7 @@ test/napi/node-napi-tests/**（60 个子文件）
 - `node-http-with-ws.test.ts` — `[Failure]` OPENHARMONY 隔离（per-file quarantine，test1 一并被跳过）
 - `node-http-transfer-encoding.test.ts` — `[Failure]` OPENHARMONY 隔离（per-file quarantine，22 个 pass test 一并被跳过）
 - `node-http.test.ts:983` "supports custom tls args" — 上游已修（显式 hostname，先例，不需处理）
+- **baseline 全量跑（`--ignore-expectations`）新发现 6 个**（之前 Explore 漏扫 `test/js/bun/test/parallel` + `third_party` + `node/test/parallel`）：`test-http-should-support-localAddress`、`test-http-should-allow-numbers-headers`（js/bun/test/parallel）、`http2-wrapper`、`remix`（third_party）、`ssl-ctx-cache`（:189 `tls.connect` 省略 host）、`test-http-proxy-request-no-proxy-domain`（HTTP_PROXY localhost）—— 全是 ECONNREFUSED ::1（ADDRCONFIG），已 expectations 隔离
 
 曾用 `host:"127.0.0.1"` workaround（commit `50f3c695b`/`4153026ed`）让它们 pass，但那是改测试源码绕 bug，已回滚改用 expectations（不改源码；代价：per-file quarantine 连带跳过文件内 pass 的 test，见 `scripts/runner.node.mjs:182`）。
 
