@@ -367,6 +367,17 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 [ OPENHARMONY ] test/js/bun/dns/resolve-dns.test.ts [ Failure ] # class D: getaddrinfo ESERVFAIL 查 example.com（沙盒外网 DNS 不可达）
 [ OPENHARMONY ] test/regression/issue/22712.test.ts [ Failure ] # class D: queryA ENOTFOUND dns.google（外网 DNS 受限）
 [ OPENHARMONY ] test/js/node/dns/node-dns.test.js [ Failure ] # class D: queryNaptr/queryPtr ENOTIMP/ENOTFOUND socketify.dev（外网 DNS 受限）
+[ OPENHARMONY ] test/js/third_party/grpc-js/test-server.test.ts [ Failure ] # T49: connect ECONNRESET ::1（grpc client localhost→::1, ADDRCONFIG）— see T49
+[ OPENHARMONY ] test/js/bun/shell/shell-load.test.ts [ Failure ] # class B: shell 90s timeout（OHOS PTY/spawn 慢）
+[ OPENHARMONY ] test/regression/issue/26286.test.ts [ Failure ] # class B: Bun.Terminal 90s timeout（PTY seccomp）
+[ OPENHARMONY ] test/js/node/tty.test.ts [ Failure ] # class B: TTY 90s timeout（setRawMode/PTY seccomp）
+[ OPENHARMONY ] test/cli/hot/watch-many-dirs.test.ts [ Failure ] # class B: EISDIR watch 读目录（hmdfs）
+[ OPENHARMONY ] test/js/node/test/parallel/test-child-process-exec-timeout-expire.js [ Failure ] # class B: exec 信号差异（OHOS 返 null signal + 143，Linux 不同）
+[ OPENHARMONY ] test/js/node/test/sequential/test-child-process-execsync.js [ Failure ] # class B: exec 时序/信号差异（OHOS）
+[ OPENHARMONY ] test/js/node/vm/happy-dom-vm-16277.test.ts [ Failure ] # class D: ECONNREFUSED 外网 69.171.235.22:443（沙盒禁出站）
+[ OPENHARMONY ] test/js/valkey/integration/complex-operations.test.ts [ Failure ] # class D: Redis 连不上（valkey/Docker 不可用）
+[ OPENHARMONY ] test/js/third_party/grpc-js/test-outlier-detection.test.ts [ Failure ] # class D: gRPC outlier 90s timeout（网络/慢）
+[ OPENHARMONY ] test/integration/expo-app/expo.test.ts [ Failure ] # class D: expo 构建 exit≠0（构建慢/失败）
 
 # --- js/bun/io: Bun.file slice+write truncation ---
 # FIXED in r23 (commit 28603b97c). Root cause: copy_file_using_read_write_loop
