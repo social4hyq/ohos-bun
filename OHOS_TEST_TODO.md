@@ -1829,23 +1829,27 @@ test/napi/node-napi-tests/**（60 个子文件）
 
 ---
 
-## T49 — HongMeng 内核 connect() 同步 ECONNREFUSED 打断 autoSelectFamily JS 重试（class B，内核时序问题）
+## T49 — HarmonyOS getaddrinfo ADDRCONFIG 错误过滤 IPv4 loopback（class B，平台 dns 缺陷）
 
 **发现日期**：2026-07-30  
-**根因定位日期**：2026-07-30
+**根因定位日期**：2026-07-30（重编 `[T49-DIAG]` 探针 bun + custom lookup 实测；推翻原"内核 connect 时序"假说）
 
-**现象**：`tls.connect({port})` 默认走 `localhost` → `::1` ECONNREFUSED，autoSelectFamily 应该回落 `127.0.0.1` 但不回落。
+**现象**：`tls.connect({port})` / `net.createConnection({host:"localhost"})` 默认走 localhost → ::1 ECONNREFUSED，autoSelectFamily 应该回落 127.0.0.1 但不回落。
 
-**根因**：HongMeng 内核上 `connect()` 到 `::1` 的 ECONNREFUSED 完成得极快（同步返回），uSockets 的 socket 关闭触发 `Socket.prototype._destroy` → `this.connecting = false`，发生在 `afterConnectMultiple` 检查 `context.socket.connecting` **之前**。Linux 上异步延迟让 JS 重试逻辑先执行。
+**真正根因**：`dns.lookup("localhost", {hints: ADDRCONFIG})`（net.ts:2896 设 ADDRCONFIG）在 HarmonyOS 上 **只返回 ::1**，过滤了 127.0.0.1——尽管系统 lo 接口有 IPv4（`inet 127.0.0.1`）。这是 HarmonyOS getaddrinfo 的 ADDRCONFIG 实现缺陷。实测：`hints=0` → `[::1/f6, 127.0.0.1/f4]`；`hints=ADDRCONFIG` → `[::1/f6]`（8/8）。connect syscall 实测返回 EINPROGRESS（标准非阻塞），非同步 ECONNREFUSED。
 
-**复现**：`net.createConnection({host:"localhost", port})` or `tls.connect({port})` with server on 127.0.0.1 — autoSelectFamily 重试有时成功有时不成功，取决于内核事件时序。
+**为什么没回落**：`lookupAndConnectMultiple`（net.ts:3006）发现 `toAttempt.length===1`（只有 ::1），切回单地址 `internalConnect`（afterConnect），不走 autoSelectFamily 的 afterConnectMultiple 回落。::1 connect ECONNREFUSED → afterConnect `:3397 destroy` → 冒泡。autoSelectFamily 根本拿不到第二个地址。
+
+**证据**：重编带探针的 bun 跑 diag——探针 B（sync errno）/C（afterConnectMultiple）**都不触发**（没走 autoSelectFamily）；`connectionAttemptFailed` 来自单地址 afterConnect（:3396）；custom lookup `count=1 [::1]`（8/8，`all=true` 但 toAttempt=1 退回单地址）。
+
+**推翻的原假说**：~~kernel connect 同步 ECONNREFUSED 打断重试~~、~~close→destroy 抹 connecting~~、~~nextTick 包裹重试~~——全部错层，根因在 dns 解析而非 connect 时序。
 
 **影响文件**：
-- `test/js/node/http/node-http-with-ws.test.ts` test 2 — TLS WebSocket upgrade 90s 超时（`tls.connect({port})` 连不上 server → 数据永不流动）
+- `test/js/node/http/node-http-with-ws.test.ts` test 2 — TLS WebSocket upgrade 超时
 
-**缓解方案**：传 `{host:"127.0.0.1"}` 或 `{autoSelectFamilyAttemptTimeout: 5000}` 给 TLS socket 可绕过。
+**缓解方案**：`{host:"127.0.0.1"}`、`{family:4}` 或 `{hints:0}`。bun 层可考虑对 localhost 免 ADDRCONFIG；根本是 HarmonyOS ADDRCONFIG bug。
 
-**状态**：class B（内核时序差异，非 bun 代码 bug），暂不修复。
+**状态**：class B（平台 dns 缺陷，非 bun 代码 bug），暂不修复。
 
 ---
 
