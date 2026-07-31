@@ -1849,7 +1849,7 @@ test/napi/node-napi-tests/**（60 个子文件）
 - `node-http-transfer-encoding.test.ts` — `http.request` `host:"127.0.0.1"`（`4153026ed`，23/23 pass）
 - `node-http.test.ts:983` "supports custom tls args" — 上游已修（显式 hostname，先例）
 
-Explore thorough 扫 `test/js/node/{http,net,tls,http2}` + `test/integration/`，其余均为假阳性（server 绑 0.0.0.0/localhost、client 显式 127.0.0.1、localhost 仅 header/SNI）。vendored node tests（B6）未扫。
+Explore thorough 扫 `test/js/node/{http,net,tls,http2}` + `test/integration/`，其余均为假阳性（server 绑 0.0.0.0/localhost、client 显式 127.0.0.1、localhost 仅 header/SNI）。vendored node tests（B6）已扫：6 候选用 runner 实测 8/8 pass，0 真受害者（`family:4` 的绕过 ADDRCONFIG；`localaddress-bind-error` 系列 connect 没真发起）。
 
 **缓解方案**：`{host:"127.0.0.1"}`、`{family:4}` 或 `{hints:0}`。bun 层可考虑对 localhost 免 ADDRCONFIG；根本是 HarmonyOS ADDRCONFIG bug。
 
