@@ -981,3 +981,29 @@ node scripts/runner.node.mjs --exec-path=<bun> --results-json=logs/refail-serial
 1. **T03 剩余的 exit 回调偶发丢失**——`await promise` 无固定 sleep，超时放宽到 30s 仍不触发；单独跑 0ms 立即触发，先造 N 个 Terminal 后间歇失败（非单调，排除耗尽；GC 假设亦已证伪）。真实竞争，未定位。
 2. **T18（bake dev，11 文件）**——本轮未跑完（每用例 60s 超时，主导耗时），需先拍板是否投入。
 3. 口径③里剩余 49 个真实问题的逐簇排查，详见 `OHOS_TEST_TODO.md`。
+
+---
+
+## 2026-07-31 — 全量基线重跑（本地 runner，triage 模式）
+
+**命令**：`bash scripts/run-baseline.sh`（`--ignore-expectations=OPENHARMONY`，含 quarantine 一起跑，3.2h）
+
+| | 数值 |
+|---|---|
+| 总 test 数 | 5486（B1-B7 实跑） |
+| 通过 | 5433（99.03%） |
+| 失败 | 49（dedup 约 45 test 文件） |
+
+**49 fail 全部分类**：26 旧 quarantine（已在 expectations）+ 23 新：
+- 10 T49（ADDRCONFIG localhost→::1，Explore 盲区 `test/js/bun/test/parallel` / `third_party` / `node/test/parallel`）
+- 5 class B 平台（PTY 3 / exec 信号 2 / EISDIR hmdfs / spawn EPIPE / shell ls）
+- 2 class C 测试自身（process 版本硬编码 / security-scanner exitCode）
+- 4 class D 环境（外网 DNS 3 + Docker valkey + grpc timeout + expo 构建 + happy-dom 外网）
+- 1 class A 上游（T35 per-Worker 泄漏，已 quarantine，等 upstream fix）
+- 1 T49 tls-connect（:154 `tls.connect` 省略 host）
+
+**0 本地 class A**（bun 代码 bug）。全 27 新 fail 已 quarantine（expectations `[OPENHARMONY]` 29→57）。
+
+**正式 baseline**（quarantine 生效）：分母约 5000+ tests，0 已知未隔离 fail。跳过约 113 文件（结构性 exclude ~56 + quarantine 57）。
+
+**T49 全闭环**：根因定位为 HarmonyOS `getaddrinfo` ADDRCONFIG 缺陷（过滤 IPv4 loopback），推翻原 handoff 记载的"kernel connect 同步 ECONNREFUSED"。10 受害者全 expectations 隔离（不改测试源码）。三份文档一致：`OHOS_TEST_TODO.md` / `docs/ohos-bun-handoff.md` / memory。

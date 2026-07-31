@@ -1917,6 +1917,13 @@ r42 基线 94 失败全部分析完毕后，对平台限制类（class B）和�
 | r42 基线后（pass 清理）| 32 | 删 18 条过时条目 |
 | SUPERSEDED 更新 | 31 | 删 bun-pack |
 | 孤儿清理 | 29 | 删 glob + valkey test-utils |
+| T49 workaround + revert | 31+2-2=31 | 曾加 2 条 workaround 后回滚 |
+| T49 + dns 外网 (baseline sweep batch 1) | 40 | +9（6 T49 + 3 dns） |
+| PTY/exec/外网/Docker (batch 2) | 51 | +11 |
+| 零星 class B/C + tls-connect (batch 3) | 56 | +5 |
+| message-port-leak T35 upstream | **57** | +1 class A 上游缺陷 |
+| **2026-07-31 基线全量后** | **57** | **29→57（+28），旧 26 + 新 31** |
+| 其中 T49/ADDRCONFIG | 12 | 10 文件（含 node-http-with-ws/transfer-encoding + Explore 盲区 6 + grpc + tls-connect） |
 
 **净结果**：83 → 29 条，删 54 条过时/误判条目。剩余 29 条全部有据可查。
 
@@ -1974,3 +1981,29 @@ r42 基线 94 失败全部分析完毕后，对平台限制类（class B）和�
 | `bun-security-scanner-matrix*` | exit 143 SIGTERM（待查，可能与 TMPDIR 残留有关） |
 | `filter-workspace` | 输出全空（待查） |
 | `bun-install-registry` | reinstall 含 "error:"（待查） |
+
+---
+
+## 2026-07-31 全量 baseline 重跑（triage 模式）
+
+**命令**：`bash scripts/run-baseline.sh`（含 `--ignore-expectations=OPENHARMONY`，quarantine 一起跑，3.2h，因 OHOS fork/PTY 慢）。详见 `OHOS_TEST_STATUS.md#2026-07-31`。
+
+| | 数值 |
+|---|---|
+| 总 test 数 | 5486（B1-B7） |
+| 通过 | 5433（99.03%） |
+| 失败 | 49（dedup） |
+
+**49 fail 分类**（26 旧 quarantine + 23 新）：
+- 10 T49（ADDRCONFIG localhost→::1；Explore 之前漏扫 js/bun/test/parallel + third_party + node/test/parallel）
+- 5 class B（PTY 3/EISDIR hmdfs/exec 信号 2/spawn EPIPE/shell ls）
+- 2 class C（process 版本硬编码 v26.3.0 vs v26.5.0 / bun-security-scanner exitCode）
+- 4 class D（外网 DNS 3 + Docker valkey + grpc + expo + happy-dom 外网）
+- 1 class A 上游（T35 per-Worker leak，已 quarantine 等 upstream fix）
+- 1 T49 node-tls-connect（:154 `tls.connect` 省略 host）
+
+**0 本地 class A**（bun 代码 bug）。全 23 新 fail 已 quarantine（expectations `[OPENHARMONY]` 29→57）。
+
+**正式 baseline**（quarantine 生效）：分母 ~5000+，0 已知未隔离 fail。跳过 ~113 文件（结构性 exclude ~56 + quarantine 57）。
+
+**T49 闭环**：根因 HarmonyOS `getaddrinfo` ADDRCONFIG 过滤 IPv4 loopback（推翻原"kernel connect 同步 ECONNREFUSED"假说），10 受害者全 expectations 隔离（不改测试源码）。handoff doc 已删除（整合到本文 + STATUS）。
