@@ -379,8 +379,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 [ OPENHARMONY ] test/js/third_party/grpc-js/test-outlier-detection.test.ts [ Failure ] # class D: gRPC outlier 90s timeout（网络/慢）
 [ OPENHARMONY ] test/integration/expo-app/expo.test.ts [ Failure ] # class D: expo 构建 exit≠0（构建慢/失败）
 [ OPENHARMONY ] test/js/node/process/process.test.js [ Failure ] # class C: 测试硬编码 v26.3.0，bun node compat 已是 v26.5.0
-[ OPENHARMONY ] test/js/bun/spawn/spawn-stdin-destroy.test.ts [ Failure ] # class B: spawn stdin EPIPE（child exits before stdin flush on OHOS）
-[ OPENHARMONY ] test/js/bun/shell/commands/ls.test.ts [ Failure ] # class B: bun shell ls output differs（hmdfs file traversal/ordering）
 [ OPENHARMONY ] test/cli/install/bun-security-scanner-matrix-with-node-modules.test.ts [ Failure ] # class C: exitCode mismatch（OHOS env）
 [ OPENHARMONY ] test/js/node/tls/node-tls-connect.test.ts [ Failure ] # T49: tls.connect omits host(L154) → localhost→::1（ADDRCONFIG）; per-file quarantine also skips ~22 pass tests — see T49
 [ OPENHARMONY ] test/js/web/workers/message-port-context-destroy-leak.test.ts [ Failure ] # class A（上游缺陷）: per-Worker lifecycle leak ~1.4-1.8MB, MessagePort 只是放大器 — see OHOS_TEST_TODO.md T35（未修，等上游 fix）
