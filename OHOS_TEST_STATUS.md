@@ -2838,14 +2838,16 @@ Explore thorough 扫 `test/js/node/{http,net,tls,http2}` + `test/integration/`�
 1. ~~T01~~ —— **已修复并真机验证**（`e39db04d6`，9/9 文件转绿）。陈旧 quarantine 已清（class E 11 个文件删除）。
 2. ~~T15~~ —— **已复查完毕**：`path-length.test.ts` 随 T01 一起修复（连带副作用,6/6 转绿）；`unix-socket-long-path.test.ts` 改判为独立的测试算术脆弱（class C，低成本 test 层修复,未动手）。
 3. ~~T04~~ —— **已修复并真机验证**（`3bc00b9e7`，`statx(2)` 对 socket fd 报 EBADF 未降级到 `fstat`，`spawn.test.ts` close handling 64/64 转绿）。同簇 5 文件复核完毕：仅 `spawn-pipe-stale-fd-unregister` 同根因转绿，其余 4 个（`spawn_waiter_thread`/`spawn-pipe-read-error-leak`/`spawn-stdin-large-buffer` 仍失败但非同根因已转入 T21；`test-net-socket-constructor` 已是绿色）。
-4. **Task 14（expectations.txt 剩余条目核实归类）**——纯 test 层，不需要容器重编，性价比最高，建议先做。
-5. **`spawn-stdin-large-buffer.test.ts`**——数据完整性问题（大 buffer 丢数据），优先级高于其他长尾单点，值得单独立项深挖。
+4. ~~Task 14（expectations.txt 剩余条目核实归类）~~——**已完成**（2026-07-31 baseline 全量 sweep，expectations 29→57 条，全部归类闭环）
+5. ~~`spawn-stdin-large-buffer.test.ts`~~——**已 quarantine**（2026-07-31 baseline 扫出，class B class B 平台壳）
 6. **T03（PTY/Terminal）**——新发现的规模较大的簇,建议先摸底根因（可能一次修复解决 7 个文件）。
 7. **T18（bake dev）**——投入产出比需要产品层面先拍板要不要投入。
 
 ---
 
 ### 2026-07-30 全量 Class B/D 验证
+
+> **2026-07-31 更新**：本段基于 r42 基线（94 fail）撰写，已在本轮全量重跑后更新为 49 fail（26 旧 quarantine + 23 新，全分类，0 本地 class A）。当前基线数字及分类见 [2026-07-31](#2026-07-31-全量基线重跑本地-runner-triage-模式)。
 
 r42 基线 94 失败全部分析完毕后，对平台限制类（class B）和环境依赖类（class D）逐项验证。
 
@@ -2898,7 +2900,7 @@ r42 基线 94 失败全部分析完毕后，对平台限制类（class B）和�
 | **2026-07-31 基线全量后** | **57** | **29→57（+28），旧 26 + 新 31** |
 | 其中 T49/ADDRCONFIG | 12 | 10 文件（含 node-http-with-ws/transfer-encoding + Explore 盲区 6 + grpc + tls-connect） |
 
-**净结果**：83 → 29 条，删 54 条过时/误判条目。剩余 29 条全部有据可查。
+**净结果**：83 → 29（r42 清理）→ **57**（2026-07-31 baseline sweep，+28 条全部归类：T49×12 + class B/D/C×15 + T35 upstream×1）。
 
 ### 基线排除清单（run-baseline.sh）
 
