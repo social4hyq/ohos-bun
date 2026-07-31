@@ -54,7 +54,7 @@ bash scripts/run-baseline.sh
 
 ### 需要容器重编（src/ 改动）
 
-4. **T49 kernel race**：HongMeng `connect()` 同步 ECONNREFUSED 打断 `autoSelectFamily` JS 重试。修改 `src/js/node/net.ts` 的 `afterConnectMultiple`，用 `process.nextTick` 包裹重试逻辑
+4. **T49（已定位，平台 dns bug，无需 src 改动）**：~~kernel connect 同步 ECONNREFUSED 打断 autoSelectFamily 重试~~（经重编 `[T49-DIAG]` 探针 bun 实测推翻）。真因：HarmonyOS `getaddrinfo` 的 `AI_ADDRCONFIG` 错误过滤 IPv4 loopback——`dns.lookup("localhost",{hints:ADDRCONFIG})` 只返回 ::1（实测 `hints=0` → `[::1, 127.0.0.1]`，`ADDRCONFIG` → `[::1]`），`toAttempt.length===1`（`net.ts:3006`）切回单地址 connect，::1 失败无回落。非 bun 缺陷。workaround：`{host:"127.0.0.1"}` / `{family:4}` / `{hints:0}`。详见 `OHOS_TEST_TODO.md` T49
 5. **bundler class A 复查**：如果复现环境干净（TMPDIR 无残留），T45-T48 应全部通过。若仍失败则需重新分析
 
 ### 上游跟进
