@@ -56,6 +56,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <limits.h>
 #include <pwd.h>
 #include <sched.h>
@@ -117,6 +118,7 @@ enum {
 	SD_FCHMODAT2   = 1 << 4,
 	SD_LINKAT      = 1 << 5,
 	SD_SYMLINKAT   = 1 << 6,
+	SD_SPLICE      = 1 << 7,
 };
 
 static int g_disable_mask = -1;
@@ -141,6 +143,8 @@ static void parse_toggle_masks(void)
 		d |= SD_LINKAT;
 	if (env_list_has("OHOS_COMPAT_SHIM_DISABLE", "symlinkat"))
 		d |= SD_SYMLINKAT;
+	if (env_list_has("OHOS_COMPAT_SHIM_DISABLE", "splice"))
+		d |= SD_SPLICE;
 	g_disable_mask = d; /* set last: non-negative value doubles as "done" */
 }
 
@@ -161,6 +165,8 @@ static int shim_disabled(const char *name)
 		return !!(g_disable_mask & SD_LINKAT);
 	if (strcmp(name, "symlinkat") == 0)
 		return !!(g_disable_mask & SD_SYMLINKAT);
+	if (strcmp(name, "splice") == 0)
+		return !!(g_disable_mask & SD_SPLICE);
 	return 0;
 }
 
@@ -511,10 +517,9 @@ long syscall(long number, ...)
 /*       SIGSYS on real HarmonyOS hardware regardless of arguments, same */
 /*       failure mode as close_range (not a graceful ENOSYS) — verified  */
 /*       with a standalone guarded repro before writing this. Falls back */
-/*       to the classic fchmodat() (dropping the flags argument — loses  */
-/*       AT_SYMLINK_NOFOLLOW semantics on a symlink target, matching     */
-/*       ohos-preflight's validated solutions/c5_fchmodat2.c). Simpler   */
-/*       than close_range: no evidence different flag values change the  */
+/*       to the classic fchmodat(), forwarding AT_SYMLINK_NOFOLLOW —     */
+/*       this musl honours it (measured below). Simpler than             */
+/*       close_range: no evidence different flag values change the       */
 /*       SIGSYS outcome here (there's no second underlying syscall like  */
 /*       unshare() to independently trip), so one process-wide probe is  */
 /*       trusted rather than re-guarding every call.                     */
@@ -555,20 +560,60 @@ static int fc2_dispatch(int dirfd, const char *path, mode_t mode, int flags)
 		}
 	}
 
-	/* Fallback: classic fchmodat(), no flags — the one meaningful loss is
-	 * AT_SYMLINK_NOFOLLOW (mode would apply to the symlink's target
-	 * instead of being rejected/applied to the link itself). Matches
-	 * ohos-preflight's validated solutions/c5_fchmodat2.c exactly. */
-	return fchmodat(dirfd, path, mode, 0);
+	/* Fallback: classic fchmodat(), forwarding AT_SYMLINK_NOFOLLOW.
+	 *
+	 * This used to drop the flag, on the assumption that classic fchmodat()
+	 * could not honour it. Measured on this device, it can:
+	 *
+	 *   regular file + NOFOLLOW -> rc=0, mode applied
+	 *   directory    + NOFOLLOW -> rc=0, mode applied
+	 *   symlink      + NOFOLLOW -> rc=-1 ENOTSUP, target untouched
+	 *
+	 * which is exactly Linux's contract (a symlink's own mode bits are
+	 * meaningless, so chmod on one is refused). Dropping the flag was
+	 * therefore not just lossy but unsafe: it turned "do not follow this
+	 * symlink" into "follow it", so a chmod aimed at a link landed on
+	 * whatever the link pointed at. bun's installer relies on the refusal
+	 * to avoid chmod-ing a file outside the package via a symlinked bin
+	 * target (test/cli/install/symlink-path-traversal.test.ts).
+	 *
+	 * Other fchmodat2-only flags (AT_EMPTY_PATH) stay dropped: classic
+	 * fchmodat() would reject them outright and no caller here uses them. */
+	return fchmodat(dirfd, path, mode, flags & AT_SYMLINK_NOFOLLOW);
 }
 
 /* ==================================================================== */
 /*  2. getpwuid_r() — HarmonyOS HAP uids (2002xxxx) aren't in /etc/passwd */
 /*     Real impl returns ENOENT/0-with-NULL-result; synthesize a minimal */
-/*     passwd record from env vars, matching Node's os.userInfo() needs. */
+/*     passwd record matching Node's os.userInfo() needs. When the query */
+/*     is for the caller's own uid, prefer the real OS-account name from */
+/*     libos_account_ndk.so (OH_OsAccount_GetName, API 12+), then env    */
+/*     vars, then a uid-derived placeholder.                             */
 /* ==================================================================== */
 
+#ifndef LOGIN_NAME_MAX
+#define LOGIN_NAME_MAX 256
+#endif
+
 typedef int (*getpwuid_r_fn)(uid_t, struct passwd *, char *, size_t, struct passwd **);
+
+/* Lazily resolve OH_OsAccount_GetName; cache the handle and symbol for the
+ * process lifetime (getpwuid_r() is called repeatedly, e.g. by Node's
+ * os.userInfo()). Returns NULL when the library or symbol is unavailable,
+ * so callers transparently fall back to env-var synthesis. */
+typedef int (*ohos_get_name_fn)(char *, size_t);
+
+static ohos_get_name_fn ohos_get_name_resolve(void)
+{
+	static void *handle = NULL;
+	static ohos_get_name_fn fn = NULL;
+	if (!handle) {
+		handle = dlopen("libos_account_ndk.so", RTLD_NOW | RTLD_LOCAL);
+		if (handle)
+			fn = (ohos_get_name_fn)dlsym(handle, "OH_OsAccount_GetName");
+	}
+	return fn;
+}
 
 int getpwuid_r(uid_t uid, struct passwd *pwd, char *buf, size_t buflen,
 	      struct passwd **result)
@@ -592,12 +637,23 @@ int getpwuid_r(uid_t uid, struct passwd *pwd, char *buf, size_t buflen,
 		return ENOENT;
 	}
 
-	/* Fallback: synthesize from environment, mirroring
-	 * ohos-preflight/solutions/i9_getpwuid_r.c. A set-but-empty var
-	 * (e.g. `export LOGNAME=`) is treated the same as unset. */
-	const char *username = getenv("LOGNAME");
-	if (username && !*username)
-		username = NULL;
+	/* Fallback: synthesize from the OS-account name (only valid for the
+	 * caller's own uid — the account API has no uid parameter), then
+	 * environment, mirroring ohos-preflight/solutions/i9_getpwuid_r.c.
+	 * A set-but-empty var (e.g. `export LOGNAME=`) is treated the same
+	 * as unset. */
+	const char *username = NULL;
+	char account_name[LOGIN_NAME_MAX];
+	if (uid == getuid()) {
+		ohos_get_name_fn get_name = ohos_get_name_resolve();
+		if (get_name && get_name(account_name, sizeof(account_name)) == 0)
+			username = account_name;
+	}
+	if (!username) {
+		username = getenv("LOGNAME");
+		if (username && !*username)
+			username = NULL;
+	}
 	if (!username) {
 		username = getenv("USER");
 		if (username && !*username)
@@ -801,7 +857,260 @@ static int copy_fd_contents(int src_fd, int dst_fd)
 	return (n < 0) ? -1 : 0;
 }
 
+/* Copy src_fd to newdirfd/newpath atomically: write a hidden sibling temp
+ * file, then renameat() into place. The previous direct O_CREAT|O_EXCL +
+ * copy made the destination visible at 0 bytes the moment it was created,
+ * so a concurrent quick_exit (bun install aborting on a resolution error
+ * while a worker thread is still flushing its npm manifest cache) left
+ * permanently corrupt 0-byte cache entries ("manifest is invalid" on the
+ * next load — bun-install-registry prereleases-* tests). With tmp+rename
+ * the destination appears complete or not at all; a quick_exit mid-copy
+ * only litters a hidden temp file.
+ *
+ * EEXIST semantics: real linkat fails if newpath exists. renameat would
+ * silently replace it, so pre-check with fstatat; the tiny TOCTOU window
+ * between check and rename is inherent to an emulation and harmless for
+ * the cache-writer workloads this shim serves (they unlink+retry anyway). */
+static int copy_fd_to_path_atomic(int src_fd, int newdirfd, const char *newpath,
+				  mode_t mode)
+{
+	/* The temp file MUST live in newpath's own directory: renameat is
+	 * same-filesystem only, and an absolute newpath with a bare temp name
+	 * would put the temp in the process CWD (possibly another fs → EXDEV). */
+	char tmp[PATH_MAX];
+	const char *slash = strrchr(newpath, '/');
+	size_t dirlen = slash ? (size_t)(slash - newpath) + 1 : 0;
+	if (dirlen >= sizeof(tmp))
+		return -1;
+	int len = snprintf(tmp, sizeof(tmp), "%.*s.ohos-linkat-tmp.%d",
+			   (int)dirlen, newpath, (int)getpid());
+	if (len <= 0 || len >= (int)sizeof(tmp))
+		return -1;
+
+	int dst = -1;
+	for (int i = 0; i < 100; i++) {
+		char *p = tmp + len;
+		if (i > 0)
+			snprintf(p, sizeof(tmp) - len, ".%d", i);
+		dst = openat(newdirfd, tmp,
+			     O_WRONLY | O_CREAT | O_EXCL | O_TRUNC, mode);
+		if (dst >= 0)
+			break;
+		if (errno != EEXIST)
+			return -1;
+	}
+	if (dst < 0)
+		return -1;
+
+	int copy_rc = copy_fd_contents(src_fd, dst);
+	int e = errno;
+	close(dst);
+	if (copy_rc != 0) {
+		unlinkat(newdirfd, tmp, 0);
+		errno = e;
+		return -1;
+	}
+
+	struct stat st;
+	if (fstatat(newdirfd, newpath, &st, AT_SYMLINK_NOFOLLOW) == 0) {
+		unlinkat(newdirfd, tmp, 0);
+		errno = EEXIST;
+		return -1;
+	}
+
+	if (renameat(newdirfd, tmp, newdirfd, newpath) != 0) {
+		e = errno;
+		unlinkat(newdirfd, tmp, 0);
+		errno = e;
+		return -1;
+	}
+	return 0;
+}
+
 typedef int (*linkat_fn)(int, const char *, int, const char *, int);
+
+/* ------------------------------------------------------------------ */
+/*  splice(2): EOF on the source is reported as EPIPE instead of 0      */
+/* ------------------------------------------------------------------ */
+/*
+ * This kernel returns -1/EPIPE from splice() when the *source* pipe is at
+ * end-of-file, where Linux returns 0. read() on that same pipe correctly
+ * returns 0, so only the splice path is affected. Every splice-based copy
+ * loop therefore mistakes a normal EOF for a fatal error: GNU coreutils'
+ * cat takes that path whenever stdin and stdout are both pipes and prints
+ * "cat: -: Broken pipe" then exits 1. Measured with a standalone probe,
+ * no Bun involved.
+ *
+ * A genuine EPIPE (the destination's read end is gone) must still be
+ * reported. poll() separates the two cleanly and is non-destructive --
+ * unlike read(), it cannot consume the byte we are asked to move:
+ *
+ *   source at EOF        poll(fd_in)=POLLIN|POLLHUP  poll(fd_out)=POLLOUT
+ *   destination broken   poll(fd_in)=POLLIN          poll(fd_out)=POLLOUT|POLLERR
+ *   both at once         poll(fd_out)=POLLOUT|POLLERR
+ *
+ * So POLLERR on the destination decides it. Checking the destination FIRST
+ * makes the ambiguous "both" case resolve to the real error, which is the
+ * conservative direction: reporting a broken pipe that also happens to be
+ * at EOF loses nothing, whereas swallowing a real EPIPE would silently
+ * truncate a copy.
+ *
+ * Only reached when splice() has already failed with EPIPE; every other
+ * outcome is passed through untouched, so the cost on the normal path is
+ * one comparison. Note POLLIN is set on an EOF pipe too (a read would
+ * return 0 immediately), which is why POLLHUP -- not the absence of
+ * POLLIN -- is the EOF signal.
+ */
+typedef ssize_t (*splice_fn)(int, off_t *, int, off_t *, size_t, unsigned int);
+
+/* ------------------------------------------------------------------ */
+/*  splice(2), second defect: writing to a pipe wakes no poll()/epoll   */
+/* ------------------------------------------------------------------ */
+/*
+ * Bytes that splice() places into a pipe never wake a poll() or
+ * epoll_wait() that is already blocked on that pipe's read end. The data
+ * really is there -- a later poll, or a read(), sees it immediately -- so
+ * the pipe's readiness *state* is right and only the *wakeup* is missing.
+ * A reader blocked in read() is woken correctly, which is why the defect
+ * hides behind anything that reads synchronously.
+ *
+ * Measured with a standalone probe (no Bun involved), waiter blocked
+ * first, 4096 bytes sent 300ms later:
+ *
+ *   waiter        fed by splice()        fed by write()
+ *   poll          2000ms timeout         woken in 300ms
+ *   epoll LT      2000ms timeout         woken in 301ms
+ *   epoll ET      2000ms timeout         woken in 301ms
+ *   read          woken in 301ms         woken in 301ms
+ *
+ * It deadlocks any pipeline whose consumer polls: GNU cat feeds stdout
+ * with splice() when it is a pipe, so `cat big | bun script.js` hangs
+ * forever -- Bun sits in epoll_wait, cat fills the 512KB pipe and then
+ * blocks in splice() too. `cat big | wc -c` is fine (wc blocks in read),
+ * and `dd ... | bun script.js` is fine (dd uses write).
+ *
+ * Fix: when the destination is a pipe, move the bytes through a userspace
+ * buffer so the pipe is fed by write(), whose wakeup works. That costs one
+ * copy and gives up splice's zero-copy property on this path, which is the
+ * right trade for a shim whose job is correctness.
+ *
+ * Holding the last byte back and sending only that one with write() would
+ * have kept the zero-copy bulk transfer, and a probe confirmed it wakes the
+ * poller -- but it does not survive the real case: cat asks for 524288
+ * bytes into a 512KB pipe, splice fills the pipe and returns short, and the
+ * trailing write() is never reached. A wakeup scheme that fails exactly
+ * when the pipe is full is no use, since that is when the reader is
+ * guaranteed to be waiting.
+ */
+#ifndef SPLICE_F_NONBLOCK
+#define SPLICE_F_NONBLOCK 2
+#endif
+
+static int splice_fd_is_fifo(int fd)
+{
+	struct stat st;
+	return fstat(fd, &st) == 0 && S_ISFIFO(st.st_mode);
+}
+
+/*
+ * One bounded chunk, source -> userspace -> destination. Returning less than
+ * `len` is allowed by splice(2) and every splice-based copy loop already
+ * handles it, so a 64KB ceiling costs nothing but bounds the stack.
+ */
+static ssize_t splice_through_buffer(int fd_in, off_t *off_in, int fd_out,
+				     size_t len, unsigned int flags)
+{
+	char buf[65536];
+	if (len > sizeof buf)
+		len = sizeof buf;
+
+	/* SPLICE_F_NONBLOCK promises not to block on the source; read() alone
+	   would, unless fd_in itself is O_NONBLOCK. POLLHUP-without-POLLIN
+	   still reports ready, so EOF keeps flowing through to the read(). */
+	if (flags & SPLICE_F_NONBLOCK) {
+		struct pollfd pfd = { .fd = fd_in, .events = POLLIN };
+		if (poll(&pfd, 1, 0) <= 0) {
+			errno = EAGAIN;
+			return -1;
+		}
+	}
+
+	ssize_t got = off_in ? pread(fd_in, buf, len, *off_in)
+			     : read(fd_in, buf, len);
+	if (got <= 0)
+		return got;	/* 0 is EOF -- the answer splice() should give */
+
+	/* These bytes are already out of the source, so a short write cannot
+	   be reported back as "not consumed" the way splice() would: it has to
+	   be retried or the data is gone. That means a SPLICE_F_NONBLOCK caller
+	   can still block here on a full destination. Losing bytes is the worse
+	   failure, and the alternative (peek at pipe space first) has no
+	   portable form. */
+	size_t done = 0;
+	while (done < (size_t)got) {
+		ssize_t w = write(fd_out, buf + done, (size_t)got - done);
+		if (w > 0) {
+			done += (size_t)w;
+			continue;
+		}
+		if (w < 0 && errno == EINTR)
+			continue;
+		if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+			struct pollfd pfd = { .fd = fd_out, .events = POLLOUT };
+			if (poll(&pfd, 1, -1) < 0 && errno != EINTR)
+				break;
+			continue;
+		}
+		break;		/* EPIPE and friends: report what did land */
+	}
+	if (done == 0)
+		return -1;	/* errno still set by write() */
+	if (off_in)
+		*off_in += (off_t)done;
+	return (ssize_t)done;
+}
+
+ssize_t splice(int fd_in, off_t *off_in, int fd_out, off_t *off_out,
+	       size_t len, unsigned int flags)
+{
+	static splice_fn real = NULL;
+	if (!real)
+		real = (splice_fn)dlsym(RTLD_NEXT, "splice");
+	if (!real) {
+		errno = ENOSYS;
+		return -1;
+	}
+
+	/* off_out must be NULL when the destination is a pipe (kernel rule);
+	   testing it as well keeps this path off any call the kernel would
+	   have rejected anyway. */
+	if (len > 0 && off_out == NULL && !shim_disabled("splice") &&
+	    splice_fd_is_fifo(fd_out))
+		return splice_through_buffer(fd_in, off_in, fd_out, len, flags);
+
+	ssize_t rc = real(fd_in, off_in, fd_out, off_out, len, flags);
+	if (rc >= 0 || errno != EPIPE)
+		return rc;
+	if (shim_disabled("splice"))
+		return rc;
+
+	int saved = errno;
+
+	/* Destination genuinely broken? Then EPIPE is the correct answer. */
+	struct pollfd out_pfd = { .fd = fd_out, .events = POLLOUT };
+	if (poll(&out_pfd, 1, 0) > 0 && (out_pfd.revents & (POLLERR | POLLNVAL))) {
+		errno = saved;
+		return rc;
+	}
+
+	/* Source hung up with nothing left to move: that is a plain EOF. */
+	struct pollfd in_pfd = { .fd = fd_in, .events = POLLIN };
+	if (poll(&in_pfd, 1, 0) > 0 && (in_pfd.revents & POLLHUP))
+		return 0;
+
+	errno = saved;
+	return rc;
+}
 
 int linkat(int olddirfd, const char *oldpath, int newdirfd,
 	  const char *newpath, int flags)
@@ -831,24 +1140,14 @@ int linkat(int olddirfd, const char *oldpath, int newdirfd,
 		return -1;
 	}
 
-	int dst = openat(newdirfd, newpath, O_WRONLY | O_CREAT | O_EXCL,
-			 st.st_mode & 0777);
-	if (dst < 0) {
+	if (copy_fd_to_path_atomic(src, newdirfd, newpath,
+				   st.st_mode & 0777) != 0) {
 		int e = errno;
 		close(src);
 		errno = e;
 		return -1;
 	}
-
-	int copy_rc = copy_fd_contents(src, dst);
-	int e = errno;
 	close(src);
-	close(dst);
-	if (copy_rc != 0) {
-		unlinkat(newdirfd, newpath, 0);
-		errno = e;
-		return -1;
-	}
 	return 0;
 }
 
@@ -888,23 +1187,13 @@ int symlinkat(const char *target, int newdirfd, const char *linkpath)
 		return -1;
 	}
 
-	int dst = openat(newdirfd, linkpath, O_WRONLY | O_CREAT | O_EXCL,
-			 st.st_mode & 0777);
-	if (dst < 0) {
+	if (copy_fd_to_path_atomic(src, newdirfd, linkpath,
+				   st.st_mode & 0777) != 0) {
 		int e = errno;
 		close(src);
 		errno = e;
 		return -1;
 	}
-
-	int copy_rc = copy_fd_contents(src, dst);
-	int e = errno;
 	close(src);
-	close(dst);
-	if (copy_rc != 0) {
-		unlinkat(newdirfd, linkpath, 0);
-		errno = e;
-		return -1;
-	}
 	return 0;
 }

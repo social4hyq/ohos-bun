@@ -177,8 +177,8 @@ function needsOhosCompatShim(cfg: Config): boolean {
  * semantics. NOTE: the version script's `local: *` overrides
  * --export-dynamic-symbol/--dynamic-list in lld (verified empirically on
  * LLD 21), so linker.lds is the only working export mechanism here.
- * linkat/symlinkat interposers are runtime opt-in (OHOS_COMPAT_SHIM_ENABLE)
- * and pass through by default, same as the preload .so.
+ * linkat/symlinkat/splice interposers are default-on and can be disabled
+ * per-symbol via OHOS_COMPAT_SHIM_DISABLE, same as the preload .so.
  */
 
 /**

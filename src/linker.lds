@@ -19,6 +19,7 @@ BUN_1.2 {
 	tmpfile;
 	linkat;
 	symlinkat;
+	splice;
 
 
   uv_accept;
