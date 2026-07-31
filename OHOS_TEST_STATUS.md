@@ -1017,7 +1017,7 @@ node scripts/runner.node.mjs --exec-path=<bun> --results-json=logs/refail-serial
 Quarantine + exclude 生效后：分母 ~5000+ tests，**0 已知未隔离 fail**。跳过整块为 PTY/Docker/缺原生二进制/平台 dns bug。
 ## 问题簿（按 Txx 索引）
 
-## T01 — EL2 沙盒下子进程 `getcwd()` 内核级失效；bun 没有像 shell 一样用 `$PWD` 兜底（已修复并真机验证）
+### T01 — EL2 沙盒下子进程 `getcwd()` 内核级失效；bun 没有像 shell 一样用 `$PWD` 兜底（已修复并真机验证）
 
 **状态：已修复，2026-07-27 真机验证通过。** 两个 commit：
 - `6a5df2ea5`（`src/runtime/api/bun/js_bun_spawn_bindings.rs`）——覆盖 `Bun.spawn`/`Bun.spawnSync` 公开 JS API。单独验证时发现**不够**：`bun pm pack`/`bun-publish`/`bun-run-bunfig` 等走的是 `PackageManagerLifecycle.rs`/`run_command.rs` 内部直接拼 `SpawnOptions` 的路径，完全绕过这个 JS binding，改完之后这批文件依然复现。
@@ -1076,7 +1076,7 @@ execlp("bash", "bash", "-c", "pwd", (char*)NULL);
 
 ---
 
-## T02 — ~~`bun run` 退出码/信号语义边缘用例~~ **已收口：07-29 复核 3/3 全绿**（r40 修复的连带受益，详见 2026-07-29 长尾全量复核）
+### T02 — ~~`bun run` 退出码/信号语义边缘用例~~ **已收口：07-29 复核 3/3 全绿**（r40 修复的连带受益，详见 2026-07-29 长尾全量复核）
 
 | 文件 | 具体断言 | 分类 | 层级 | 状态 |
 |---|---|---|---|---|
@@ -1084,7 +1084,7 @@ execlp("bash", "bash", "-c", "pwd", (char*)NULL);
 
 ---
 
-## T03 — PTY / TTY 簇：两个独立根因，均已修复（`738701916` raw mode + `4c3bee75b` exit 回调竞争）
+### T03 — PTY / TTY 簇：两个独立根因，均已修复（`738701916` raw mode + `4c3bee75b` exit 回调竞争）
 
 `terminal-*.test.ts` 是全新文件（历史 `OHOS_TEST_STATUS.md` 里从未出现过 `Bun.Terminal` 相关记录），说明这是本轮首次覆盖到。核心症状：`setRawMode` 抛 `Failed to set raw mode`,以及依赖 raw mode/SIGWINCH/作业控制信号的场景全部超时。`no-orphans.test.ts`/`tty-reopen-after-stdin-eof`/`tui-app-tty-pattern`/`18239` 症状不同但都在 TTY/PTY 子系统,怀疑共享底层 termios/PTY 分配逻辑,值得一起排查。
 
@@ -1128,7 +1128,7 @@ execlp("bash", "bash", "-c", "pwd", (char*)NULL);
 
 **文件级数字（4 通过 / 6 失败）前后完全一样，但这是假象**：底下换了一整批。那 7 个"新失败"经核查在基线日志里**一次都没出现过**（`grep -c` = 0）——修复前它们根本没被执行到（前面的 `setRawMode` 抛错把文件后续用例挡住了），所以**不是回归，是新暴露的覆盖面**。
 
-### T03 剩余部分：第二个根因（PTY 数据不流动，待查）
+#### T03 剩余部分：第二个根因（PTY 数据不流动，待查）
 
 新暴露出来的失败集中在一个清晰的症状群：**PTY 里数据根本不流动**——
 
@@ -1177,7 +1177,7 @@ close(slave)  -> poll(master) = 0x10 (POLLHUP)
 
 **另有一个不是时序的真实问题**：`exit callback is called on close` 用的是 `await promise`（无固定 sleep），把测试超时放宽到 30s 仍然跑满 30s 不触发。单独跑是 0ms 立即触发；先造 N 个 Terminal 再测则**间歇性**丢失（N=30 四次里三次 OK 一次超时，非单调，排除资源耗尽）。GC 假设也已证伪（显式丢引用 + 强制 `Bun.gc(true)` 后回调照常触发）。这是 exit 回调投递路径上的一个偶发竞争 —— **已定位并修复，见下节 T03b**。
 
-### T03b 根因已定位并修复：exit 通知在 `init_terminal` 期间触发就被永久丢弃（`4c3bee75b`）
+#### T03b 根因已定位并修复：exit 通知在 `init_terminal` 期间触发就被永久丢弃（`4c3bee75b`）
 
 **定位过程中先推翻了自己的一个结论。** 最初用 `grep "call_exit_callback" | tail -1` 看日志，读到 `DROP at try_get`，据此判断"JS wrapper 已经没了"，并提出 `js::to_js` 在 GC 压力下返回空值的假设。**这是错的** —— `tail -1` 取到的是**上一个** terminal 的记录。改成给每条日志打上 `T@<地址>` 标签、按地址分组之后，真实的生命周期才显出来：
 
@@ -1225,7 +1225,7 @@ T@5b2f182bc0   -> EARLY RETURN (READER_DONE already set)
 
 ---
 
-## 台账自查（07-28）：把"待查/待修"逐条隔离复测
+### 台账自查（07-28）：把"待查/待修"逐条隔离复测
 
 T07 被撤回后做了一次系统复核 —— 台账里所有仍标"待查/待修"且带具体文件的条目，用最新二进制逐个**单文件隔离**复跑，通过的再拿基线 `3e233644d` 对照，区分"被本轮修好"和"从来就没坏"：
 
@@ -1246,7 +1246,7 @@ T07 被撤回后做了一次系统复核 —— 台账里所有仍标"待查/待
 
 ---
 
-## T31 — T21 长尾深挖：三项收口（两个测试假设 + 一个 fork 有意差异）
+### T31 — T21 长尾深挖：三项收口（两个测试假设 + 一个 fork 有意差异）
 
 T21 复核确认 13 项里 10 项是稳定真失败后，逐个深挖。前三项都不是 bun 缺陷，但成因各不相同：
 
@@ -1325,7 +1325,7 @@ command -v probe-bin -> /…/fakehome/node_modules/.bin/probe-bin
 
 ---
 
-## T33 — compat-shim 丢掉 `AT_SYMLINK_NOFOLLOW`，chmod 穿透 symlink（已修，0.2.2）
+### T33 — compat-shim 丢掉 `AT_SYMLINK_NOFOLLOW`，chmod 穿透 symlink（已修，0.2.2）
 
 `cli/install/symlink-path-traversal.test.ts` 断言：安装一个 `bin` 指向包外文件的软链接时，被指向的文件必须保持原权限 `0o600`。实测是 **`0o775`** —— chmod 穿透了软链接，落到了包外的文件上。测试名里的 "path traversal" 不是修辞。
 
@@ -1368,7 +1368,7 @@ return fchmodat(dirfd, path, mode, 0);
 
 ---
 
-## T34 — `execSync` 的 timeout 杀不到真正的子进程（class D，非 bun 缺陷）
+### T34 — `execSync` 的 timeout 杀不到真正的子进程（class D，非 bun 缺陷）
 
 `test-child-process-execsync.js` 断在 `assert(end < SLEEP)`：`TIMER=200ms` 的超时应当让调用提前返回，实测却等满了子进程的 2000ms。
 
@@ -1416,7 +1416,7 @@ pid=56104  wait4(56116, WNOHANG) = 0   ← 反复轮询，孙进程还活着
 
 ---
 
-## T32 — 测量环境本身有透明代理：任意公网地址的任意端口都"连接成功"（class D，影响网络类判定）
+### T32 — 测量环境本身有透明代理：任意公网地址的任意端口都"连接成功"（class D，影响网络类判定）
 
 挖 `test-net-autoselectfamily.js`（Happy Eyeballs / RFC 8305）时撞上的，**不是 bun 缺陷，是本机网络环境**。
 
@@ -1451,7 +1451,7 @@ pid=56104  wait4(56116, WNOHANG) = 0   ← 反复轮询，孙进程还活着
 
 ---
 
-## T30 — ~~内核把 TCP RST 呈现成正常 EOF~~ **已作废：前提测错了**（实际根因见 T37）
+### T30 — ~~内核把 TCP RST 呈现成正常 EOF~~ **已作废：前提测错了**（实际根因见 T37）
 
 > **2026-07-28 更正。** 本条的核心证据（下方那张"读侧三信道全丢错误"的 C 探针表）复测**不成立**。重做探针（对端设 `SO_LINGER{1,0}` 后关闭，确实发出 RST）：
 >
@@ -1500,7 +1500,7 @@ pid=56104  wait4(56116, WNOHANG) = 0   ← 反复轮询，孙进程还活着
 
 ---
 
-## T25 — OHOS procfs 不报告 `tty_nr` / `tpgid` / `state`（平台限制，class B）
+### T25 — OHOS procfs 不报告 `tty_nr` / `tpgid` / `state`（平台限制，class B）
 
 `no-orphans.test.ts` 的 Ctrl-Z 用例断言全部建立在 `/proc/<pid>/stat` 之上，在 OHOS 上无法成立。四个独立 C 探针（完全脱离 bun）把边界划清楚了：
 
@@ -1520,7 +1520,7 @@ pid=56104  wait4(56116, WNOHANG) = 0   ← 反复轮询，孙进程还活着
 
 ---
 
-## T26 — `--no-orphans` 在 OHOS 上完全静默失效（`CONFIG_PROC_CHILDREN` 缺失，已修 `e76b0d3a8`）
+### T26 — `--no-orphans` 在 OHOS 上完全静默失效（`CONFIG_PROC_CHILDREN` 缺失，已修 `e76b0d3a8`）
 
 从 `no-orphans.test.ts` 的 setsid daemon 用例（30s 超时）挖出来，实际影响远超一个用例。
 
@@ -1562,7 +1562,7 @@ pid=56104  wait4(56116, WNOHANG) = 0   ← 反复轮询，孙进程还活着
 
 ---
 
-## T27 — OHOS 的 PTY 行规程不生成信号（平台限制，class B）
+### T27 — OHOS 的 PTY 行规程不生成信号（平台限制，class B）
 
 解锁 `isPosix` 后暴露：`Ctrl-Z stop observed by outer shell's waitpid(WUNTRACED)` 超时。这个用例**不依赖 T25 那些 procfs 字段**（它走 `waitpid(WUNTRACED)`，而探针已证明该语义正常），所以是另一回事。
 
@@ -1582,7 +1582,7 @@ pid=56104  wait4(56116, WNOHANG) = 0   ← 反复轮询，孙进程还活着
 
 ---
 
-## T28 — OHOS 补丁自身的缺陷：`bun run` 下 PDEATHSIG 被清除且无人接手（已修 `822f3121d`）
+### T28 — OHOS 补丁自身的缺陷：`bun run` 下 PDEATHSIG 被清除且无人接手（已修 `822f3121d`）
 
 `no-orphans.test.ts` 的 `supervisor SIGKILLed > bun run and the script exit` 用例：SIGKILL 掉外层 `sh` 后，`bun run` 10s 不退出。
 
@@ -1643,7 +1643,7 @@ while out_fds_to_wait_for[0] != Fd::INVALID || out_fds_to_wait_for[1] != Fd::INV
 
 ---
 
-## T35 — 每个 Worker 生命周期泄漏 ~1.4–1.8MB，线性不收敛（**上游缺陷，非 OHOS**；未修）
+### T35 — 每个 Worker 生命周期泄漏 ~1.4–1.8MB，线性不收敛（**上游缺陷，非 OHOS**；未修）
 
 **入口**：`test/js/web/workers/message-port-context-destroy-leak.test.ts` 失败（delta 65.97MB / 阈值 30MB）。但 MessagePort 只是放大器，不是根因 —— 这条记录的主要价值在于它推翻了自己最初的结论。
 
@@ -1754,7 +1754,7 @@ while out_fds_to_wait_for[0] != Fd::INVALID || out_fds_to_wait_for[1] != Fd::INV
 
 ---
 
-## T36 — `splice()` 写入管道不唤醒 poll/epoll 等待者，轮询型消费端永久死锁（平台缺陷 class B，**已由 shim 0.2.3 修复**）
+### T36 — `splice()` 写入管道不唤醒 poll/epoll 等待者，轮询型消费端永久死锁（平台缺陷 class B，**已由 shim 0.2.3 修复**）
 
 **入口**：`test/regression/issue/07500/07500.test.ts`（"Bun.stdin.text() doesn't read all data"，100s 超时）。台账原先记的症状"读不全数据"是错的 —— 它根本不是丢数据，是**整条管道死锁**。
 
@@ -1804,7 +1804,7 @@ while out_fds_to_wait_for[0] != Fd::INVALID || out_fds_to_wait_for[1] != Fd::INV
 
 ---
 
-## T37 — 对端关闭时，排队中的大写入被静默丢弃并报告成功（class A，**已修复并真机验证**）
+### T37 — 对端关闭时，排队中的大写入被静默丢弃并报告成功（class A，**已修复并真机验证**）
 
 **入口**：`test/js/node/test/parallel/test-net-error-twice.js`，稳定失败 3/3，断言 `assert.strictEqual(errs.length, 1)` 实际拿到 **0**。台账原记"错误只应触发一次的断言,实际触发次数不对"，真相是**一次都没触发**，而且代价远不止少一个事件。
 
@@ -1907,7 +1907,7 @@ on_writable: fatal=0                                    ← 错误在这里丢�
 
 ---
 
-## T38 — ~~`dns.lookup({all:true})` 只返回一个地址~~ **已撤回：结论建立在异常值上**（真实原因是测试自身缺陷，已修）
+### T38 — ~~`dns.lookup({all:true})` 只返回一个地址~~ **已撤回：结论建立在异常值上**（真实原因是测试自身缺陷，已修）
 
 > **本条初稿是错的，撤回。** 它声称"bun 的 `dns.lookup(all:true)` 只返回一个地址、双栈回退因此失效"，据此把 `node-http.test.ts` 的失败定为 class A bun 缺陷。两项都不成立。
 
@@ -1956,7 +1956,7 @@ on_writable: fatal=0                                    ← 错误在这里丢�
 
 ---
 
-## T39 — HongMeng 内核在建 inode 时于 IN_CREATE 前排一个 IN_ATTRIB，新建文件首个 watch 事件变成 `change`（class B 平台行为差异，**已在 bun 运行时层修复并真机验证，已发布 r41**）
+### T39 — HongMeng 内核在建 inode 时于 IN_CREATE 前排一个 IN_ATTRIB，新建文件首个 watch 事件变成 `change`（class B 平台行为差异，**已在 bun 运行时层修复并真机验证，已发布 r41**）
 
 **入口**：`fs.watch.test.ts` 三个用例 + vendored `test-fs-watch.js`，真机 3/3 确定性失败，全是同一签名：**新建文件的第一个 `fs.watch` 事件是 `("change", name)`，而 Linux 语义（node 与 bun 在所有其他平台）是 `("rename", name)` 先行**。
 
@@ -1991,7 +1991,7 @@ on_writable: fatal=0                                    ← 错误在这里丢�
 
 ---
 
-## T40 — ~~`fs.watch` 超长相对路径报 ENOENT 而非 ENAMETOOLONG~~（class C 测试 fixture 缺陷，**已修复** `d88b34a6f`）
+### T40 — ~~`fs.watch` 超长相对路径报 ENOENT 而非 ENAMETOOLONG~~（class C 测试 fixture 缺陷，**已修复** `d88b34a6f`）
 
 `fs.watch.test.ts` 的 `reports an error for relative paths that no longer fit in the path buffer`：fixture 的 per-platform 路径上限表 `{linux:4096, darwin:1024, win32:...} ?? 1024` **缺 `openharmony` 条目**，落到 1024 兜底；但 OHOS 构建走 `cfg!(target_os="linux")` 分支，`MAX_PATH_BYTES=4096`（`src/bun_core/util.rs:706`）。1022 字节相对路径合法通过校验、join 后约 1082 字节也放得下 → 真正去 watch 一个不存在的路径 → **ENOENT 是运行时的正确行为**（实测报错即 ENOENT）。
 
@@ -1999,7 +1999,7 @@ on_writable: fatal=0                                    ← 错误在这里丢�
 
 ---
 
-## T41 — ~~lockb v2 迁移把"老 bun 不认识的 os token"愈合成 `os:none`~~（class A，**已修复 `fdbe807e2` + 快照重生成，3/3 验证，已发布 r41**）
+### T41 — ~~lockb v2 迁移把"老 bun 不认识的 os token"愈合成 `os:none`~~（class A，**已修复 `fdbe807e2` + 快照重生成，3/3 验证，已发布 r41**）
 
 **入口**：`migrate-bun-lockb-v2.test.ts`（`migrate-bun-lockb-v2-most-features`），确定性失败 2/2——`bun install` 退出码 1，因为 esbuild postinstall 找不到 `@esbuild/openharmony-arm64`。
 
@@ -2016,7 +2016,7 @@ on_writable: fatal=0                                    ← 错误在这里丢�
 
 ---
 
-## T42 — ~~bun-install-registry prereleases "manifest is invalid"~~ **根因在 compat-shim：linkat 拷贝回退非原子，已修（`3f5121b`），已发布 shim 0.2.4 并装机验证**
+### T42 — ~~bun-install-registry prereleases "manifest is invalid"~~ **根因在 compat-shim：linkat 拷贝回退非原子，已修（`3f5121b`），已发布 shim 0.2.4 并装机验证**
 
 **入口**：`bun-install-registry.test.ts` 的 prereleases-3/4 "should fail" 系列，缓存 manifest 报 "manifest is invalid"。
 
@@ -2035,7 +2035,7 @@ linkat/symlinkat 拷贝回退改为**同目录隐藏临时文件 + renameat 原�
 
 ---
 
-## T43 — HongMeng 内核 EPOLLONESHOT 不自动解除,子进程 stdin 管道监视让事件循环 100% 空转（class B 内核缺陷,**bun 侧已修复 `ca2bb787e`+`deb827a3b`,已发布 r42 并装机验证**）
+### T43 — HongMeng 内核 EPOLLONESHOT 不自动解除,子进程 stdin 管道监视让事件循环 100% 空转（class B 内核缺陷,**bun 侧已修复 `ca2bb787e`+`deb827a3b`,已发布 r42 并装机验证**）
 
 **入口**：`spawn_waiter_thread.test.ts`（issue #9404）,fixture 1s 墙钟烧掉 1.37s CPU（阈值 750ms)。**与 waiter 线程无关**——`BUN_FEATURE_FLAG_FORCE_WAITER_THREAD` 两条路径同样烧。
 
@@ -2056,7 +2056,7 @@ linkat/symlinkat 拷贝回退改为**同目录隐藏临时文件 + renameat 原�
 
 ---
 
-## node-http2 `minimal maxSessionMemory` 15s 超时 —— class C,非 OHOS 问题（2026-07-29 分析完毕）
+### node-http2 `minimal maxSessionMemory` 15s 超时 —— class C,非 OHOS 问题（2026-07-29 分析完毕）
 
 **结论先行**：与 OHOS 无关。容器（Linux 内核）完整复现同样慢速（i=8000 @ 14.1s vs 真机 14.6s)，是该测试自身 15s 预算在 runner 环境下的边际超时。
 
@@ -2068,7 +2068,7 @@ linkat/symlinkat 拷贝回退改为**同目录隐藏临时文件 + renameat 原�
 
 ---
 
-## 2026-07-29 长尾全量复核（二进制 `1.4.0+72bc3a80b` = r40 + T39；25 个候选文件隔离复测 + 转绿项 3/3 确认）
+### 2026-07-29 长尾全量复核（二进制 `1.4.0+72bc3a80b` = r40 + T39；25 个候选文件隔离复测 + 转绿项 3/3 确认）
 
 ### 3/3 确认转绿（8 个，r40 修复的连带受益）
 
@@ -2105,7 +2105,7 @@ linkat/symlinkat 拷贝回退改为**同目录隐藏临时文件 + renameat 原�
 
 ---
 
-## T04 — `statx(2)` 对 socket 型 fd 报 EBADF，bun 的 `fstatSync` 误当真错误抛出（已修复并真机验证）
+### T04 — `statx(2)` 对 socket 型 fd 报 EBADF，bun 的 `fstatSync` 误当真错误抛出（已修复并真机验证）
 
 对应 `OHOS_TEST_STATUS.md` 第八/九轮记录的"字面 fd 数字作 stdio 导致父进程自身 fd 失效"。本轮排查**完全推翻了"spawn fd 所有权"的原始假设**——fd 从头到尾都没坏，是 bun 的 `fstatSync()` 实现在特定条件下给出了错误答案。
 
@@ -2138,7 +2138,7 @@ linkat/symlinkat 拷贝回退改为**同目录隐藏临时文件 + renameat 原�
 | `test/js/bun/spawn/spawn-stdin-large-buffer.test.ts` | 大 stdin buffer（2048/4096/8192 KB）截断，`spawnSync`/`Bun.spawn` 两条路径全部收到远小于预期的字节数（含收到 `0` 字节的情况） | A | rust | **复核完毕，非同根因**——不是 statx/EBADF，`fstatSync` 早已不参与这条路径；症状是大 buffer 下 socketpair 读取/写入的真实数据丢失，比 T04 更严重，需要单独立项且优先级应提高（数据完整性问题） |
 | `test/js/node/test/parallel/test-net-socket-constructor.js` | `cluster.fork({stdio:['pipe','pipe','pipe','ipc','pipe','pipe','pipe']})` 的 worker 退出码 1 而非 0 | A | rust | **通过**（本轮 `--include` 批次里在"parallel-safe"分组内跑,记为 Passed,未见于 Failing 列表）——是否是 T04 附带修复暂无法反证,但当前已是绿色,不再需要动作 |
 
-## T05 — ~~`fs.watch(recursive: true)` 内核不支持~~ **已作废：递归 watch 实际能用**（2026-07-28 复核）
+### T05 — ~~`fs.watch(recursive: true)` 内核不支持~~ **已作废：递归 watch 实际能用**（2026-07-28 复核）
 
 > **更正。** "内核不支持"这个框架本身就站不住：**Linux 内核从来就没有递归 inotify**，递归监视一律是用户态模拟的，与内核支持与否无关。
 >
@@ -2176,7 +2176,7 @@ test/js/node/test/parallel/test-fs-watch-recursive-sync-write.js
 
 ---
 
-## T06 — ~~fs 递归遍历 / ELOOP 自引用符号链接 fixture~~ **已收口：真凶是历史残留的 vendored 测试临时目录**（2026-07-29 复核）
+### T06 — ~~fs 递归遍历 / ELOOP 自引用符号链接 fixture~~ **已收口：真凶是历史残留的 vendored 测试临时目录**（2026-07-29 复核）
 
 **根因（合成探针 + 清理实证）**：`test/js/node/test/.tmp.2569/` 是 **7 月 12 日一次被杀的 vendored 测试运行留下的残骸**，内含 node 套件故意创建的 `fixtures/follow/cycle → 指向自己父目录` 的符号链接环。`fs.test.ts` 的 "readdir 整棵 `test/js/node` 树并与 Node 对比" 用例扫到它就 ELOOP——与平台无关，CI 上树是干净的所以一直绿。`.tmp.<pid>` 目录只在测试**自然结束**时才被 common/tmpdir 清理，被杀的运行就会留下它们。
 
@@ -2199,7 +2199,7 @@ test/js/node/test/parallel/test-fs-watch-recursive-sync-write.js
 
 ---
 
-## T07 — ~~cluster `getSystemErrorName` 崩溃~~ **撤回：隔离复测不复现，基线同样通过**
+### T07 — ~~cluster `getSystemErrorName` 崩溃~~ **撤回：隔离复测不复现，基线同样通过**
 
 已知平台限制是"绑定 <1024 端口需 root"（class B），但本轮发现 fork 出的子进程在收到 `EACCES`（errno 13）后，试图把它转成可读错误名时本身就崩了：
 
@@ -2226,7 +2226,7 @@ RangeError: The value of "err" is out of range. It must be a negative integer. R
 
 ---
 
-## T08 — ~~dgram 未深挖~~ **撤回：与 T07 同类，基线也通过**
+### T08 — ~~dgram 未深挖~~ **撤回：与 T07 同类，基线也通过**
 
 | 文件 | 最新二进制 ×3 | 基线 `3e233644d` ×3 | 结论 |
 |---|---|---|---|
@@ -2237,7 +2237,7 @@ RangeError: The value of "err" is out of range. It must be a negative integer. R
 
 ---
 
-## T09 — 第三方包缺 OHOS 预编译原生二进制（class E，复核确认仍成立）
+### T09 — 第三方包缺 OHOS 预编译原生二进制（class E，复核确认仍成立）
 
 `expectations.txt` 已有对应条目，`--ignore-expectations` 放回来复核后**全部依然失败**——证明这批 quarantine 不是陈旧误判,应该继续保留（不属于 bun 自身缺陷,是上游包没发 `openharmony-arm64` 二进制）。
 
@@ -2253,7 +2253,7 @@ RangeError: The value of "err" is out of range. It must be a negative integer. R
 
 ---
 
-## T10 — valkey/Redis 服务缺失（class D，非 OHOS 限制）
+### T10 — valkey/Redis 服务缺失（class D，非 OHOS 限制）
 
 | 文件 | 症状 |
 |---|---|
@@ -2264,7 +2264,7 @@ RangeError: The value of "err" is out of range. It must be a negative integer. R
 
 ---
 
-## T11 — `localhost` 缺 AAAA 映射（class D，结论成立但**原记的原因是错的**，2026-07-28 更正）
+### T11 — `localhost` 缺 AAAA 映射（class D，结论成立但**原记的原因是错的**，2026-07-28 更正）
 
 > **更正。** 原文写"这台沙盒缺少可用的 IPv6 回环/`/etc/hosts` 条目"。实测（`496fdb61a`）：
 >
@@ -2291,7 +2291,7 @@ RangeError: The value of "err" is out of range. It must be a negative integer. R
 
 ---
 
-## T12 — FUSE 不可用
+### T12 — FUSE 不可用
 
 本机/容器都没有 `fusermount`，这两个测试测的就是 FUSE 挂载点上的行为，环境缺依赖。
 
@@ -2302,7 +2302,7 @@ RangeError: The value of "err" is out of range. It must be a negative integer. R
 
 ---
 
-## T13 — ~~`bun build --compile` 自身平台 target 不可下载~~ **措辞过宽，已收窄**（2026-07-28 复核）
+### T13 — ~~`bun build --compile` 自身平台 target 不可下载~~ **措辞过宽，已收窄**（2026-07-28 复核）
 
 > **更正。** 实测：**不带显式 target 的 `bun build --compile` 在真机上完全可用** —— 编译成功（1.58s），产物运行正常（exit 0）。`bun-build-compile.test.ts` 是 **10 pass / 1 fail**，不是"不可用"。
 >
@@ -2328,7 +2328,7 @@ RangeError: The value of "err" is out of range. It must be a negative integer. R
 
 ---
 
-## T14 — 网络/包管理器超时预算（class D 为主，个别 C）
+### T14 — 网络/包管理器超时预算（class D 为主，个别 C）
 
 这台沙盒的外网访问（GitHub 走 gh-proxy、npm registry）延迟高且不稳定，以下失败的共同模式是长超时（90s-300s）打满。
 
@@ -2349,7 +2349,7 @@ RangeError: The value of "err" is out of range. It must be a negative integer. R
 
 ---
 
-## T15 — 深路径 / 长路径缓冲区问题（**两项均已收口**：一个随 T01 修复，一个是测试算术已修）
+### T15 — 深路径 / 长路径缓冲区问题（**两项均已收口**：一个随 T01 修复，一个是测试算术已修）
 
 最初怀疑两个文件是同一类"固定缓冲区在深 TMPDIR 下截断"的 Rust bug（类比历史上的 128 字节 shebang 缓冲区 bug）。用 `e39db04d6`（T01 修复后的二进制）复查,结论分岔：
 
@@ -2360,7 +2360,7 @@ RangeError: The value of "err" is out of range. It must be a negative integer. R
 
 ---
 
-## T16 — 测试自身硬编码 `/tmp`（低成本 test 层修复）
+### T16 — 测试自身硬编码 `/tmp`（低成本 test 层修复）
 
 `/tmp` 在这台沙盒上只读（`environment_tmp.md` 已记录），测试应该用 `os.tmpdir()`/`TMPDIR` 而不是硬编码路径。
 
@@ -2370,7 +2370,7 @@ RangeError: The value of "err" is out of range. It must be a negative integer. R
 
 ---
 
-## T17 — WASI 打开 `/` 触发沙盒 EACCES（class B，历史已确认）
+### T17 — WASI 打开 `/` 触发沙盒 EACCES（class B，历史已确认）
 
 | 文件 | 状态 |
 |---|---|
@@ -2378,7 +2378,7 @@ RangeError: The value of "err" is out of range. It must be a negative integer. R
 
 ---
 
-## T18 — bake dev server：feature flag 能解锁,但功能性失败（新发现，需要独立立项）
+### T18 — bake dev server：feature flag 能解锁,但功能性失败（新发现，需要独立立项）
 
 `ohos-full-test.yml` 里"stable 构建 `bake()` 被编译关闭因此排除"的判断**不准确**——`bake()` 是运行时 `feature_flag::BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE.get()` 判断，不是编译期 cfg。设置 `BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE=1` 后 dev server **确实启动了**（`Started development server: http://localhost:...`），但所有实际测试用例都在等待 dev server 响应时超时（60-120s），说明 HMR/live-binding 机制在这台环境下没有正常工作（或探测机制本身依赖了这台环境不具备的东西，如 WebSocket 长连接/文件监听）。`production.test.ts` 是唯一例外：直接报 "upgrade to canary" 拒绝（未设置到该文件的运行路径？需确认是否遗漏了 env 传递）。
 
@@ -2400,7 +2400,7 @@ RangeError: The value of "err" is out of range. It must be a negative integer. R
 
 ---
 
-## T19 — E 类：`expectations.txt` 已有条目，复核仍成立（node-vendored 平台差异，历史归类）
+### T19 — E 类：`expectations.txt` 已有条目，复核仍成立（node-vendored 平台差异，历史归类）
 
 以下与 `OHOS_TEST_STATUS.md` 第九轮记录的 16 个"E 类 node-vendored 平台差异"文件名对得上，本轮复核确认依然失败，不是陈旧条目：
 
@@ -2422,7 +2422,7 @@ test/js/node/test/parallel/test-trace-events-fs-sync.js
 
 ---
 
-## T20 — 已知 flaky/quarantine 条目，复核仍成立
+### T20 — 已知 flaky/quarantine 条目，复核仍成立
 
 | 文件 | expectations.txt 里的既有理由 |
 |---|---|
@@ -2436,7 +2436,7 @@ test/js/node/test/parallel/test-trace-events-fs-sync.js
 
 ---
 
-## T21 — F 类：未深挖的单点/长尾问题
+### T21 — F 类：未深挖的单点/长尾问题
 
 ### 修复后批量复测（18 个文件，`7f42ebc2d`）：3 个真转绿，1 个差点误判
 
@@ -2610,7 +2610,7 @@ if ISFIFO(stat.st_mode) && ISFIFO(dest.mode)
 
 ---
 
-## T24 — `ReadFile` 读循环被多个 worker 线程并发执行，大 buffer 随机丢数据 + 大 payload 必崩（**已修复并真机验证**，`04518175b`）
+### T24 — `ReadFile` 读循环被多个 worker 线程并发执行，大 buffer 随机丢数据 + 大 payload 必崩（**已修复并真机验证**，`04518175b`）
 
 `test/js/bun/spawn/spawn-stdin-large-buffer.test.ts`（阈值 1MB~2MB 之间开始出现,文件自带注释猜的方向是错的）复核后，用脱离测试框架的最小复现脚本 + 改造过的 `ohos-trace-shim` 做 syscall 级追踪，**推翻了最初"写端过早关闭/write 返回 0 被误判 EOF"的假设**，定位到真正的机制在**子进程读 stdin 的一侧**。
 
@@ -2697,7 +2697,7 @@ if ISFIFO(stat.st_mode) && ISFIFO(dest.mode)
 
 ---
 
-## T22 — memfd 的 fd 上 `fstat` 被沙箱拒绝（class B 平台事实；**bun 侧已加回退并真机验证**）
+### T22 — memfd 的 fd 上 `fstat` 被沙箱拒绝（class B 平台事实；**bun 侧已加回退并真机验证**）
 
 > **原"A/B 待定"已解决 → B。** C 探针 + 容器对照：
 >
@@ -2725,7 +2725,7 @@ if ISFIFO(stat.st_mode) && ISFIFO(dest.mode)
 
 ---
 
-## T23 — `patchelf --set-interpreter` 在 OHOS 签名后的 bun 二进制上静默失效（Task 14 新发现）
+### T23 — `patchelf --set-interpreter` 在 OHOS 签名后的 bun 二进制上静默失效（Task 14 新发现）
 
 `test/regression/issue/24742.test.ts` 和 `test/regression/issue/29290.test.ts` 都测试 `bun build --compile` 对 NixOS `/nix/store` 风格 `PT_INTERP` 路径的归一化逻辑。两个文件都在**归一化逻辑跑之前**就失败：`patchelf --set-interpreter <fake-nix-path> <copied-bun-binary>` 执行后（`stderr === ""`、`exitCode === 0`，patchelf 自认为成功），紧接着 `readInterp(readHead(patchedBinary))` 读回的 `PT_INTERP` 字符串是空的 `""`，而不是 patchelf 刚写入的伪 nix 路径。
 
@@ -2738,7 +2738,7 @@ if ISFIFO(stat.st_mode) && ISFIFO(dest.mode)
 
 ---
 
-## 陈旧 quarantine 确认（class E → 待删除，全部实测通过）
+### 陈旧 quarantine 确认（class E → 待删除，全部实测通过）
 
 以下 `[ OPENHARMONY ]` 条目在本轮 `--ignore-expectations` 全量+隔离复测中**全部通过**，理由（"bun:internal-for-testing unavailable in release build"）已被证伪——`scripts/runner.node.mjs` 的 `spawnBun()` 本来就同时设置了 `BUN_FEATURE_FLAG_INTERNAL_FOR_TESTING=1` 和 `BUN_GARBAGE_COLLECTOR_LEVEL=1`（后者是前者在 Rust 侧生效的必要条件，`src/jsc/VirtualMachine.rs:3247` 的判断嵌套在 `BUN_GARBAGE_COLLECTOR_LEVEL` 的 `if let` 里），这两个环境变量任何时候只要走真实 runner 就会同时具备。当年的"不可用"结论大概率来自裸 `bun test` 复测（漏掉这两个 env）。
 
@@ -2761,7 +2761,7 @@ test/napi/node-napi-tests/**（60 个子文件）
 
 ---
 
-## 会话状态快照（2026-07-27 更新：Task 14 expectations.txt 核实归类进行中）
+### 会话状态快照（2026-07-27 更新：Task 14 expectations.txt 核实归类进行中）
 
 **已完成并真机验证的修复（commit 已推送到 `origin/ohos-aarch64`）**：
 - `6a5df2ea5`/`e39db04d6` 附近 —— T01（EL2 沙盒 `getcwd()` bug）修复，9/9 文件转绿
@@ -2787,7 +2787,7 @@ test/napi/node-napi-tests/**（60 个子文件）
 
 ---
 
-## T44 — ~~::1 ECONNREFUSED 集群~~ **已关闭：误诊，uSockets + autoSelectFamily 均正常工作**
+### T44 — ~~::1 ECONNREFUSED 集群~~ **已关闭：误诊，uSockets + autoSelectFamily 均正常工作**
 
 **发现日期**：2026-07-30 r42 全量基线  
 **关闭日期**：2026-07-30 深入分析后推翻
@@ -2802,7 +2802,7 @@ test/napi/node-napi-tests/**（60 个子文件）
 
 ---
 
-## T49 — HarmonyOS getaddrinfo ADDRCONFIG 错误过滤 IPv4 loopback（class B，平台 dns 缺陷）
+### T49 — HarmonyOS getaddrinfo ADDRCONFIG 错误过滤 IPv4 loopback（class B，平台 dns 缺陷）
 
 **发现日期**：2026-07-30  
 **根因定位日期**：2026-07-30（重编 `[T49-DIAG]` 探针 bun + custom lookup 实测；推翻原"内核 connect 时序"假说）
@@ -2833,7 +2833,7 @@ Explore thorough 扫 `test/js/node/{http,net,tls,http2}` + `test/integration/`�
 
 ---
 
-## 下一轮优先级建议
+### 下一轮优先级建议
 
 1. ~~T01~~ —— **已修复并真机验证**（`e39db04d6`，9/9 文件转绿）。陈旧 quarantine 已清（class E 11 个文件删除）。
 2. ~~T15~~ —— **已复查完毕**：`path-length.test.ts` 随 T01 一起修复（连带副作用,6/6 转绿）；`unix-socket-long-path.test.ts` 改判为独立的测试算术脆弱（class C，低成本 test 层修复,未动手）。
@@ -2845,7 +2845,7 @@ Explore thorough 扫 `test/js/node/{http,net,tls,http2}` + `test/integration/`�
 
 ---
 
-## 2026-07-30 全量 Class B/D 验证
+### 2026-07-30 全量 Class B/D 验证
 
 r42 基线 94 失败全部分析完毕后，对平台限制类（class B）和环境依赖类（class D）逐项验证。
 
@@ -2881,7 +2881,7 @@ r42 基线 94 失败全部分析完毕后，对平台限制类（class B）和�
 
 5. **孤儿条目清理**：glob.test.ts（文件不存在）、valkey test-utils（不是 .test. 文件）从 expectations.txt 删除。
 
-### expectations.txt 收口
+### expectations 收口
 
 | 阶段 | 条目数 | 操作 |
 |------|--------|------|
@@ -2918,7 +2918,7 @@ r42 基线 94 失败全部分析完毕后，对平台限制类（class B）和�
 
 ---
 
-## T45-T48 — ~~bundler class A 簇~~ **全部关闭：环境污染（stale pkg.json），非 bun bug**
+### T45-T48 — ~~bundler class A 簇~~ **全部关闭：环境污染（stale pkg.json），非 bun bug**
 
 **关闭日期**：2026-07-30
 
@@ -2936,7 +2936,7 @@ r42 基线 94 失败全部分析完毕后，对平台限制类（class B）和�
 
 ---
 
-## cli/install class C 快速记录（不修，仅存档）
+### cli/install class C 快速记录（不修，仅存档）
 
 以下 cli/install 失败均为 class C（错误信息措辞/exit code 行为变化），**不列入修复计划**：
 
