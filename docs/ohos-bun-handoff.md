@@ -1,20 +1,22 @@
 # ohos-bun 交接文档
 
-**日期**：2026-07-30  
+**日期**：2026-07-31  
 **二进制**：r42 (`bun 1.4.0`, bottle `1.4.0_42`)  
 **compat-shim**：0.2.4  
 **分支**：`ohos-aarch64`
 
 ## 当前状态一句话
 
-r42 基线全量分析完毕：5526 tests, 5432 pass (98.3%), 94 fail —— **class A bun 代码 bug 归零**，所有失败均为平台限制 (class B)、环境问题 (class D)、或测试自身问题 (class C)。
+r42 基线实跑（triage 模式，`--ignore-expectations=OPENHARMONY`，3.2h）：**5486 tests, 5433 pass (99.03%), 49 fail** —— **0 个本地 class A**（bun 代码 bug 归零）。49 fail 全分类：26 旧 quarantine + 23 新（10 T49/ADDRCONFIG, 5 class B 平台, 2 class C 测试, 4 class D 环境, 1 class A 上游 T35）。
+
+正式基线（57 条 expectations 生效，quarantine 文件 vanish）：分母约 5000+ tests，0 已知未隔离失败。跳过约 113 文件（结构性 exclude ~56 + quarantine 57），主要为 PTY/Docker/缺原生二进制/平台 dns bug。
 
 ## 关键文件
 
 | 文件 | 用途 |
 |------|------|
 | `scripts/run-baseline.sh` | 全量 7 批基线脚本，含排除项和 TMPDIR 清理 |
-| `test/expectations.txt` | 29 条 OPENHARMONY 条目（83→29，删除 54 条过时/误判） |
+| `test/expectations.txt` | 57 条 OPENHARMONY 条目（本轮 +28：12 T49/ADDRCONFIG + 11 class B 平台 + 3 dns 外网 + 2 class C/D + T35 upstream） |
 | `OHOS_TEST_TODO.md` | 活文档——每个问题的根因、验证数据、修复状态 |
 | `docs/ohos-bun-handoff.md` | 本文件 |
 
@@ -35,14 +37,14 @@ bash scripts/run-baseline.sh
 # 排除：terminal (PTY), repl (PTY), valkey (Docker), bake, bun-types, source-lints
 ```
 
-期望结果（r42 口径）：
-- B1 (js/bun): ~550 tests, ~8 fail
-- B2 (regression/napi/internal/v8/config): ~541, ~0 fail
-- B3 (cli/bundler): ~442, ~4 fail (含 bun-install-registry)
-- B4 (js/web+third_party+sql+valkey+deno): ~370, ~0 fail (valkey 除外)
-- B5 (js/node): ~304, ~9 fail
-- B6 (vendored node): ~3248, ~4 fail
-- B7 (integration): ~19, ~0 fail (bake 排除后)
+实际实跑结果（2026-07-31 triage 模式，含 quarantine 一起跑）：
+- B1 (js/bun): 559 tests, 551 pass, 7 fail (不含 T49 quarantined)
+- B2 (regression/napi/internal/v8/config): 541, 535 pass, 6 fail
+- B3 (cli/bundler): 441, 432 pass, 9 fail
+- B4 (js/web+third_party+sql+valkey+deno): 370, 358 pass, 11 fail
+- B5 (js/node): 304, 296 pass, 7 fail (含 T49 quarantined: node-http-with-ws, transfer-encoding)
+- B6 (vendored node): 3248, 3245 pass, 3 fail
+- B7 (integration): 23, 16 pass, 6 fail
 
 ## 剩余工作
 
@@ -73,9 +75,10 @@ bash scripts/run-baseline.sh
 | 查看 expectations | `grep '\[ OPENHARMONY \]' test/expectations.txt` |
 | 容器重编 bun | `docker cp <formula> openharmony:/root/ && docker exec openharmony bash -lc "brew uninstall --ignore-dependencies bun && brew install --build-from-source social4hyq/core/bun"` |
 
-## 本轮 commit 摘要（ohos-aarch64，共 15 个）
+## 本轮 commit 摘要（ohos-aarch64，共 27 个：上轮 15 + 本轮 12）
 
-```
+```text
+# ── 上轮（r42 基线 + T44/T49 初判）──
 647f387ee docs: record baseline exclusions with file counts and reasons
 8140a8b81 docs: fix wording
 7a84db4a8 docs: consolidate class B/D verification results into ledger
@@ -90,4 +93,19 @@ d4dbb644d docs: T44 closed (misdiagnosis), T49 opened (WebSocket upgrade timeout
 948242583 docs: T45-T48 bundler class A entries, cli/install class C archive
 e8b29f71c test: T44 (HTTP client no IPv4 fallback), TMPDIR cleanup in baseline script
 3cb230dc7 test: r42 full baseline — prune 18 stale quarantine entries, harden runner script
+634e9b5da docs: add handoff document for next session
+
+# ── 本轮（T49 闭环 + 全量 baseline + expectations 清扫）──
+db7c128cc docs: correct T49 root cause (TODO) — ADDRCONFIG, not kernel race
+f46252ad3 docs(handoff): correct T49 root cause same
+50f3c695b test: node-http-with-ws T49 workaround (回滚见 def54b130)
+588b5122f docs(T49): mark workaround applied
+4153026ed test: node-http-transfer-encoding T49 workaround (回滚见 def54b130)
+af8df9cb6 docs(T49): list all 3 affected tests
+0e7752b56 docs(T49): vendored swept, 0 victims
+def54b130 test: revert host:127.0.0.1 workarounds, isolate via expectations
+4050f8fb8 test: quarantine 6 more T49 + 3 external-DNS (baseline sweep batch 1)
+7b1ee86b9 test: quarantine 11 more (PTY/exec/外网/Docker + grpc T49) batch 2
+d09f27ee0 test: quarantine 5 more (process/spawn/shell/security/tls-connect) batch 3
+d0975c65d test: quarantine message-port-context-destroy-leak (T35, upstream class A)
 ```
