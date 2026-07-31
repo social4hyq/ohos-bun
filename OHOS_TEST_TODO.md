@@ -1849,7 +1849,7 @@ test/napi/node-napi-tests/**（60 个子文件）
 
 **缓解方案**：`{host:"127.0.0.1"}`、`{family:4}` 或 `{hints:0}`。bun 层可考虑对 localhost 免 ADDRCONFIG；根本是 HarmonyOS ADDRCONFIG bug。
 
-**状态**：class B（平台 dns 缺陷，非 bun 代码 bug），暂不修复。
+**状态**：class B（平台 dns 缺陷，非 bun 代码 bug）。node-http-with-ws test 2 已 workaround（`tls.connect` 显式 `host:"127.0.0.1"`，commit `50f3c695b`，2/2 pass）；根因（HarmonyOS ADDRCONFIG）待系统侧修复。
 
 ---
 
