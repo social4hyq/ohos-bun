@@ -75,7 +75,11 @@ test.concurrent("should not crash when closing sockets after upgrade", async () 
     wsServer.on("connection", socket => {});
 
     const port = (server.address() as AddressInfo).port;
-    const socket = tls.connect({ port, ca: options.cert }, () => {
+    // server listens on 127.0.0.1; without `host`, tls.connect defaults to
+    // "localhost", which on OHOS (getaddrinfo AI_ADDRCONFIG drops the v4
+    // loopback) resolves to ::1 only and fails ECONNREFUSED — see T49.
+    // Same shape as node-http.test.ts "supports custom tls args".
+    const socket = tls.connect({ port, host: "127.0.0.1", ca: options.cert }, () => {
       // normal request keep the socket alive
       socket.write(`GET / HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: Keep-Alive\r\nContent-Length: 0\r\n\r\n`);
       socket.write(`GET / HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: Keep-Alive\r\nContent-Length: 0\r\n\r\n`);
