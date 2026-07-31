@@ -1066,6 +1066,21 @@ Explore 之前只扫 `js/node/` + `js/node/test/`，漏了 `js/bun/test/parallel
 | expectations quarantine | 57 | per-file（`runner.node.mjs:182`）整文件 vanish |
 | **合计** | **~113** | test 级更大（每文件多 test） |
 
+### compat-shim 验证（commit `e549b627c`）
+
+重编 bun 含新版 compat-shim（369 行新增，四项修复：splice EPIPE-on-EOF + poll wakeup、linkat/symlinkat atomic renameat、fchmodat2 AT_SYMLINK_NOFOLLOW 转发、getpwuid_r OH_OsAccount_GetName）。用 triage 模式跑 9 个 candidate，2 个转绿：
+
+| 测试 | 之前 | 之后 | 命中修复 |
+|---|---|---|---|
+| `spawn-stdin-destroy.test.ts` | 0/1 fail（EPIPE）| **1/1 pass** ✅ | splice EPIPE-on-EOF |
+| `shell/commands/ls.test.ts` | ShellError exit 1 | **26/27 pass** ✅ | splice poll wakeup |
+| `process.test.js` | 1 fail (v26.3.0) | 1 fail → | 无关（class C） |
+| `message-port-context-destroy-leak` | 1 fail (66MB) | 1 fail → | T35 upstream |
+| shell-load / tty / 26286 | timeout | timeout → | PTY seccomp，非 shim 可修 |
+| `bun-install-registry` | fail | fail → | linkat atomic 单修不够 |
+
+**处理**：spawn-stdin-destroy + ls 当前 quarantine 保留（正式 r42 bun 尚无新版 shim），等 shim 随 bottle 发布后移出 quarantine。
+
 ### 正式 baseline 结论
 
 Quarantine 生效（57 expectations 隔离）+ exclude ~56 目录 vanish → 分母 ~5000+ tests，**0 已知未隔离 fail**。</br>
