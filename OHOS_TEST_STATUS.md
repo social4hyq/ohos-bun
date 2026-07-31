@@ -1079,7 +1079,7 @@ Explore 之前只扫 `js/node/` + `js/node/test/`，漏了 `js/bun/test/parallel
 | shell-load / tty / 26286 | timeout | timeout → | PTY seccomp，非 shim 可修 |
 | `bun-install-registry` | fail | fail → | linkat atomic 单修不够 |
 
-**处理**：spawn-stdin-destroy + ls 当前 quarantine 保留（正式 r42 bun 尚无新版 shim），等 shim 随 bottle 发布后移出 quarantine。
+**处理**：shim 随 **r43 bottle 正式发布**（PR [#113](https://github.com/social4hyq/homebrew-core/pull/113)，2026-07-31 CI 自动构建 + atomgit 上传 + automerge，sha256 `206103ce...`）。spawn-stdin-destroy + ls **已从 quarantine 移除**（commit `bab12ba3e`，本机 r43 升级后验证通过），expectations 57→55。
 
 ### 正式 baseline 结论
 
