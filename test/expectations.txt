@@ -383,6 +383,7 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 [ OPENHARMONY ] test/js/bun/shell/commands/ls.test.ts [ Failure ] # class B: bun shell ls output differs（hmdfs file traversal/ordering）
 [ OPENHARMONY ] test/cli/install/bun-security-scanner-matrix-with-node-modules.test.ts [ Failure ] # class C: exitCode mismatch（OHOS env）
 [ OPENHARMONY ] test/js/node/tls/node-tls-connect.test.ts [ Failure ] # T49: tls.connect omits host(L154) → localhost→::1（ADDRCONFIG）; per-file quarantine also skips ~22 pass tests — see T49
+[ OPENHARMONY ] test/js/web/workers/message-port-context-destroy-leak.test.ts [ Failure ] # class A（上游缺陷）: per-Worker lifecycle leak ~1.4-1.8MB, MessagePort 只是放大器 — see OHOS_TEST_TODO.md T35（未修，等上游 fix）
 
 # --- js/bun/io: Bun.file slice+write truncation ---
 # FIXED in r23 (commit 28603b97c). Root cause: copy_file_using_read_write_loop
