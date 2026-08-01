@@ -1,12 +1,12 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
-import { bunEnv, bunExe, tempDirWithFiles } from "harness";
+import { bunEnv, bunExe, tempDir } from "harness";
 import { join } from "node:path";
 
 setDefaultTimeout(1000 * 60 * 5);
 
 describe("bun update security scanning", () => {
   test("bun update without arguments scans all packages", async () => {
-    const dir = tempDirWithFiles("update-scan-all", {
+    await using dir = tempDir("update-scan-all", {
       "package.json": JSON.stringify({
         name: "test-app",
         dependencies: {
@@ -93,7 +93,7 @@ module.exports = {
   });
 
   test("bun update with specific packages only scans those packages", async () => {
-    const dir = tempDirWithFiles("update-scan-specific", {
+    await using dir = tempDir("update-scan-specific", {
       "package.json": JSON.stringify({
         name: "test-app",
         dependencies: {
@@ -174,7 +174,7 @@ scanner = "./scanner.js"
   });
 
   test("bun update respects security scanner configuration", async () => {
-    const dir = tempDirWithFiles("update-no-scanner", {
+    await using dir = tempDir("update-no-scanner", {
       "package.json": JSON.stringify({
         name: "test-app",
         dependencies: {
@@ -210,7 +210,7 @@ scanner = "./scanner.js"
   });
 
   test("bun update aborts on fatal vulnerabilities", async () => {
-    const dir = tempDirWithFiles("update-abort-fatal", {
+    await using dir = tempDir("update-abort-fatal", {
       "package.json": JSON.stringify({
         name: "test-app",
         dependencies: {
@@ -270,7 +270,7 @@ scanner = "./scanner.js"
   });
 
   test.todo("bun update prompts for warnings when TTY available - requires TTY for interactive prompt", async () => {
-    const dir = tempDirWithFiles("update-prompt-warnings", {
+    await using dir = tempDir("update-prompt-warnings", {
       "package.json": JSON.stringify({
         name: "test-app",
         dependencies: {
@@ -332,7 +332,7 @@ module.exports = {
   });
 
   test("bun update shows dependency paths correctly", async () => {
-    const dir = tempDirWithFiles("update-dep-paths", {
+    await using dir = tempDir("update-dep-paths", {
       "package.json": JSON.stringify({
         name: "my-app",
         dependencies: {

@@ -17,7 +17,9 @@ use crate::webcore::node_types::PathOrFileDescriptor;
 use bun_collections::ByteVecExt as _;
 use bun_core;
 use bun_core::String as BunString;
-use bun_io::{self as io, FileAction};
+use bun_io as io;
+#[cfg(not(windows))]
+use bun_io::FileAction;
 #[cfg(windows)]
 // `bun_jsc::EventLoop` is the *module*; the struct is one level deeper.
 use bun_jsc::event_loop::EventLoop;
@@ -59,14 +61,14 @@ pub trait ReadFileToJs {
 }
 
 pub struct NewReadFileHandler<'a, F: ReadFileToJs> {
-    pub context: Blob,
-    pub promise: JSPromiseStrong,
+    pub(crate) context: Blob,
+    pub(crate) promise: JSPromiseStrong,
     pub global_this: &'a JSGlobalObject,
     _f: PhantomData<F>,
 }
 
 impl<'a, F: ReadFileToJs> NewReadFileHandler<'a, F> {
-    pub fn new(context: Blob, global_this: &'a JSGlobalObject) -> Self {
+    pub(crate) fn new(context: Blob, global_this: &'a JSGlobalObject) -> Self {
         Self {
             context,
             promise: JSPromiseStrong::default(),
@@ -143,8 +145,7 @@ pub struct ReadFileRead {
     /// `NewReadFileHandler` consumer forwards it straight into
     /// `to_*_with_bytes::<Temporary>(*mut [u8])`, which itself decides whether
     /// the bytes are freed locally or transferred to a JSC external string.
-    pub buf: *mut [u8],
-    pub total_size: SizeType,
+    pub(crate) buf: *mut [u8],
 }
 
 /// Result-or-error union for a completed read.
@@ -180,30 +181,38 @@ impl bun_jsc::work_task::WorkTaskContext for ReadFile {
 // ──────────────────────────────────────────────────────────────────────────
 
 pub struct ReadFile {
-    pub file_store: FileStore,
-    pub byte_store: ByteStore,
-    pub store: Option<StoreRef>,
+    pub(crate) file_store: FileStore,
+    #[cfg(not(windows))]
+    pub(crate) byte_store: ByteStore,
+    pub(crate) store: Option<StoreRef>,
     pub offset: SizeType,
-    pub max_length: SizeType,
-    pub total_size: SizeType,
-    pub opened_fd: Fd,
-    pub read_off: SizeType,
-    pub read_eof: bool,
-    pub size: SizeType,
-    pub buffer: Vec<u8>,
+    #[cfg(not(windows))]
+    pub(crate) max_length: SizeType,
+    #[cfg(not(windows))]
+    pub(crate) total_size: SizeType,
+    pub(crate) opened_fd: Fd,
+    #[cfg(not(windows))]
+    pub(crate) read_off: SizeType,
+    #[cfg(not(windows))]
+    pub(crate) read_eof: bool,
+    #[cfg(not(windows))]
+    pub(crate) size: SizeType,
+    pub(crate) buffer: Vec<u8>,
     pub task: WorkPoolTask,
-    pub system_error: Option<SystemError>,
-    pub errno: Option<Error>,
-    pub on_complete_ctx: *mut c_void,
-    pub on_complete_callback: ReadFileOnReadFileCallback,
-    pub io_task: Option<*mut ReadFileTask>,
-    pub io_poll: io::Poll,
-    pub io_request: io::Request,
-    pub could_block: bool,
-    pub close_after_io: bool,
-    pub state: AtomicU8, // ClosingState
+    pub(crate) system_error: Option<SystemError>,
+    pub(crate) errno: Option<Error>,
+    pub(crate) on_complete_ctx: *mut c_void,
+    pub(crate) on_complete_callback: ReadFileOnReadFileCallback,
+    #[cfg(not(windows))]
+    pub(crate) io_task: Option<*mut ReadFileTask>,
+    pub(crate) io_poll: io::Poll,
+    pub(crate) io_request: io::Request,
+    #[cfg(not(windows))]
+    pub(crate) could_block: bool,
+    pub(crate) close_after_io: bool,
+    pub(crate) state: AtomicU8, // ClosingState
     /// Serializes `do_read_loop` runs for this instance — see `read_loop_state`.
-    pub read_loop_state: AtomicU8,
+    pub(crate) read_loop_state: AtomicU8,
 }
 
 /// States for `ReadFile::read_loop_state`.
@@ -347,7 +356,7 @@ impl FileCloser for ReadFile {
 }
 
 impl ReadFile {
-    pub fn update(&mut self) {
+    pub(crate) fn update(&mut self) {
         #[cfg(windows)]
         {
             return; // why
@@ -364,7 +373,7 @@ impl ReadFile {
 
     // Not for Windows; Windows callers use ReadFileUV.
     #[cfg(not(windows))]
-    pub fn create_with_ctx(
+    pub(crate) fn create_with_ctx(
         store: StoreRef,
         on_read_file_context: *mut c_void,
         on_complete_callback: ReadFileOnReadFileCallback,
@@ -409,7 +418,7 @@ impl ReadFile {
     }
 
     #[cfg(not(windows))]
-    pub fn create<C: ReadFileCompletion>(
+    pub(crate) fn create<C: ReadFileCompletion>(
         store: StoreRef,
         off: SizeType,
         max_len: SizeType,
@@ -435,7 +444,8 @@ impl ReadFile {
         )
     }
 
-    pub const IO_TAG: io::Tag = io::Tag::ReadFile;
+    #[cfg(not(windows))]
+    pub(crate) const IO_TAG: io::Tag = io::Tag::ReadFile;
 
     /// Claim ownership of the read loop. `true` = the caller must schedule (or
     /// directly run) `do_read_loop`; `false` = another worker already owns it
@@ -539,7 +549,7 @@ impl ReadFile {
         }
     }
 
-    pub fn on_io_error(&mut self, err: &bun_sys::Error) {
+    pub(crate) fn on_io_error(&mut self, err: &bun_sys::Error) {
         bloblog!("ReadFile.onIOError");
         self.errno = Some(bun_errno::from_errno(err.errno as i32).into());
         self.system_error = Some(err.to_system_error().into());
@@ -559,12 +569,14 @@ impl ReadFile {
     }
 
     /// Thunk matching `io::FileAction::on_error`'s `fn(*mut (), &sys::Error)` shape.
+    #[cfg(not(windows))]
     fn on_io_error_thunk(ctx: *mut (), err: &bun_sys::Error) {
         // SAFETY: ctx is `self as *mut ReadFile` set in on_request_readable below.
         unsafe { (*ctx.cast::<ReadFile>()).on_io_error(err) }
     }
 
-    pub fn on_request_readable(request: &mut io::Request) -> io::Action<'_> {
+    #[cfg(not(windows))]
+    pub(crate) fn on_request_readable(request: &mut io::Request) -> io::Action<'_> {
         bloblog!("ReadFile.onRequestReadable");
         request.scheduled = false;
         // SAFETY: request points to ReadFile.io_request (intrusive field); recover parent via offset_of.
@@ -584,7 +596,8 @@ impl ReadFile {
         })
     }
 
-    pub fn wait_for_readable(&mut self) {
+    #[cfg(not(windows))]
+    pub(crate) fn wait_for_readable(&mut self) {
         bloblog!("ReadFile.waitForReadable");
         self.close_after_io = true;
         self.io_request
@@ -624,7 +637,13 @@ impl ReadFile {
     }
 
     /// Never touches `self.buffer`; the caller moves it out for the duration.
-    pub fn do_read(&mut self, buf: &mut [u8], read_len: &mut usize, retry: &mut bool) -> bool {
+    #[cfg(not(windows))]
+    pub(crate) fn do_read(
+        &mut self,
+        buf: &mut [u8],
+        read_len: &mut usize,
+        retry: &mut bool,
+    ) -> bool {
         let result: bun_sys::Result<usize> = 'brk: {
             if bun_sys::S::ISSOCK(self.file_store.mode) {
                 break 'brk bun_sys::recv_non_block(self.opened_fd, buf);
@@ -675,7 +694,7 @@ impl ReadFile {
         true
     }
 
-    pub fn then(this: Box<Self>, _: &JSGlobalObject) -> jsc::JsTerminatedResult<()> {
+    pub(crate) fn then(this: Box<Self>, _: &JSGlobalObject) -> jsc::JsTerminatedResult<()> {
         let cb = this.on_complete_callback;
         let cb_ctx = this.on_complete_ctx;
 
@@ -710,7 +729,6 @@ impl ReadFile {
 
         // `_store` is dropped at end of scope (= store.deref()).
         let system_error = this.system_error.take();
-        let total_size = this.total_size;
         drop(this);
 
         if let Some(err) = system_error {
@@ -724,13 +742,12 @@ impl ReadFile {
             cb_ctx,
             ReadFileResultType::Result(ReadFileRead {
                 buf: bun_core::heap::into_raw(buf.into_boxed_slice()),
-                total_size,
             }),
         );
         Ok(())
     }
 
-    pub fn run(&mut self, task: *mut ReadFileTask) {
+    pub(crate) fn run(&mut self, task: *mut ReadFileTask) {
         self.run_async(task);
     }
 
@@ -752,7 +769,8 @@ impl ReadFile {
         }
     }
 
-    pub fn is_allowed_to_close(&self) -> bool {
+    #[cfg(not(windows))]
+    pub(crate) fn is_allowed_to_close(&self) -> bool {
         self.file_store.pathlike.is_path()
     }
 
@@ -1044,27 +1062,27 @@ impl ReadFile {
 
 #[cfg(windows)]
 pub struct ReadFileUV<'a> {
-    pub loop_: *mut libuv::uv_loop_t,
-    pub event_loop: &'a EventLoop,
-    pub file_store: FileStore,
-    pub byte_store: ByteStore,
-    pub store: StoreRef,
+    pub(crate) loop_: *mut libuv::uv_loop_t,
+    pub(crate) event_loop: &'a EventLoop,
+    pub(crate) file_store: FileStore,
+    pub(crate) byte_store: ByteStore,
+    pub(crate) store: StoreRef,
     pub offset: SizeType,
-    pub max_length: SizeType,
-    pub total_size: SizeType,
-    pub opened_fd: Fd,
-    pub read_len: SizeType,
-    pub read_off: SizeType,
-    pub read_eof: bool,
-    pub size: SizeType,
-    pub buffer: Vec<u8>,
-    pub system_error: Option<SystemError>,
-    pub errno: Option<Error>,
-    pub on_complete_data: *mut c_void,
-    pub on_complete_fn: ReadFileOnReadFileCallback,
-    pub is_regular_file: bool,
+    pub(crate) max_length: SizeType,
+    pub(crate) total_size: SizeType,
+    pub(crate) opened_fd: Fd,
+    pub(crate) read_len: SizeType,
+    pub(crate) read_off: SizeType,
+    pub(crate) read_eof: bool,
+    pub(crate) size: SizeType,
+    pub(crate) buffer: Vec<u8>,
+    pub(crate) system_error: Option<SystemError>,
+    pub(crate) errno: Option<Error>,
+    pub(crate) on_complete_data: *mut c_void,
+    pub(crate) on_complete_fn: ReadFileOnReadFileCallback,
+    pub(crate) is_regular_file: bool,
 
-    pub req: libuv::fs_t,
+    pub(crate) req: libuv::fs_t,
     /// Stash for the open completion callback across the libuv async hop.
     open_callback: fn(&mut Self, Fd),
 }
@@ -1143,12 +1161,31 @@ impl<'a> FileCloser for ReadFileUV<'a> {
     }
 }
 
+/// Handler for `ReadFileUV.start`: the
+/// implementor supplies the already-erased thunk.
+#[cfg(windows)]
+pub(crate) trait ReadFileUvHandler {
+    fn run(ctx: *mut c_void, bytes: ReadFileResultType);
+}
+
+/// Any `ReadFileCompletion` is usable as a `ReadFileUV` handler — the libuv
+/// path stores the same `(ctx, run)` pair, just without the JSTerminated
+/// return (the UV path's run thunk is `void`-returning by contract).
+#[cfg(windows)]
+impl<C: ReadFileCompletion> ReadFileUvHandler for C {
+    fn run(ctx: *mut c_void, bytes: ReadFileResultType) {
+        // SAFETY: `ctx` is the `*mut C` passed unmodified through
+        // `on_complete_data`; ownership transfers per `ReadFileCompletion::run`.
+        let _ = unsafe { <C as ReadFileCompletion>::run(ctx.cast::<C>(), bytes) };
+    }
+}
+
 #[cfg(windows)]
 impl<'a> ReadFileUV<'a> {
     /// Typed entry: caller passes the already-erased
     /// context pointer; `H` (via turbofish) supplies the run thunk through the
     /// `ReadFileUvHandler` blanket impl.
-    pub fn start<H>(
+    pub(crate) fn start<H>(
         event_loop: *mut EventLoop,
         store: StoreRef,
         off: SizeType,
@@ -1170,7 +1207,7 @@ impl<'a> ReadFileUV<'a> {
 
     /// Raw entry — caller already has the type-erased `(fn, *anyopaque)` pair
     /// Shares the body with `start`.
-    pub fn start_with_ctx(
+    pub(crate) fn start_with_ctx(
         event_loop: *mut EventLoop,
         store: StoreRef,
         off: SizeType,
@@ -1238,7 +1275,6 @@ impl<'a> ReadFileUV<'a> {
             let boxed = core::mem::take(&mut this_box.byte_store).into_boxed_slice();
             ReadFileResultType::Result(ReadFileRead {
                 buf: bun_core::heap::into_raw(boxed),
-                total_size: this_box.total_size,
             })
         };
 
@@ -1254,7 +1290,7 @@ impl<'a> ReadFileUV<'a> {
         log!("ReadFileUV.finalize destroy");
     }
 
-    pub fn is_allowed_to_close(&self) -> bool {
+    pub(crate) fn is_allowed_to_close(&self) -> bool {
         self.file_store.pathlike.is_path()
     }
 
@@ -1276,7 +1312,7 @@ impl<'a> ReadFileUV<'a> {
         Self::finalize(core::ptr::from_mut(self));
     }
 
-    pub fn on_file_open(&mut self, opened_fd: Fd) {
+    pub(crate) fn on_file_open(&mut self, opened_fd: Fd) {
         log!("ReadFileUV.onFileOpen");
         if self.errno.is_some() {
             self.on_finish();
@@ -1432,7 +1468,7 @@ impl<'a> ReadFileUV<'a> {
         &mut spare[..take]
     }
 
-    pub fn queue_read(&mut self) {
+    pub(crate) fn queue_read(&mut self) {
         // if not a regular file, buffer capacity is arbitrary, and running out doesn't mean we're
         // at the end of the file
         if (!self.remaining_buffer().is_empty() || !self.is_regular_file)
@@ -1507,7 +1543,7 @@ impl<'a> ReadFileUV<'a> {
         }
     }
 
-    pub extern "C" fn on_read(req: *mut libuv::fs_t) {
+    pub(crate) extern "C" fn on_read(req: *mut libuv::fs_t) {
         // SAFETY: req.data was set to *mut Self in queue_read().
         let this: &mut ReadFileUV = unsafe { bun_ptr::callback_ctx::<ReadFileUV>((*req).data) };
 
@@ -1543,22 +1579,5 @@ impl<'a> ReadFileUV<'a> {
 
         this.req.deinit();
         this.queue_read();
-    }
-}
-
-/// Handler for `ReadFileUV.start`: the
-/// implementor supplies the already-erased thunk.
-pub trait ReadFileUvHandler {
-    fn run(ctx: *mut c_void, bytes: ReadFileResultType);
-}
-
-/// Any `ReadFileCompletion` is usable as a `ReadFileUV` handler — the libuv
-/// path stores the same `(ctx, run)` pair, just without the JSTerminated
-/// return (the UV path's run thunk is `void`-returning by contract).
-impl<C: ReadFileCompletion> ReadFileUvHandler for C {
-    fn run(ctx: *mut c_void, bytes: ReadFileResultType) {
-        // SAFETY: `ctx` is the `*mut C` passed unmodified through
-        // `on_complete_data`; ownership transfers per `ReadFileCompletion::run`.
-        let _ = unsafe { <C as ReadFileCompletion>::run(ctx.cast::<C>(), bytes) };
     }
 }

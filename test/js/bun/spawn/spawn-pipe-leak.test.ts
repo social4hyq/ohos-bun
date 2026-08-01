@@ -5,7 +5,7 @@
  * and then exits. We only await the `process.exited` promise without reading
  * any of the output data to test for potential memory leaks.
  */
-import { bunExe, isASAN, isCI, isWindows } from "harness";
+import { bunExe, isASAN, isCI, isWindows, rss } from "harness";
 
 // Each test spawns hundreds of processes across warmup + measured batches;
 // OHOS fork+exit_group overhead is 2-3x slower than vfork. 3x still timed out
@@ -84,7 +84,7 @@ describe.todoIf(
      */
     async function testSpawnMemoryLeak(batchSize: number, totalBatches: number) {
       log("Starting memory leak test...");
-      log(`Initial memory usage: ${Math.round(process.memoryUsage.rss() / MB)} MB`);
+      log(`Initial memory usage: ${Math.round(rss() / MB)} MB`);
 
       let peak = 0;
       for (let batch = 0; batch < totalBatches; batch++) {
@@ -104,12 +104,12 @@ describe.todoIf(
         // batches and the peak comparison sees a false positive.
         Bun.gc(true);
 
-        const rss = process.memoryUsage.rss();
-        peak = Math.max(peak, rss);
+        const rssNow = rss();
+        peak = Math.max(peak, rssNow);
 
         // Log progress after each batch
         log(`Batch ${batch + 1}/${totalBatches} completed (${(batch + 1) * batchSize} processes)`);
-        log(`Current memory usage: ${Math.round(rss / MB)} MB`);
+        log(`Current memory usage: ${Math.round(rssNow / MB)} MB`);
       }
 
       return peak;
@@ -124,7 +124,7 @@ describe.todoIf(
     const mainPeak = await testSpawnMemoryLeak(batchSize, 10);
 
     log("Memory leak test completed");
-    log(`Final memory usage: ${Math.round(process.memoryUsage.rss() / MB)} MB`);
+    log(`Final memory usage: ${Math.round(rss() / MB)} MB`);
 
     // Compare the max RSS seen across batches rather than a single post-run sample.
     // mimalloc returns pages on its own schedule, so one sample can land anywhere;

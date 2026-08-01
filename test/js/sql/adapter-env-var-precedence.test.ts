@@ -1,6 +1,6 @@
 import { SQL } from "bun";
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { isWindows, tmpdirSync } from "harness";
+import { isWindows, tempDir, tmpdirSync } from "harness";
 import { unlinkSync } from "js/node/fs/export-star-from";
 import { join } from "node:path";
 
@@ -322,6 +322,26 @@ describe("SQL adapter environment variable precedence", () => {
       expect(options.options.path).toBe(sockPath);
 
       unlinkSync(sock.unix);
+    });
+
+    test.skipIf(isWindows)("postgres URL with a host uses the pathname as the database name, not a socket path", () => {
+      using dir = tempDir("sql-url-pathname-pg", { placeholder: "" });
+      const options = new SQL(`postgres://user:pass@dbhost:5432${dir}`);
+      expect(options.options.adapter).toBe("postgres");
+      expect(options.options.hostname).toBe("dbhost");
+      expect(options.options.port).toBe(5432);
+      expect(options.options.database).toBe(String(dir).slice(1));
+      expect(options.options.path).toBeUndefined();
+    });
+
+    test.skipIf(isWindows)("mysql URL with a host uses the pathname as the database name, not a socket path", () => {
+      using dir = tempDir("sql-url-pathname-mysql", { placeholder: "" });
+      const options = new SQL(`mysql://user:pass@dbhost:3306${dir}`);
+      expect(options.options.adapter).toBe("mysql");
+      expect(options.options.hostname).toBe("dbhost");
+      expect(options.options.port).toBe(3306);
+      expect(options.options.database).toBe(String(dir).slice(1));
+      expect(options.options.path).toBeUndefined();
     });
 
     test("should work with sqlite:// protocol and sqlite adapter", () => {

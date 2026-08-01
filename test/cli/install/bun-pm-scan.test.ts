@@ -1,5 +1,5 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
-import { bunEnv, bunExe, tempDirWithFiles, tmpdirSync } from "harness";
+import { bunEnv, bunExe, tempDir, tmpdirSync } from "harness";
 import { join } from "path";
 
 setDefaultTimeout(1000 * 60 * 5);
@@ -7,7 +7,7 @@ setDefaultTimeout(1000 * 60 * 5);
 describe("bun pm scan", () => {
   describe("configuration", () => {
     test("shows error when no security scanner configured", async () => {
-      const dir = tempDirWithFiles("scan-no-config", {
+      await using dir = tempDir("scan-no-config", {
         "package.json": JSON.stringify({ name: "test", dependencies: { "left-pad": "^1.0.0" } }),
         "bun.lockb": "",
       });
@@ -27,7 +27,7 @@ describe("bun pm scan", () => {
     });
 
     test("shows error when lockfile doesn't exist", async () => {
-      const dir = tempDirWithFiles("scan-no-lockfile", {
+      await using dir = tempDir("scan-no-lockfile", {
         "package.json": JSON.stringify({ name: "test", dependencies: {} }),
         "bunfig.toml": `[install.security]\nscanner = "test-scanner"`,
       });
@@ -67,7 +67,7 @@ describe("bun pm scan", () => {
 
   describe("scanner execution", () => {
     test("scanner receives correct package format", async () => {
-      const dir = tempDirWithFiles("scan-package-format", {
+      await using dir = tempDir("scan-package-format", {
         "package.json": JSON.stringify({
           name: "test-app",
           dependencies: {
@@ -119,7 +119,7 @@ describe("bun pm scan", () => {
     });
 
     test("scanner version validation", async () => {
-      const dir = tempDirWithFiles("scan-version-check", {
+      await using dir = tempDir("scan-version-check", {
         "package.json": JSON.stringify({ name: "test", dependencies: { "left-pad": "^1.0.0" } }),
         "scanner.js": `
           module.exports = {
@@ -153,7 +153,7 @@ describe("bun pm scan", () => {
 
   describe("vulnerability detection", () => {
     test("detects fatal vulnerabilities", async () => {
-      const dir = tempDirWithFiles("scan-fatal", {
+      await using dir = tempDir("scan-fatal", {
         "package.json": JSON.stringify({
           name: "test-app",
           dependencies: { lodash: "^4.0.0" },
@@ -196,7 +196,7 @@ describe("bun pm scan", () => {
     });
 
     test("detects warning vulnerabilities", async () => {
-      const dir = tempDirWithFiles("scan-warn", {
+      await using dir = tempDir("scan-warn", {
         "package.json": JSON.stringify({
           name: "test-app",
           dependencies: { axios: "^0.21.0" },
@@ -238,7 +238,7 @@ describe("bun pm scan", () => {
     });
 
     test("handles mixed vulnerabilities", async () => {
-      const dir = tempDirWithFiles("scan-mixed", {
+      await using dir = tempDir("scan-mixed", {
         "package.json": JSON.stringify({
           name: "test-app",
           dependencies: {
@@ -304,7 +304,7 @@ describe("bun pm scan", () => {
     });
 
     test("no vulnerabilities found", async () => {
-      const dir = tempDirWithFiles("scan-clean", {
+      await using dir = tempDir("scan-clean", {
         "package.json": JSON.stringify({
           name: "test-app",
           dependencies: { lodash: "^4.0.0" },
@@ -339,7 +339,7 @@ describe("bun pm scan", () => {
 
   describe("dependency paths", () => {
     test("shows correct path for direct dependencies", async () => {
-      const dir = tempDirWithFiles("scan-direct-dep", {
+      await using dir = tempDir("scan-direct-dep", {
         "package.json": JSON.stringify({
           name: "my-app",
           dependencies: { express: "^4.0.0" },
@@ -384,7 +384,7 @@ describe("bun pm scan", () => {
     });
 
     test("shows correct path for transitive dependencies", async () => {
-      const dir = tempDirWithFiles("scan-transitive-dep", {
+      await using dir = tempDir("scan-transitive-dep", {
         "package.json": JSON.stringify({
           name: "my-app",
           dependencies: { express: "^4.0.0" },
@@ -438,7 +438,7 @@ describe("bun pm scan", () => {
 
   describe("error handling", () => {
     test("handles scanner crash", async () => {
-      const dir = tempDirWithFiles("scan-crash", {
+      await using dir = tempDir("scan-crash", {
         "package.json": JSON.stringify({
           name: "test",
           dependencies: { "left-pad": "^1.0.0" },
@@ -473,7 +473,7 @@ describe("bun pm scan", () => {
     });
 
     test("handles invalid JSON from scanner", async () => {
-      const dir = tempDirWithFiles("scan-bad-json", {
+      await using dir = tempDir("scan-bad-json", {
         "package.json": JSON.stringify({
           name: "test",
           dependencies: { "left-pad": "^1.0.0" },
@@ -509,7 +509,7 @@ describe("bun pm scan", () => {
     });
 
     test("handles missing required fields in advisory", async () => {
-      const dir = tempDirWithFiles("scan-missing-fields", {
+      await using dir = tempDir("scan-missing-fields", {
         "package.json": JSON.stringify({
           name: "test",
           dependencies: { lodash: "^4.0.0" },
@@ -549,7 +549,7 @@ describe("bun pm scan", () => {
 
   describe("output formatting", () => {
     test("singular vs plural in summary", async () => {
-      const dir = tempDirWithFiles("scan-singular", {
+      await using dir = tempDir("scan-singular", {
         "package.json": JSON.stringify({
           name: "test",
           dependencies: { "left-pad": "^1.0.0" },
@@ -595,7 +595,7 @@ describe("bun pm scan", () => {
     });
 
     test("shows timing for slow scans", async () => {
-      const dir = tempDirWithFiles("scan-slow", {
+      await using dir = tempDir("scan-slow", {
         "package.json": JSON.stringify({
           name: "test",
           dependencies: { "left-pad": "^1.0.0" },
@@ -634,7 +634,7 @@ describe("bun pm scan", () => {
 
   describe("differences from bun add/install", () => {
     test("does not show 'installation aborted' message", async () => {
-      const dir = tempDirWithFiles("scan-no-abort-msg", {
+      await using dir = tempDir("scan-no-abort-msg", {
         "package.json": JSON.stringify({
           name: "test",
           dependencies: { lodash: "^4.0.0" },

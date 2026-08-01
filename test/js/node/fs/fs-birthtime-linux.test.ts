@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { isLinux, tempDirWithFiles } from "harness";
+import { isLinux, tempDir } from "harness";
 import { chmodSync, closeSync, fstatSync, lstatSync, openSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -7,7 +7,7 @@ import { join } from "node:path";
 // time even though the syscall itself succeeds; birthtimeMs reads back 0.
 describe.skipIf(!isLinux || process.platform === "openharmony")("birthtime", () => {
   it("should return non-zero birthtime on Linux", () => {
-    const dir = tempDirWithFiles("birthtime-test", {
+    using dir = tempDir("birthtime-test", {
       "test.txt": "initial content",
     });
 
@@ -21,7 +21,7 @@ describe.skipIf(!isLinux || process.platform === "openharmony")("birthtime", () 
   });
 
   it("birthtime should remain constant while other timestamps change", () => {
-    const dir = tempDirWithFiles("birthtime-immutable", {});
+    using dir = tempDir("birthtime-immutable", {});
     const filepath = join(dir, "immutable-test.txt");
 
     // Create file and capture birthtime
@@ -53,7 +53,7 @@ describe.skipIf(!isLinux || process.platform === "openharmony")("birthtime", () 
   });
 
   it("birthtime should work with lstat and fstat", () => {
-    const dir = tempDirWithFiles("birthtime-variants", {
+    using dir = tempDir("birthtime-variants", {
       "test.txt": "content",
     });
 
@@ -75,7 +75,7 @@ describe.skipIf(!isLinux || process.platform === "openharmony")("birthtime", () 
   });
 
   it("birthtime should work with BigInt stats", () => {
-    const dir = tempDirWithFiles("birthtime-bigint", {
+    using dir = tempDir("birthtime-bigint", {
       "test.txt": "content",
     });
 
@@ -96,7 +96,7 @@ describe.skipIf(!isLinux || process.platform === "openharmony")("birthtime", () 
   });
 
   it("birthtime should be less than or equal to all other timestamps on creation", () => {
-    const dir = tempDirWithFiles("birthtime-ordering", {});
+    using dir = tempDir("birthtime-ordering", {});
     const filepath = join(dir, "new-file.txt");
 
     writeFileSync(filepath, "new content");

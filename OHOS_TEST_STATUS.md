@@ -3053,3 +3053,14 @@ r42 基线 94 失败全部分析完毕后，对平台限制类（class B）和�
 
 ---
 
+
+---
+
+## 2026-08-01 合并 upstream/main (f91d5c95c9)
+
+将 oven-sh/bun main `028f7a3b5..f91d5c95c9`（167 个提交）合入 ohos-aarch64。23 个冲突全部解决：
+
+- **Rust（9 个文件）**：采用上游 `pub(crate)` 可见性收窄；保留 OHOS 增量——memfd 回避（spawn/stdio.rs）、stdin ArrayBuffer 拷贝防损坏（subprocess.rs）、`pending_fatal_send_errno`（socket_body.rs）、`read_loop_state` 读循环串行化（read_file.rs）、`IS_MUSL` 含 ohos（env.rs）、`OPENHARMONY` 常量（resolver_hooks.rs）、两 crate 的 `ohos_sign` 依赖；上游删除的 `bun_zlib`/runtime features 跟随删除。
+- **测试（14 个文件）**：以上游 `tempDir` 重构为基底，叠加 OHOS 的 `setDefaultTimeout`、hmdfs 规避（tmpdirSync）、quarantine/skipIf(openharmony)；`test/bun.lock` 手工合并两侧依赖条目（vitest 4 系取上游，OHOS esbuild 0.28.1/rollup 4.62.2 保留）。
+- **WebKit pin 随上游升级**：WEBKIT_VERSION `5491700992…` → `34c01d13391e00c06862a3d2c5b7fff350ac87e0`，bun-webkit formula 已同步提 PR（homebrew-core#163）。
+- 合并后未在真机跑测试；下一轮 triage 需基于新二进制重建基线（上游测试重构较多，quarantine 名单可能需要重新核对）。

@@ -1,5 +1,5 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
-import { bunExe, tempDirWithFiles } from "harness";
+import { bunExe, tempDir, tempDirWithFiles } from "harness";
 import * as path from "path";
 
 setDefaultTimeout(1000 * 60 * 5);
@@ -357,7 +357,7 @@ describe("?raw", () => {
     test(name, async () => {
       const filename = "abcd.js";
       const code = "export const a = 'demo';";
-      const question_raw = tempDirWithFiles("import-attributes", {
+      await using question_raw = tempDir("import-attributes", {
         [filename]: code,
       });
       expect(await fn(question_raw, null, filename + "?raw")).toEqual({ default: code });
