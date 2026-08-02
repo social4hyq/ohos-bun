@@ -3110,3 +3110,43 @@ r42 基线 94 失败全部分析完毕后，对平台限制类（class B）和�
 
 - A/B 两组共 14 个文件建议立项做合并回归 triage（重点：stdin 集群是否同根因；serve-directory-routes 的 SIGSYS 是哪个 syscall）。
 - C/D 两组适合直接 quarantine（T49 走 expectations；/dev/shm、pre-epoch 时间戳是平台限制）。
+
+---
+
+## T50 — stdin 管道读丢失唤醒：`cat big | bun`（bash 管道 + 输入 > 管道容量）挂死
+
+**发现**：2026-08-02 合并后基线，stdin/REPL 集群（07500、readline、test-repl×6 等 9 文件）全挂。
+**定性：非合并回归**——用合并前的 r44 bottle 二进制同样 100% 复现；07500 在 7-30/7-31 基线（r42/r43）通过只是时序侥幸。这是一个一直存在的潜在竞态，本轮被环境时序漂移暴露。
+
+### 最小复现与复现率
+
+```sh
+head -c 600000 /dev/zero > probe.bin
+bash -c "cat probe.bin | bun -e 'console.write(await Bun.stdin.text())'"   # 6/6 挂死
+sh   -c "cat probe.bin | bun -e 'console.write(await Bun.stdin.text())'"   # 4/4 通过
+```
+
+- bash 管道 + 输入 > 512KB（OHOS 管道容量）：6/6 挂；≤512KB（writer 能在 bun 启动前写完并关闭）：通过
+- sh（busybox）管道：任意大小通过——busybox 拉起 cat 更快，bun 初始化完时管道已有数据，走启动直读路径，根本不碰出问题的等待路径
+- 与 spawnSync 无关、与新旧二进制无关（OLD/NEW × OLD/NEW 四组合全挂）
+
+### 证据链（qemu-aarch64 -strace，设备 ptrace 被禁后的替代）
+
+挂死态 syscall trace（对比 sh 正常态 trace）：
+
+1. 启动时 `ppoll(fd0)` 返回 NotReady（bash 的 cat 还没写入）→ `epoll_ctl(ADD fd0)` 注册可读等待
+2. IO watcher 线程 `epoll_pwait` 返回 1（事件到达）——**之后全进程再无任何 read(0)、无任何 FUTEX_WAKE、无任何 ppoll**：读循环没有被调度起来
+3. IO 线程第二次 `epoll_pwait(∞)` 永久阻塞（qemu 下报 spurious ETIMEDOUT，但 C 探针证明 OHOS 内核处理 INT32_MAX 超时正常——系 qemu-user 假象）；writer（cat）写满 512KB 后阻塞，**不再产生新边沿，唤醒永久丢失**
+4. 对照 sh 正常态：bun 启动时 `is_readable` 已为 Ready → 直接同步读 9 次 64KB 读完，epoll 注册发生在读完之后，完全绕开该路径
+
+### 根因推断（未 100% 闭环）
+
+`read_file.rs update()` 的启动路径是"先 `is_readable` 检查 → NotReady 则 `wait_for_readable` 注册等待"，注册后事件确实送达了 IO watcher，但 `on_ready → try_begin_read_loop → WorkPool::schedule` 这条链上没有观察到 worker 被唤醒（无 FUTEX_WAKE）。疑点两处：(a) `on_ready` 早退（状态非 IDLE——但 init 路径不取 ownership，理论上应是 IDLE）；(b) WorkPool 唤醒丢失。具体断点需要带日志的诊断构建（容器/CI 编一轮）才能钉死。
+
+### 同簇其他失败（签名相同家族，未逐一验证）
+
+`readline.node`（completer 90s 超时）、`test-repl-*` ×6（管道喂 REPL 输入）大概率同根因；`process-stdin`（backpressure 40≥16）症状相反（读太多），单独存疑。
+
+### 修复方向（未实施）
+
+`update()` 的 NotReady 分支在 `wait_for_readable()` 注册后应**复查一次 `is_readable`**（注册与检查之间的数据到达在 ONESHOT/边沿语义下可能丢事件），或在注册后直接跑一轮 `do_read_loop` 由 EAGAIN 自然回落。改完需要容器/CI 重编 bottle 验证。
