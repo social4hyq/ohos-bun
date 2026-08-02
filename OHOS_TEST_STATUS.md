@@ -3229,3 +3229,13 @@ splice#3(pipe→pipe, EOF)=-1 errno=32 (Broken pipe) ✗   ← Linux 此处返�
 PR [#174](https://github.com/social4hyq/homebrew-core/pull/174) 合并，bottle `bun-v1.4.0-r47`，本机已升级（`1.4.0+ef863e2b4e`）。`serve-directory-routes.test.ts` 29/30 通过——SIGSYS 消除，openat2 修复生效。
 
 **安全能力降级记录**：唯一剩余用例 "rejects symlink escapes via RESOLVE_IN_ROOT" 在 OHOS 无法通过——openat2 被 seccomp 拦截后回退到普通 openat，目录路由失去符号链接逃逸防护。已 skipIf(isOHOS) 并注明。若上游或内核侧需要恢复该防护，方向是用户态路径规范化校验（realpath 比较）替代 RESOLVE_IN_ROOT。
+
+## T52 闭环（2026-08-02）：不是平台 bug，是 TERM=dumb
+
+**根因**：代理 shell/工具环境导出 `TERM=dumb` → node:readline 走 `_ttyWriteDumb` 降级路径（src/js/node/readline.js:111，`process.env.TERM === "dumb"` 判定），光标控制键全部失效 → readline.node 约 22 个光标断言失败、新 v26 REPL vendored 测试跟着挂。
+
+**排除过程**（每步都有实证）：纯文本插入正常但 ctrl 键失效 → emitKeys 生成器解析正常（--expose-internals 直测）→ bun/node（JSC/V8 两个独立运行时）行为完全一致 → 直调 `_ttyWrite` 仍失效 → 堆栈里发现走的是 `_ttyWriteDumb` → `echo $TERM` = dumb → `TERM=xterm` 全绿。
+
+**修复**：runner `spawnBun` env 和 harness `bunEnv` 都把 `TERM=dumb` 归一化为 `xterm-256color`（显式设 TERM 的测试不受影响）。7 个误挂 T50 名下的 quarantine（6× test-repl + readline.node）已撤回并复验全绿（commit `c1d9d23277`）。
+
+**订正 T50 归属**：T50（管道 epoll 事件丢失）目前只有 `07500` 一个确证案例（原始 bash 管道复现，无 readline 参与）；`process-stdin` 背压用例仍是平台管道合并行为（保留 skipIf）。此前把 repl/readline 挂到 T50 名下是错误归因，已更正。
