@@ -388,6 +388,3 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # (node_fs.rs:4918) EOF loop gated on `!broke` instead of `stat_size==0`.
 # GREEN verified with r23 build: 33/33 pass.
 
-# T50：OHOS 平台级管道可读事件丢失（诊断构建 + 纯 C 探针 + node 对照三证，详见 OHOS_TEST_STATUS.md T50）。
-# 事件驱动读者在特定时序/负载下永远收不到 EPOLLIN，整文件挂死超时。非 bun 缺陷、非合并回归（r44/r45 均复现）。
-[ OPENHARMONY ] test/regression/issue/07500/07500.test.ts [ TIMEOUT ] # T50: bash 管道 + 输入 > 管道容量 → Bun.stdin 读挂死

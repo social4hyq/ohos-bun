@@ -3209,7 +3209,7 @@ splice#3(pipe→pipe, EOF)=-1 errno=32 (Broken pipe) ✗   ← Linux 此处返�
 
 **复现率随系统状态漂移**：上午 sh 管道 4/4 通过、bash 6/6 挂；晚间（load ~21，来源在本会话不可见的系统侧）四种组合全挂。r44（合并前）与 r45（合并后）二进制表现一致——**与本次上游合并无关**，7-31 基线通过只是当时平台行为不同。
 
-**结论**：class B 平台缺陷，移交面是 OHOS 内核/hnp 管道-epoll 通知路径。bun 侧理论可做"注册后主动复查可读性"的防御性兜底，但延迟实验表明注册后到达的数据同样丢事件，一次性复查不能根治，需要周期性 poll，代价不值。测试处置：T50 家族（07500、readline.node、test-repl×6、process-stdin）走 quarantine。
+**结论**：class B 平台缺陷，移交面是 OHOS 内核/hnp 管道-epoll 通知路径。bun 侧理论可做"注册后主动复查可读性"的防御性兜底，但延迟实验表明注册后到达的数据同样丢事件，一次性复查不能根治，需要周期性 poll，代价不值。测试处置：T50 家族（07500、readline.node、test-repl×6、process-stdin）走 quarantine。（2026-08-02 后续：正是按周期性复查实现的——250ms 超时钳制 + FIONREAD 合成事件，代价可控，见文末"T50 shim 修复"条目。）
 
 **方法论备注**：诊断构建两轮踩坑记录——① brew 的 git url 同时带 branch+revision 时 checkout 以 branch 头为准，诊断分支要改 branch 字段；② 容器里 bun-webkit 旧 keg 会污染新名字的 webkit 缓存目录（.identity 匹配但头文件是旧的），换 WebKit pin 后必须先升级容器内的 bun-webkit 再删缓存目录。
 
@@ -3239,3 +3239,11 @@ PR [#174](https://github.com/social4hyq/homebrew-core/pull/174) 合并，bottle 
 **修复**：runner `spawnBun` env 和 harness `bunEnv` 都把 `TERM=dumb` 归一化为 `xterm-256color`（显式设 TERM 的测试不受影响）。7 个误挂 T50 名下的 quarantine（6× test-repl + readline.node）已撤回并复验全绿（commit `c1d9d23277`）。
 
 **订正 T50 归属**：T50（管道 epoll 事件丢失）目前只有 `07500` 一个确证案例（原始 bash 管道复现，无 readline 参与）；`process-stdin` 背压用例仍是平台管道合并行为（保留 skipIf）。此前把 repl/readline 挂到 T50 名下是错误归因，已更正。
+
+## T50 shim 修复（2026-08-02）：epoll/poll 管道就绪修复进 ohos_compat_shim（commit `52bed99214`）
+
+**修法**：shim 新增 `epoll_pipe` 拦截器——登记 FIFO+EPOLLIN 的 epoll 注册（usockets 走 libc `epoll_ctl` 符号、Rust 事件循环走 raw `syscall(SYS_epoll_ctl)`，双路径都拦）；有管道登记的 epfd 长超时钳制 250ms，空返回时对登记管道逐个 FIONREAD、有数据则用登记时的 udata 合成 EPOLLIN；poll/ppoll 对"请求 POLLIN 但 revents=0"的 FIFO 同样补 FIONREAD 纠错（覆盖 is_readable 路径）；`close()` 清注册表，防 fd 号复用带出脏 udata。ONESHOT 条目合成后 disarm 等 MOD re-arm；had-data→drained 跳变补最后一次 EPOLLIN——内核损坏态连 HUP 都不来，不补这一下 `Bun.stdin.text()` 读完数据仍等不到 EOF。开关 `OHOS_COMPAT_SHIM_DISABLE=epoll_pipe`。workaround 非根治，内核 bug 上报材料：fd0-reader3/4 探针。
+
+**验证**：机械探针直证（空管道 `epoll_wait(-1)`：无 shim 永久挂死，有 shim 250ms 返回 0；有数据路径 rc=1、events/udata 正确、零延迟）；LD_PRELOAD 挂现有 bottle bun 冒烟无回归；容器重编（r46 revision 指向 `52bed99214`，15m15s）后真机：07500 直跑转绿、`cat 600KB | bun` 10/10、readline（80）+node-http（142）回归全绿。07500 quarantine 已撤回。
+
+**注意**：验证窗口平台处于不复发状态（T50 复现率随系统负载漂移）——合成路径已由机械探针直接验证，"真实损坏态下端到端修复"待下次高负载窗口复验；07500 已回基线会自动覆盖。
