@@ -3223,3 +3223,9 @@ splice#3(pipe→pipe, EOF)=-1 errno=32 (Broken pipe) ✗   ← Linux 此处返�
 - **class B**：mv 跨设备 describe（/dev/shm EACCES）、fs BigIntStats pre-epoch（与已 quarantine 的姊妹用例同因）→ case-level skipIf；fs 的 6 个 readdir-recursive x100 压力用例（台账既有 Node 结果不一致 + 高负载超时）→ case-level skipIf
 
 全部修改真机逐文件验证转绿。至此 22 个失败全部有归属：3 修复（openat2/binlink/tempDir）+ 2 测试适配（T51）+ 17 quarantine（T50×8 / T52×1 / T49×2 / classB×6）。
+
+## 2026-08-02 1.4.0_46 发布复验
+
+PR [#174](https://github.com/social4hyq/homebrew-core/pull/174) 合并，bottle `bun-v1.4.0-r47`，本机已升级（`1.4.0+ef863e2b4e`）。`serve-directory-routes.test.ts` 29/30 通过——SIGSYS 消除，openat2 修复生效。
+
+**安全能力降级记录**：唯一剩余用例 "rejects symlink escapes via RESOLVE_IN_ROOT" 在 OHOS 无法通过——openat2 被 seccomp 拦截后回退到普通 openat，目录路由失去符号链接逃逸防护。已 skipIf(isOHOS) 并注明。若上游或内核侧需要恢复该防护，方向是用户态路径规范化校验（realpath 比较）替代 RESOLVE_IN_ROOT。
