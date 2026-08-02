@@ -3198,3 +3198,17 @@ splice#3(pipe→pipe, EOF)=-1 errno=32 (Broken pipe) ✗   ← Linux 此处返�
 `(sleep N; cat probe.bin) | bun reader`（600KB，bash 管道）在 N=0/2/5 下**全部挂死**——即使 writer 等 bun 完全初始化、管道干净注册完毕后才写入（干净的注册后新边沿），读循环依然从未启动。结合 qemu -strace 证据（事件 `=1` 送达 IO 线程后无任何 FUTEX_WAKE / read(0) / ppoll），结论收敛为：**init 路径（首次 `is_readable`=NotReady → `wait_for_readable`）之后，第一个 `on_ready` 触发的 WorkPool 任务从未在 worker 上执行**。而流式中途（EAGAIN 后再注册）的事件驱动读是好的（sh 案例 trace 里事件→read 循环正常工作）。
 
 **断点候选**（按嫌疑排序）：(a) IO 线程上 `on_ready → try_begin_read_loop` 早退——状态非 IDLE，但 init 路径理论上不取 ownership，待验证；(b) `ThreadPool.schedule` 的空闲记账在 OHOS 上误判"无睡眠 worker"导致任务排队无人唤醒。**下一步需要诊断构建**：在 `on_ready`/`try_begin_read_loop`/`schedule_read_loop`/`update` 加探针日志，容器编一轮复现读取日志。
+
+## T50 闭环（2026-08-02 深夜）：定性为 OHOS 平台级管道事件丢失，bun 免责
+
+**诊断构建 + 纯 C 探针 + node 对照三证闭环**：
+
+1. **诊断构建**（diag/t50 分支，6 轮容器构建）：挂死时事件链完整走通——`run_async_with_fd` 首次 `is_readable`=NotReady → `IoRequestLoop::schedule` 推入+wake → IO 线程 `pop_batch count=1` → `register_for_epoll fd0 ADD oneshot IN|HUP|ERR` 成功——**之后 fd0 的可读事件永远没有从 epoll_wait 出来**（管道此刻已被 cat 写满）。流式中途的注册→事件→读循环则完全正常（sh 对照组 288 个事件）。
+2. **纯 C 探针**（`fd0-reader2.c`，~30 行，无任何 bun 代码）：`bash -c 'cat 600KB | ./fd0-reader2'` 下 epoll_wait 超时收不到 EPOLLIN；同条件 sh 管道正常。自包含探针（fork 模拟各种满管/阻塞 writer/ONESHOT/扩容/arm 先后序）全部正常——只在"shell 拉起的真实管道 + GNU/ busybox cat"结构下复现。
+3. **node 对照**：`bash -c 'cat 600KB | node -e ...'` 同样 8 秒读不到一个字节。**任何事件驱动的读者都受害，与 bun 无关。**
+
+**复现率随系统状态漂移**：上午 sh 管道 4/4 通过、bash 6/6 挂；晚间（load ~21，来源在本会话不可见的系统侧）四种组合全挂。r44（合并前）与 r45（合并后）二进制表现一致——**与本次上游合并无关**，7-31 基线通过只是当时平台行为不同。
+
+**结论**：class B 平台缺陷，移交面是 OHOS 内核/hnp 管道-epoll 通知路径。bun 侧理论可做"注册后主动复查可读性"的防御性兜底，但延迟实验表明注册后到达的数据同样丢事件，一次性复查不能根治，需要周期性 poll，代价不值。测试处置：T50 家族（07500、readline.node、test-repl×6、process-stdin）走 quarantine。
+
+**方法论备注**：诊断构建两轮踩坑记录——① brew 的 git url 同时带 branch+revision 时 checkout 以 branch 头为准，诊断分支要改 branch 字段；② 容器里 bun-webkit 旧 keg 会污染新名字的 webkit 缓存目录（.identity 匹配但头文件是旧的），换 WebKit pin 后必须先升级容器内的 bun-webkit 再删缓存目录。
