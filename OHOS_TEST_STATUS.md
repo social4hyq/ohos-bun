@@ -3273,3 +3273,11 @@ PR [#174](https://github.com/social4hyq/homebrew-core/pull/174) 合并，bottle 
 - **摇摆 ×1**：`node-http`（ENOTFOUND vs ENOTIMP，DNS 时序）iso 0/3 后复测 3/3 转绿，不立项。
 
 **shim 回归排查**：4 个嫌疑文件（上述 3 个 + node-http）逐一做 shim-off 对照，均同挂或转绿——epoll_pipe 拦截器（epoll/poll/close 热路径）零回归证据。3 个新平台差异建议立 T53 簇跟进（均为合并显形，不阻塞发布）。
+
+## T53 闭环（2026-08-02）：三个合并显形平台差异全部处置（commit `e2eba706e7`）
+
+- **T53a `mmap.test.js`**（test 适配）：per-platform 路径上限表补 `openharmony: 4096`（fs.watch 同先例）。1024 兜底让 1023 字节单分量路径绕过 "Path too long" 预检、裸抛 ENAMETOOLONG。20/20 绿。
+- **T53b `rm.test.ts`**（test 适配）：根因是 **OHOS 沙箱拒绝 `open("/")`（EACCES）**——进程 cwd 为 "/" 时 Bun shell 启动即崩（fixture stdout 为空 → JSON EOF）。spawn cwd 改用 `base`（keep.txt 断言判别力不变），并按 Linux 语义断言子项删除。7/7 绿。平台事实记录：沙箱内 cwd 是不可 open 的路径时 `$` shell 无法工作。
+- **T53c `spawn-stdin-readable-stream`**（case-level skipIf(isOHOS)）：stderr for-await 背压用例，stalled 期间 writer 128/128 写满——process-stdin 同族平台管道合并/缓冲行为，注释互链。33 pass / 1 skip / 0 fail。
+
+三者均验证过 `OHOS_COMPAT_SHIM_DISABLE=epoll_pipe` 同挂（shim 免责）。至此 r47 基线 17 个稳定失败收敛为：valkey×10（环境）+ 台账已知 ×3 + 摇摆 ×1（node-http）+ https-Agent 1/3 摇摆。
