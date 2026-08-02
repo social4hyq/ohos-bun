@@ -3247,3 +3247,29 @@ PR [#174](https://github.com/social4hyq/homebrew-core/pull/174) 合并，bottle 
 **验证**：机械探针直证（空管道 `epoll_wait(-1)`：无 shim 永久挂死，有 shim 250ms 返回 0；有数据路径 rc=1、events/udata 正确、零延迟）；LD_PRELOAD 挂现有 bottle bun 冒烟无回归；容器重编（r46 revision 指向 `52bed99214`，15m15s）后真机：07500 直跑转绿、`cat 600KB | bun` 10/10、readline（80）+node-http（142）回归全绿。07500 quarantine 已撤回。
 
 **注意**：验证窗口平台处于不复发状态（T50 复现率随系统负载漂移）——合成路径已由机械探针直接验证，"真实损坏态下端到端修复"待下次高负载窗口复验；07500 已回基线会自动覆盖。
+
+## 2026-08-02 1.4.0_47 发布复验 + r47 全量基线（T50 shim 上车）
+
+**发布链**：PR [#176](https://github.com/social4hyq/homebrew-core/pull/176) 合并（revision `f8d5913cb4`，rebuild 46→47），publish-on-merge + sync-to-atomgit 成功，bottle tag `bun-v1.4.0-r48`。本机升级复验：`bun --revision` = `1.4.0+f8d5913cb`；T50 冒烟 `cat 600KB | bun` = 600000 ✓；07500 ✓（quarantine 已随 `f8d5913cb4` 撤回）。
+
+### r47 全量基线（被测二进制 = 本机 brew 1.4.0_47，命令与 2026-08-02 口径①同款）
+
+| 阶段 | 通过 | 失败 |
+|---|---|---|
+| 全量并行（原始） | 5480 / 5530（99.10%） | 50 |
+| 串行复跑剔除并发假象 | +31 | 19 |
+| 隔离单跑 ×3 | http-Agent 3/3 转绿 | 17 稳定（0/3）+ https-Agent 1/3 摇摆 |
+
+对比 r45 同口径最终值 5508/5530（99.60%，22 失败）：r47 为 **5513/5530（99.69%），17 个 0/3 稳定失败**。r45 的 22 个里 43 项次本轮转绿（T50/T52 集群 + openat2/binlink/multi-run 等修复目标全部兑现）。
+
+### 17 个稳定失败归属（全部排除 epoll_pipe shim 回归）
+
+- **环境 ×10**：valkey 簇——fixture 需 docker-compose 拉起 Redis，本机无 compose 插件也无 redis 容器，挂在 fixture setup，与 bun 代码无关。
+- **台账已知 ×3**：`ls`（recursive node_modules 老案）、`node-net`（T21/T49 摇摆）、`bun-security-scanner-matrix-without-node-modules`（class C，正式 baseline 本就 exclude）。
+- **合并显形的新平台差异 ×3**（均 0/3 稳定；`OHOS_COMPAT_SHIM_DISABLE=epoll_pipe` 复测同挂，shim 免责；测试文件本身随本次合并改动）：
+  - `rm.test.ts`「relative operands are resolved against the shell cwd」：JSON Parse error Unexpected EOF；
+  - `mmap.test.js`「resolved path does not fit」：期望 "Path too long" 预检消息，实际 ENAMETOOLONG 裸抛——fs watch `MAX_PATH_BYTES` 同族（per-platform 路径上限表缺 openharmony）；
+  - `spawn-stdin-readable-stream`「stderr for-await backpressure」：writer 128/128 写满未受阻——process-stdin 同族的平台管道背压口径。
+- **摇摆 ×1**：`node-http`（ENOTFOUND vs ENOTIMP，DNS 时序）iso 0/3 后复测 3/3 转绿，不立项。
+
+**shim 回归排查**：4 个嫌疑文件（上述 3 个 + node-http）逐一做 shim-off 对照，均同挂或转绿——epoll_pipe 拦截器（epoll/poll/close 热路径）零回归证据。3 个新平台差异建议立 T53 簇跟进（均为合并显形，不阻塞发布）。
