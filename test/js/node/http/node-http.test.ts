@@ -5,7 +5,7 @@
  *
  * A handful of older tests do not run in Node in this file. These tests should be updated to run in Node, or deleted.
  */
-import { bunEnv, bunExe, exampleSite, randomPort, tls as tlsCert } from "harness";
+import { bunEnv, bunExe, exampleSite, isOHOS, randomPort, tls as tlsCert } from "harness";
 import { createTest } from "node-harness";
 import { EventEmitter, once } from "node:events";
 import nodefs from "node:fs";
@@ -829,7 +829,8 @@ describe("node:http", () => {
       });
     });
 
-    it("request via http proxy, issue#4295", async () => {
+    // OHOS: T49 — getaddrinfo ADDRCONFIG 过滤 IPv4 回环，localhost→::1 后 ECONNREFUSED
+    it.skipIf(isOHOS)("request via http proxy, issue#4295", async () => {
       await runHTTPProxyTest();
     });
 
