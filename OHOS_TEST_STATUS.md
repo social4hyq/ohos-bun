@@ -3212,3 +3212,14 @@ splice#3(pipe→pipe, EOF)=-1 errno=32 (Broken pipe) ✗   ← Linux 此处返�
 **结论**：class B 平台缺陷，移交面是 OHOS 内核/hnp 管道-epoll 通知路径。bun 侧理论可做"注册后主动复查可读性"的防御性兜底，但延迟实验表明注册后到达的数据同样丢事件，一次性复查不能根治，需要周期性 poll，代价不值。测试处置：T50 家族（07500、readline.node、test-repl×6、process-stdin）走 quarantine。
 
 **方法论备注**：诊断构建两轮踩坑记录——① brew 的 git url 同时带 branch+revision 时 checkout 以 branch 头为准，诊断分支要改 branch 字段；② 容器里 bun-webkit 旧 keg 会污染新名字的 webkit 缓存目录（.identity 匹配但头文件是旧的），换 WebKit pin 后必须先升级容器内的 bun-webkit 再删缓存目录。
+
+## 2026-08-02 quarantine 收尾（commit `c121d581b2`）
+
+合并后基线 22 个稳定失败的最终处置闭环：
+
+- **T50 家族**（7 文件整文件 quarantine）：07500 + test-repl×6 → expectations.txt（挂死型，文件级）；process-stdin 背压用例 → case-level skipIf
+- **T52（新立项）**：readline.node.test.ts 整文件 quarantine——#31827 新 v26 readline 栈在 OHOS 约 22 个光标位置断言系统性失败（`getCursorPos` cols/rows 不符），与 T50 无关（快速失败、纯进程内），待专项 triage
+- **T49 新受害者**（node-http 代理用例、node-tls-server SNICallback 用例）→ case-level skipIf
+- **class B**：mv 跨设备 describe（/dev/shm EACCES）、fs BigIntStats pre-epoch（与已 quarantine 的姊妹用例同因）→ case-level skipIf；fs 的 6 个 readdir-recursive x100 压力用例（台账既有 Node 结果不一致 + 高负载超时）→ case-level skipIf
+
+全部修改真机逐文件验证转绿。至此 22 个失败全部有归属：3 修复（openat2/binlink/tempDir）+ 2 测试适配（T51）+ 17 quarantine（T50×8 / T52×1 / T49×2 / classB×6）。
