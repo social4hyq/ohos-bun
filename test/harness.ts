@@ -79,6 +79,9 @@ export const bunEnv: NodeJS.Dict<string> = {
   NO_COLOR: "1",
   FORCE_COLOR: undefined,
   TZ: "Etc/UTC",
+  // TERM=dumb 会触发 node:readline 的 _ttyWriteDumb 降级路径（光标控制键失效），
+  // readline/REPL 系测试全挂；显式设 TERM=dumb 的测试自行覆盖此值。
+  TERM: process.env.TERM === "dumb" ? "xterm" : process.env.TERM,
   CI: "1",
   BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
   BUN_FEATURE_FLAG_INTERNAL_FOR_TESTING: "1",

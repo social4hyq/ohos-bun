@@ -1823,6 +1823,12 @@ async function spawnBun(execPath, { args, cwd, timeout, gracefulTimeout, idleTim
   }
   const bunEnv = {
     ...process.env,
+    // TERM=dumb makes node:readline take its _ttyWriteDumb fallback (cursor
+    // control keys become no-ops), failing every cursor-position assertion in
+    // the readline/REPL suites. Agent shells and CI containers routinely
+    // export TERM=dumb; normalize to a capable terminal. Tests that exercise
+    // dumb-terminal behavior set TERM themselves downstream.
+    TERM: process.env.TERM === "dumb" ? "xterm-256color" : process.env.TERM,
     PATH: path,
     TMPDIR: tmpdirPath,
     BUN_TMPDIR: tmpdirPath,
