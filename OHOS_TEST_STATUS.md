@@ -3175,3 +3175,26 @@ sh   -c "cat probe.bin | bun -e 'console.write(await Bun.stdin.text())'"   # 4/4
 - `process-stdin`（backpressure 读太多，40≥16）：症状与 T50 相反，未定位。
 - T49 新受害者（node-http、node-tls-server）与 class B（mv /dev/shm、fs pre-epoch）：适合直接 quarantine，下轮处理。
 - openat2 修复 + 可能的 T50/EPIPE 修复攒齐后，走一轮 bottle（1.4.0_46）发布复验。
+
+---
+
+## T51 — OHOS 内核 splice() 管道 EOF 返回 EPIPE（Linux 应为 0）
+
+**C 探针实测**（`/data/storage/el2/base/tmp/splice-probe.c`）：
+
+```
+splice#1(pipe→file, 有数据)=12 ✓   splice#2(pipe→file, EOF)=0 ✓
+splice#3(pipe→pipe, EOF)=-1 errno=32 (Broken pipe) ✗   ← Linux 此处返回 0
+```
+
+**影响面**：busybox cat 用 splice 拷贝，管道 EOF 时碰到内核 EPIPE 报 `cat: -: Broken pipe` 退出码 1。是否触发取决于 writer 关闭与 reader 读空的时序——bash 内建 echo/printf（写完立即关）几乎必现，外部 /bin/echo、dd 读者、sh 管道不触发。**这解释了 7-31 基线通过而本轮失败：纯环境时序漂移，与 bun 二进制无关（r44/r45 均复现）。**
+
+**与 r43 shim 的关系**：compat-shim 0.2.4 的 "splice EPIPE-on-EOF" 修复正是同一内核行为的 bun 内插桩；hnp 系统工具（busybox cat）不在覆盖范围。
+
+**处置**：`multi-run` 的 "scripts with pipes work"（脚本本体就是 `echo|cat`）加 `skipIf(isOHOS)`；`spawn-pipe-read-error-leak` 过滤 cat 的 EPIPE 行、保留泄漏断言。两文件真机转绿（`c59409e51b`）。EPIPE 家族闭环。
+
+## T50 补充（2026-08-02 晚）：延迟写入判别实验
+
+`(sleep N; cat probe.bin) | bun reader`（600KB，bash 管道）在 N=0/2/5 下**全部挂死**——即使 writer 等 bun 完全初始化、管道干净注册完毕后才写入（干净的注册后新边沿），读循环依然从未启动。结合 qemu -strace 证据（事件 `=1` 送达 IO 线程后无任何 FUTEX_WAKE / read(0) / ppoll），结论收敛为：**init 路径（首次 `is_readable`=NotReady → `wait_for_readable`）之后，第一个 `on_ready` 触发的 WorkPool 任务从未在 worker 上执行**。而流式中途（EAGAIN 后再注册）的事件驱动读是好的（sh 案例 trace 里事件→read 循环正常工作）。
+
+**断点候选**（按嫌疑排序）：(a) IO 线程上 `on_ready → try_begin_read_loop` 早退——状态非 IDLE，但 init 路径理论上不取 ownership，待验证；(b) `ThreadPool.schedule` 的空闲记账在 OHOS 上误判"无睡眠 worker"导致任务排队无人唤醒。**下一步需要诊断构建**：在 `on_ready`/`try_begin_read_loop`/`schedule_read_loop`/`update` 加探针日志，容器编一轮复现读取日志。
