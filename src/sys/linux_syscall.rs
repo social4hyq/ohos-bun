@@ -117,19 +117,30 @@ pub(crate) fn openat2_beneath(dir: Fd, path: &ZStr, flags: i32, mode: Mode) -> R
 
 #[inline]
 pub(crate) fn openat2_in_root(dir: Fd, path: &ZStr, flags: i32, mode: Mode) -> Result<Fd, i32> {
-    let oflags = rustix::fs::OFlags::from_bits_retain(flags as u32);
-    let mode = rustix::fs::Mode::from_raw_mode(mode);
-    let dir = dir.as_borrowed_fd();
-    retry(|| {
-        rustix::fs::openat2(
-            dir,
-            path.as_cstr(),
-            oflags,
-            mode,
-            rustix::fs::ResolveFlags::IN_ROOT | rustix::fs::ResolveFlags::NO_MAGICLINKS,
-        )
-    })
-    .map(own_fd)
+    // OHOS seccomp blocks openat2 with uncatchable SIGSYS (same guard as
+    // openat2_beneath above); returning ENOSYS lets the sys/lib.rs wrapper
+    // cache UNAVAILABLE and fall back to plain openat.
+    #[cfg(target_env = "ohos")]
+    {
+        let _ = (dir, path, flags, mode);
+        return Err(libc::ENOSYS);
+    }
+    #[cfg(not(target_env = "ohos"))]
+    {
+        let oflags = rustix::fs::OFlags::from_bits_retain(flags as u32);
+        let mode = rustix::fs::Mode::from_raw_mode(mode);
+        let dir = dir.as_borrowed_fd();
+        retry(|| {
+            rustix::fs::openat2(
+                dir,
+                path.as_cstr(),
+                oflags,
+                mode,
+                rustix::fs::ResolveFlags::IN_ROOT | rustix::fs::ResolveFlags::NO_MAGICLINKS,
+            )
+        })
+        .map(own_fd)
+    }
 }
 
 #[inline]
