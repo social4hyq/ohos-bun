@@ -3064,3 +3064,49 @@ r42 基线 94 失败全部分析完毕后，对平台限制类（class B）和�
 - **测试（14 个文件）**：以上游 `tempDir` 重构为基底，叠加 OHOS 的 `setDefaultTimeout`、hmdfs 规避（tmpdirSync）、quarantine/skipIf(openharmony)；`test/bun.lock` 手工合并两侧依赖条目（vitest 4 系取上游，OHOS esbuild 0.28.1/rollup 4.62.2 保留）。
 - **WebKit pin 随上游升级**：WEBKIT_VERSION `5491700992…` → `34c01d13391e00c06862a3d2c5b7fff350ac87e0`，bun-webkit formula 已同步提 PR（homebrew-core#163）。
 - 合并后未在真机跑测试；下一轮 triage 需基于新二进制重建基线（上游测试重构较多，quarantine 名单可能需要重新核对）。
+
+---
+
+## 2026-08-02 — 合并后全量基线（bun 1.4.0_45, `785bb66cf`）
+
+合并 upstream/main f91d5c95c9 后的首轮全量基线。**口径①（CI 同款，55 条 quarantine 生效）**，被测二进制为本机 brew 新装 1.4.0_45 bottle。
+
+### 方法论与产物
+
+- 命令：`CI=1 BUN_TEST_NO_SECRETS=1 node scripts/runner.node.mjs --exec-path=$(brew --prefix bun)/bin/bun --quiet --parallel --retries=1 --results-json=... --exclude=integration/bun-types --exclude=internal/source-lints --exclude=bake/dev --exclude=js/bun/ffi/cc.test.ts --exclude=regression/issue/20144 --exclude=regression/issue/26249`（与 ohos-full-test.yml 同款 + --parallel）
+- 三级复跑：全量 20 核并行（~45min）→ 64 fail 串行复跑 → 23 fail 隔离单跑 ×3
+- 产物：`logs/baseline-20260802.{log,json}`、`logs/baseline-20260802-refail.{log,json}`、`logs/baseline-20260802-iso/`
+
+### 数字
+
+| 阶段 | 通过 | 失败 |
+|---|---|---|
+| 全量并行（原始） | 5466 / 5530（98.84%） | 64 |
+| 串行复跑剔除并发假象 | +41 | 23 |
+| 隔离单跑 ×3 | 23 个全部 3/3 稳定复现 | 23 |
+| vitest lock 修复后（见下） | **5508 / 5530（99.60%）** | **22** |
+
+对比：7-12 基线 97.68%（4639/4749）；7-31 口径①"0 已知未隔离 fail"。**本轮 22 个未隔离失败绝大多数是合并引入的新问题，需要一轮 triage。**
+
+### 22 个稳定失败分类
+
+**A. stdin/readline/REPL 集群（9，最大疑似合并回归）** — 共同指向 stdin 读取路径：
+`regression/issue/07500`（`Bun.stdin.text()` 100s 超时）、`process-stdin`（pipe backpressure：单次 read 吞了 40 次写入，期望 <16）、`readline.node`（completer 90s 超时）、`test-repl-{empty,context,multiline,custom-eval,eval-error-after-close,pretty-stack-custom-writer}` ×6（AssertionError / 超时）。合并中 read_file.rs / subprocess.rs / stdio.rs 均有 OHOS 改动叠加，上游也改了 stdin/REPL 代码，需定位。
+
+**B. 其他疑似合并回归（5）：**
+`serve-directory-routes`（**SIGSYS**，seccomp 拦了某个 syscall——新上游代码路径）、`bun-install-native-binlink`（os[] 过滤包预期不装实际装上，formula 里"Regenerate native binlink test packages with openharmony in os[]"注释指向 fixture 需重新生成）、`multi-run`（shell pipes exit 1）、`bun-listen-connect-args`（unix socket valid 用例 0.58ms 即挂）、`spawn-pipe-read-error-leak`（stderrLines 期望空）。
+
+**C. T49（ADDRCONFIG ::1）新受害者（2）：** `node-http`、`node-tls-server`（ECONNREFUSED ::1 签名）。上游重写了这些文件后 T49 受害者名单变了。
+
+**D. class B 平台（2）：** `mv.test.ts`（cross-device 用例 mkdir `/dev/shm` EACCES——OHOS /dev/shm 不可写，上游新测试）、`fs.test.ts`（BigIntStats pre-epoch 负时间戳返回 0n，musl 行为差异，上游新测试）。
+
+**E. 已知/台账（4）：** `node-net`（T21 摇摆，本轮 3/3 fail）、`test-net-autoselectfamily`（T21）、`ls.test.ts`（r43 时 26/27，同一 `recursive node_modules` 用例仍挂）、`bun-security-scanner-matrix-without-node-modules`（class C，run-baseline.sh 本就 exclude 它）。
+
+### 顺手修掉的一个合并伪影
+
+`vitest.test.ts` 失败根因是合并时手工合并的 `test/bun.lock` 保留了上游嵌套 pin：`vite/rollup@4.37.0`（无 openharmony-arm64 原生构建）和 `astro/esbuild@0.25.1`（esbuild 从 0.25.x 后期才支持 openharmony）。删除嵌套条目让 vite/astro dedupe 到顶层 rollup 4.62.2 / esbuild 0.28.1（均有 OHOS 二进制）后转绿。修复提交 `34ed4cdf4c`（test-only，不影响 bottle）。
+
+### 后续
+
+- A/B 两组共 14 个文件建议立项做合并回归 triage（重点：stdin 集群是否同根因；serve-directory-routes 的 SIGSYS 是哪个 syscall）。
+- C/D 两组适合直接 quarantine（T49 走 expectations；/dev/shm、pre-epoch 时间戳是平台限制）。
