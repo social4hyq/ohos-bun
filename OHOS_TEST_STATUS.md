@@ -3150,3 +3150,28 @@ sh   -c "cat probe.bin | bun -e 'console.write(await Bun.stdin.text())'"   # 4/4
 ### 修复方向（未实施）
 
 `update()` 的 NotReady 分支在 `wait_for_readable()` 注册后应**复查一次 `is_readable`**（注册与检查之间的数据到达在 ONESHOT/边沿语义下可能丢事件），或在注册后直接跑一轮 `do_read_loop` 由 EAGAIN 自然回落。改完需要容器/CI 重编 bottle 验证。
+
+---
+
+## 2026-08-02 合并回归 triage 首轮结果
+
+对基线 22 个稳定失败中疑似合并引入的 14 个（A/B 两组）逐个定位：
+
+### 已修复（3）
+
+| 失败 | 根因 | 修复 |
+|---|---|---|
+| `serve-directory-routes`（SIGSYS） | 上游新 directory routes（#36156）用 `openat2(RESOLVE_IN_ROOT)`；OHOS seccomp 对 openat2 直接 SIGSYS 杀进程（C 探针证实：openat2、name_to_handle_at 被拦；statx/copy_file_range/sendfile 放行）。OHOS 分支此前只给 `openat2_beneath` 加了保护，`openat2_in_root` 漏了 | `4d70ec1f5a` 给 `openat2_in_root` 加同款 ohos ENOSYS 保护，走既有 openat 回退。**需下一轮 bottle 构建后复验** |
+| `bun-listen-connect-args` | 合并伪影：上游 d042b30e84 把 tempDirWithFiles 全改成 `using tempDir`，OHOS 的 chdir 适配引用了被删的 import → ReferenceError | `c9a10f0b4a` 改用 `using tempDir`，真机验证转绿 |
+| `bun-install-native-binlink` | 上游新 fixture `test-postinstall-skip-native` 的 os[] 缺 openharmony，native-binlink 重定向无法触发 → postinstall 未被跳过 | `c9a10f0b4a` fixture 补 openharmony（与既有 *-target fixture 同款），真机验证转绿 |
+
+### 定性为非合并回归（2 个家族，覆盖 11 个文件）
+
+- **T50 stdin 丢失唤醒竞态**（07500、readline.node、test-repl×6 等）：r44 合并前二进制 100% 复现，7-31 通过只是时序侥幸。详见 T50 条目。
+- **EPIPE 家族**（`multi-run` "scripts with pipes work"、`spawn-pipe-read-error-leak`）：签名都是 `cat: ...: Broken pipe`——bun 提前关了 cat stdout 的读端。r44 同样 3/3 复现；7-30/7-31 基线这两个文件都是 pass。**可疑变量是 r43 引入的 splice shim（0.2.4）或设备管道行为漂移**（本轮实测 OHOS 管道容量 512KB），但 `OHOS_COMPAT_SHIM_DISABLE=splice/all` 不改变结果，未闭环。需要带日志的诊断构建继续。
+
+### 待处理
+
+- `process-stdin`（backpressure 读太多，40≥16）：症状与 T50 相反，未定位。
+- T49 新受害者（node-http、node-tls-server）与 class B（mv /dev/shm、fs pre-epoch）：适合直接 quarantine，下轮处理。
+- openat2 修复 + 可能的 T50/EPIPE 修复攒齐后，走一轮 bottle（1.4.0_46）发布复验。
