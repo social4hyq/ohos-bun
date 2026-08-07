@@ -269,8 +269,9 @@ pub use ::bun_options_types::global_cache::GlobalCache;
 // inside `impl Resolver` resolve unchanged.
 use crate::options;
 use crate::result::{
-    DebugLogs, DirEntryResolveQueueItem, FlushMode, LoadResult, MatchResult, MatchStatus, PathPair,
-    PendingResolution, PendingResolutionTag, Result, ResultFlags, ResultUnion,
+    DebugLogs, DirEntryResolveQueueItem, ExternalKind, FlushMode, LoadResult, MatchResult,
+    MatchStatus, PathPair, PendingResolution, PendingResolutionTag, Result, ResultFlags,
+    ResultUnion,
 };
 use crate::standalone_module_graph::StandaloneModuleGraph;
 use bun_alloc as allocators;
@@ -1648,6 +1649,9 @@ impl<'a> Resolver<'a> {
                 result.flags.set_experimental_decorators(
                     result.flags.experimental_decorators() || tsconfig.experimental_decorators,
                 );
+                if let Some(v) = tsconfig.use_define_for_class_fields {
+                    result.flags.set_use_define_for_class_fields(v);
+                }
             }
 
             // If you use mjs or mts, then you're using esm
@@ -1802,19 +1806,17 @@ impl<'a> Resolver<'a> {
             // loose check to avoid always doing this copy, but avoid spending
             // too much time on the check.
             if strings::index_of(import_path, b"..").is_some() {
-                let platform = bun_paths::Platform::AUTO;
-                let ends_with_dir = platform.is_separator(import_path[import_path.len() - 1])
-                    || (import_path.len() > 3
-                        && platform.is_separator(import_path[import_path.len() - 3])
-                        && import_path[import_path.len() - 2] == b'.'
-                        && import_path[import_path.len() - 1] == b'.');
+                let ends_with_dir = Self::import_path_names_directory(import_path);
                 let buf = bufs!(relative_abs_path);
                 let Some(abs) = self.fs_ref().abs_buf_checked(&[import_path], buf) else {
                     return ResultUnion::NotFound;
                 };
                 let mut len = abs.len();
                 if ends_with_dir {
-                    buf[len] = platform.separator();
+                    if len >= buf.len() {
+                        return ResultUnion::NotFound;
+                    }
+                    buf[len] = bun_paths::Platform::AUTO.separator();
                     len += 1;
                 }
                 // `bufs!` hands out an unconstrained-lifetime `&mut PathBuffer`
@@ -2078,6 +2080,25 @@ impl<'a> Resolver<'a> {
         ResultUnion::NotFound
     }
 
+    /// Whether an import specifier explicitly names a directory: a trailing
+    /// separator, `.`, `..`, or a path ending in `/.` or `/..`.
+    fn import_path_names_directory(import_path: &[u8]) -> bool {
+        let Some(&last) = import_path.last() else {
+            return false;
+        };
+        if ResolvePath::is_sep_any(last) {
+            return true;
+        }
+        let rest = if let Some(r) = import_path.strip_suffix(b"..") {
+            r
+        } else if let Some(r) = import_path.strip_suffix(b".") {
+            r
+        } else {
+            return false;
+        };
+        rest.is_empty() || ResolvePath::is_sep_any(rest[rest.len() - 1])
+    }
+
     pub(crate) fn check_relative_path(
         &mut self,
         source_dir: &[u8],
@@ -2163,8 +2184,11 @@ impl<'a> Resolver<'a> {
                             .is_success()
                         {
                             let mut flags = ResultFlags::default();
-                            flags.set_is_external(match_result.is_external);
-                            flags.set_is_external_and_rewrite_import_path(match_result.is_external);
+                            flags.set_external_kind(if match_result.is_external {
+                                ExternalKind::ExternalRewritePath
+                            } else {
+                                ExternalKind::NotExternal
+                            });
                             return ResultUnion::Success(Result {
                                 path_pair: match_result.path_pair,
                                 dirname_fd: match_result.dirname_fd,
@@ -2185,6 +2209,23 @@ impl<'a> Resolver<'a> {
         if strings::path_contains_node_modules_folder(abs_path) {
             self.extension_order = self.opts.extension_order.kind(kind, true);
         }
+
+        // Re-append the separator the join stripped so "." resolves like "./".
+        let abs_path: &[u8] = if Self::import_path_names_directory(import_path)
+            && !strings::ends_with_char(abs_path, SEP)
+        {
+            let len = abs_path.len();
+            let buf = bufs!(relative_abs_path);
+            if len >= buf.len() {
+                self.extension_order = prev_extension_order;
+                return ResultUnion::NotFound;
+            }
+            buf[len] = SEP;
+            &buf[..=len]
+        } else {
+            abs_path
+        };
+
         let mut res = MatchResult::default();
         let ret = if self
             .load_as_file_or_directory(abs_path, kind, &mut res)
@@ -2342,12 +2383,13 @@ impl<'a> Resolver<'a> {
                     result.flags.is_from_node_modules() || res.is_node_module,
                 );
                 result.module_type = res.module_type;
-                result.flags.set_is_external(res.is_external);
                 // Potentially rewrite the import path if it's external that
                 // was remapped to a different path
-                result
-                    .flags
-                    .set_is_external_and_rewrite_import_path(result.flags.is_external());
+                result.flags.set_external_kind(if res.is_external {
+                    ExternalKind::ExternalRewritePath
+                } else {
+                    ExternalKind::NotExternal
+                });
 
                 if result.path_pair.primary.is_disabled && result.path_pair.secondary.is_none() {
                     return ResultUnion::Success(result);
@@ -2389,13 +2431,14 @@ impl<'a> Resolver<'a> {
                                     result.file_fd = remapped.file_fd;
                                     result.package_json = remapped.package_json;
                                     result.module_type = remapped.module_type;
-                                    result.flags.set_is_external(remapped.is_external);
 
                                     // Potentially rewrite the import path if it's external that
                                     // was remapped to a different path
-                                    result.flags.set_is_external_and_rewrite_import_path(
-                                        result.flags.is_external(),
-                                    );
+                                    result.flags.set_external_kind(if remapped.is_external {
+                                        ExternalKind::ExternalRewritePath
+                                    } else {
+                                        ExternalKind::NotExternal
+                                    });
 
                                     result.flags.set_is_from_node_modules(
                                         result.flags.is_from_node_modules()
@@ -3586,7 +3629,7 @@ impl<'a> Resolver<'a> {
             }
         }
 
-        if self.opts.prefer_offline_install {
+        if self.opts.install_preference == bun_options_types::offline_mode::OfflineMode::Offline {
             if let Some(package_id) = pm!().resolve_from_disk_cache(esm.name, &version) {
                 *input_package_id_ = package_id;
                 return DependencyToResolve::Resolution(
@@ -5665,7 +5708,7 @@ impl<'a> Resolver<'a> {
                 self.generation,
                 self.store_fd,
             ) {
-                Ok(e) => bun_ptr::BackRef::new_mut(e),
+                Ok(e) => bun_ptr::BackRef::new(&*e),
                 Err(_) => dec_ret!(None),
             };
 
@@ -6461,6 +6504,9 @@ impl<'a> Resolver<'a> {
                         let mc = unsafe { &mut *merged_config };
                         mc.emit_decorator_metadata =
                             mc.emit_decorator_metadata || parent_config.emit_decorator_metadata;
+                        if let Some(v) = parent_config.use_define_for_class_fields {
+                            mc.use_define_for_class_fields = Some(v);
+                        }
                         if !parent_config.base_url.is_empty() {
                             mc.base_url = core::mem::take(&mut parent_config.base_url);
                         }

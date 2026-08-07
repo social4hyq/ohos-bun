@@ -466,9 +466,6 @@ impl CompileC {
         if this_.is_null() {
             return;
         }
-        // SAFETY: TinyCC threads our own `&mut CompileC` back as `ctx`; we hold
-        // the unique borrow for the duration of the callback.
-        let this = unsafe { &mut *this_ };
         let mut msg: &[u8] = if message.is_null() {
             b""
         } else {
@@ -490,7 +487,9 @@ impl CompileC {
         }
         msg = &msg[offset..];
 
-        this.deferred_errors.push(Box::<[u8]>::from(msg));
+        // SAFETY: TinyCC threads our own `&mut CompileC` back as `ctx`; the
+        // caller is suspended in the TCC call, so this access is exclusive.
+        unsafe { (*this_).deferred_errors.push(Box::<[u8]>::from(msg)) };
     }
 
     #[inline]
@@ -811,7 +810,7 @@ impl CompileC {
             // Check standard C compiler environment variables for include paths.
             // These are used by systems like NixOS where standard FHS paths don't exist.
             if let Some(c_include_path) = env_var::C_INCLUDE_PATH.get() {
-                for path in c_include_path.split(|b| *b == b':') {
+                for path in bun_core::strings::split(c_include_path, b":") {
                     if !path.is_empty() {
                         let path_z = ZBox::from_bytes(path);
                         if state.add_sys_include_path(&path_z).is_err() {
@@ -827,7 +826,7 @@ impl CompileC {
 
             // Check standard C compiler environment variable for library paths.
             if let Some(library_path) = env_var::LIBRARY_PATH.get() {
-                for path in library_path.split(|b| *b == b':') {
+                for path in bun_core::strings::split(library_path, b":") {
                     if !path.is_empty() {
                         let path_z = ZBox::from_bytes(path);
                         if state.add_library_path(&path_z).is_err() {
@@ -2049,8 +2048,6 @@ impl Function {
     /// without an ABI-coercing cast.
     pub(crate) unsafe extern "C" fn handle_tcc_error(ctx: *mut Function, message: *const c_char) {
         debug_assert!(!ctx.is_null());
-        // SAFETY: TinyCC threads our own `&mut Function` back as `ctx`.
-        let this = unsafe { &mut *ctx };
         // SAFETY: TCC passes a valid NUL-terminated string
         let mut msg: &[u8] = unsafe { bun_core::ffi::cstr(message) }.to_bytes();
         if !msg.is_empty() {
@@ -2066,9 +2063,13 @@ impl Function {
             msg = &msg[offset..];
         }
 
-        this.step = Step::Failed {
-            msg: Box::<[u8]>::from(msg),
-        };
+        // SAFETY: TinyCC threads our own `&mut Function` back as `ctx`; the
+        // caller is suspended in the TCC call, so this access is exclusive.
+        unsafe {
+            (*ctx).step = Step::Failed {
+                msg: Box::<[u8]>::from(msg),
+            };
+        }
     }
 
     pub(crate) fn compile(&mut self, napi_env: Option<&napi::NapiEnv>) -> crate::Result<()> {
@@ -2096,9 +2097,9 @@ impl Function {
         self.state = Some(state);
         let _guard = scopeguard::guard(std::ptr::from_mut::<Function>(self), |this_ptr| {
             // SAFETY: this_ptr is &mut self for the duration of compile()
-            let this = unsafe { &mut *this_ptr };
-            if matches!(this.step, Step::Failed { .. }) {
-                if let Some(s) = this.state.take() {
+            if matches!(unsafe { &(*this_ptr).step }, Step::Failed { .. }) {
+                // SAFETY: as above.
+                if let Some(s) = unsafe { (*this_ptr).state.take() } {
                     // SAFETY: we own the state
                     unsafe { TCC::State::destroy(s.as_ptr()) };
                 }

@@ -1238,7 +1238,7 @@ pub mod package_manifest {
                                 cache_dir,
                                 outpath,
                                 bun_sys::Renameat2Flags {
-                                    exchange: true,
+                                    mode: bun_sys::RenameMode::Exchange,
                                     ..Default::default()
                                 },
                             )?;
