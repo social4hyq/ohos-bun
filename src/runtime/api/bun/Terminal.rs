@@ -609,7 +609,7 @@ impl Terminal {
         // instrumentation showed the final terminal entering close_internal
         // with READER_DONE already true and zero dispatches for the whole
         // run. See OHOS_TEST_TODO.md T03.
-        terminal.reader.with_mut(|r| r.read());
+        unsafe { IOReader::read(terminal.reader.as_ptr()) };
 
         // Replay an exit notification that fired during startup, before the
         // wrapper and callbacks above existed. `writer.start()`,
