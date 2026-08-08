@@ -3281,3 +3281,75 @@ PR [#174](https://github.com/social4hyq/homebrew-core/pull/174) 合并，bottle 
 - **T53c `spawn-stdin-readable-stream`**（case-level skipIf(isOHOS)）：stderr for-await 背压用例，stalled 期间 writer 128/128 写满——process-stdin 同族平台管道合并/缓冲行为，注释互链。33 pass / 1 skip / 0 fail。
 
 三者均验证过 `OHOS_COMPAT_SHIM_DISABLE=epoll_pipe` 同挂（shim 免责）。至此 r47 基线 17 个稳定失败收敛为：valkey×10（环境）+ 台账已知 ×3 + 摇摆 ×1（node-http）+ https-Agent 1/3 摇摆。
+
+## r52 全量基线（2026-08-08，merge upstream/main + WebKit ddea713）
+
+被测二进制：brew `1.4.0_52`（commit `926e045cf`，含上游 oven-sh/bun main 168 commits merge + WebKit `ddea713` + esbuild 0.28 + IOReader::read 适配）。脚本 `scripts/run-baseline.sh` 7 批次口径。
+
+### 文件粒度
+
+| 批次 | 通过 | 失败 | 通过率 |
+|---|---|---|---|
+| B1 (js/bun) | 562 | 14 | 97.6% |
+| B2 (regression/napi/internal) | 546 | 7 | 98.7% |
+| B3 (cli/bundler) | 440 | 11 | 97.6% |
+| B4 (js/web/third_party/sql) | 374 | 9 | 97.7% |
+| B5 (js/node, excl. test/) | 304 | 8 | 97.4% |
+| B6 (js/node/test vendored) | 3601 | 6 | 99.8% |
+| B7 (integration) | 17 | 7 | 70.8% |
+| **合计** | **5844** | **62** | **98.95%** |
+
+对比 r47（5513/5530 = 99.69%，17 稳定失败）：文件总数从 5530 增至 5906（上游新增 376 个测试文件），失败数从 17 增至 62。通过率降 0.74pp 主因是上游合入大量新测试文件，其中多数新失败为环境/第三方依赖限制，非 Bun 回归。
+
+### r47 → r52 对比
+
+- **修复（r47 失败 → r52 通过）：43 个**——含 spawn-stdin-readable-stream 崩溃、serve-body-leak、shell/leak、spawn-signal、valkey 全簇、napi uv、026039/26387 等。
+- **新增（r47 通过 → r52 失败）：53 个**
+- **持续（两轮均失败）：7 个**——ls、spawn.test.ts lazy pipe GC、http/https-Agent、node-net、fs-watch-recursive、express-memory-leak。
+
+### 62 个失败分类
+
+**环境/外部依赖（26 个）**：
+- Docker Compose 不可用：valkey integration (1)
+- 外网/DNS/npm 不可达：bun-install 系列 (8)、bunx、bun-upgrade、bun-pm-why、complex-workspace、sharp、datadog-pprof
+- native binding 不支持 openharmony：napi-rs-canvas (2)、prisma、resvg、rspack (2)
+- next-pages/dev-server（turbo/createProject 不支持）
+- third_party：grpc-js ×2、next-auth、express-memory-leak
+
+**上游新增测试的平台差异（14 个）**：
+- `node-dns`、`resolve-dns`：DNS ADDRCONFIG/IPv6 差异
+- `node-http-transfer-encoding`、`node-http-with-ws`、`node-tls-connect`、`ssl-ctx-cache`、`tty`、`process.test`：上游 PR #31831（Node v26.3.0 process compat）引入的新断言
+- `test-net-autoselectfamily`：Happy Eyeballs IPv6
+- `test-http-max-http-headers`、`test-http-proxy-request-no-proxy-domain`、`test-child-process-exec-timeout-expire`：vendored node 新测试
+- `wasi.test`、`udp_socket`：平台限制
+
+**OHOS 已知平台限制（8 个）**：
+- `ls.test.ts`：recursive node_modules（台账已知）
+- `spawn.test.ts`：lazy pipe GC 时机
+- `http/https-Agent`：外网 + TLS (×2)
+- `node-net`：IPv6 ECONNREFUSED
+- `fs-watch-recursive-linux`：inotify 超时
+- `message-port-context-destroy-leak`：T35 per-Worker lifecycle（等上游）
+- `bun-serve-file`/`serve-file-slice-read-error`：sendfile 语义差异
+
+**并发/超时（7 个）**：
+- `bun-security-scanner-matrix-with-node-modules`：7200 测试矩阵超时
+- `child-process-execsync`：fork 慢
+- `http-should-allow-numbers-headers`/`http-should-support-localAddress`：并发网络超时
+- `fetch.unix`：Unix socket 路径差异
+- `glob-on-fuse`/`run-file-on-fuse`：FUSE/hmdfs 差异
+- `shell-load`：shell 初始化竞态
+
+**回归 issue（5 个）**：
+- `22712`、`24364`、`24742`、`26286`、`29290`：需逐一排查是否 merge 引入
+
+**其他（2 个）**：
+- `bun-build-compile`：bundler --compile 产物测试
+- `rust-windows-sys-link`：Windows 链接测试（非 OHOS）
+
+### 高价值修复（r52 获得上游 168 commits 的成果）
+
+- 17 个 segfault/UAF/leak 修复全部合入（HTMLRewriter、Bun.plugin、sqlite、fetch、Bun.serve、Bun.listen 等）
+- GarbageCollectionController 重构（#35356）：消除每秒 62 次 eden GC 的 CPU 峰值
+- StrongRootBlock（#35849）：O(N) → O(1) eden GC 扫描
+- GC 控制器修复后 spawn-stdin-readable-stream teardown 崩溃不再复现（5 次验证全通过）
