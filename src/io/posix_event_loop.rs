@@ -582,7 +582,10 @@ impl FilePoll {
         // interest's events entirely. Level-triggered registration avoids the
         // broken path; the FilePoll re-register logic is idempotent for LT.
         #[cfg(target_env = "ohos")]
-        let one_shot = OneShotFlag::None;
+        let one_shot = {
+            let _ = one_shot;
+            OneShotFlag::None
+        };
         #[cfg(any(
             target_os = "linux",
             target_os = "android",
