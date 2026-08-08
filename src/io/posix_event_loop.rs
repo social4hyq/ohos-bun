@@ -982,6 +982,7 @@ impl FilePoll {
             let ctl = unsafe {
                 linux::epoll_ctl(watcher_fd, EPOLL::CTL_DEL, fd.native(), ptr::null_mut())
             };
+            std::eprintln!("[TDBG] epoll_ctl DEL fd={} -> rc={}", fd, ctl);
 
             match sys::get_errno(ctl) {
                 sys::E::SUCCESS => {}

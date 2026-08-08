@@ -787,6 +787,7 @@ impl PosixBufferedReader {
 
                 match sys::read_nonblocking(fd, stack_buffer) {
                     sys::Result::Ok(bytes_read) => {
+                        std::eprintln!("[TDBG] rbp fd={} ok={}", fd.native(), bytes_read);
                         // SAFETY: caller contract; borrow scoped to the call.
                         let over_budget =
                             Self::charge_max_buffer(unsafe { &mut *this }, bytes_read);
@@ -839,6 +840,7 @@ impl PosixBufferedReader {
                         }
                     }
                     sys::Result::Err(err) => {
+                        std::eprintln!("[TDBG] rbp fd={} err={:?}", fd.native(), err);
                         if !err.is_retry() {
                             // SAFETY: caller contract; `on_error` is the tail.
                             unsafe { Self::on_error(this, err) };
@@ -1034,6 +1036,7 @@ impl PosixBufferedReader {
 
                     match sys_fn(fd, buf, offset) {
                         sys::Result::Ok(bytes_read) => {
+                            std::eprintln!("[TDBG] read_with_fn fd={} ok={}", fd.native(), bytes_read);
                             // SAFETY: caller contract; borrow scoped to the call.
                             let over_budget =
                                 Self::charge_max_buffer(unsafe { &mut *this }, bytes_read);

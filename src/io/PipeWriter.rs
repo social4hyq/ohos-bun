@@ -96,6 +96,7 @@ pub trait PosixPipeWriter {
         while offset < buf.len() {
             match write_fn(fd, &buf[offset..]) {
                 sys::Result::Err(err) => {
+                    std::eprintln!("[TDBG] write fd={} err={:?}", fd.native(), err);
                     if err.is_retry() {
                         return WriteResult::Pending(offset);
                     }
@@ -108,6 +109,7 @@ pub trait PosixPipeWriter {
                 }
 
                 sys::Result::Ok(wrote) => {
+                    std::eprintln!("[TDBG] write fd={} ok={}", fd.native(), wrote);
                     offset += wrote;
                     if wrote == 0 {
                         return WriteResult::Done(offset);
