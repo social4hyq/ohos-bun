@@ -3424,6 +3424,33 @@ PR [#174](https://github.com/social4hyq/homebrew-core/pull/174) 合并，bottle 
 
 **发布链**：PR [#232](https://github.com/social4hyq/homebrew-core/pull/232)（`bun 1.4.0_53`，revision `e8e90fceaa`）→ CI pr-validate 全绿（含 source build）→ bottle 回写 `097041c94` → 人工合并 → publish-on-merge + sync-to-atomgit → 真机 `brew upgrade bun` 到 1.4.0_53。
 
-**容器 dev 构建路径回归（另案，未修）**：容器内 bun-bootstrap（08-01 的 `5467a6893`）对完整 repo 跑 `bun install` 段错误（0xFFFFFFFFFFFFFFFF，~160ms），r46 树（08-02 构建成功过）同挂；package.json/bun.lock/缓存（fresh cache 同挂）全部排除 → 容器环境漂移（docker host 08-02 后有变动）。lldb 因容器缺 CAP_SYS_PTRACE 不可用。本轮靠 CI bottle 绕过；后续排查建议记 `docs/remote-docker-setup-guide.md`。
+**~~容器 dev 构建路径回归~~（2026-08-08 已定位并修复）**：容器内 bun-bootstrap 跑 `bun install` 段错误的根因是**容器默认 `RLIMIT_NOFILE=2^30`**，bootstrap bun 按 rlimit 分配 fd 表时 32 位乘法溢出 → `mmap(NULL,0)` 失败 → 空指针（qemu -strace 实证：`prlimit64` 返回 1073741816）。与源码树/缓存无关（r46 树同挂是因为环境问题与树无关）。修法：`ulimit -n 32768`（已写入容器 `/root/.bashrc`+`.profile`；注意 `bash -lc` 是 login shell 不读 `.bashrc`，非交互命令要显式带）。细节已记入 `docs/remote-docker-setup-guide.md` 故障排查节。调试手段补充：静态 qemu-aarch64 可 `docker cp` 进容器跑 `-strace`，绕开容器无 CAP_SYS_PTRACE 的限制。
 
 **环境备注**：agent shell 里 `USER=100` 会让 shim 兜底合成 username="100"（`spawn-ohos-node-userinfo` 稳定失败的环境因素之一），非本次 shim 改动引入。
+
+## 2026-08-08/09 — T03/tty 深挖：归因更正 + HongMeng 内核 pty/epoll bug 清单（实证）
+
+针对 r52 稳定失败里「PTY/平台限制」簇（`tty.test.ts` 的 setRawMode 用例 90s 超时）做的完整调查。**结论：归因更正为内核 pty 数据面缺陷 + epoll ONESHOT 缺陷，bun 无本地可修缺陷，用例维持 quarantine。**
+
+### 推翻的旧结论
+
+- 旧 handoff 记载「`/dev/ptmx` 被 seccomp 拦、无 PTY 子系统」——**不准**：实测 `open("/dev/ptmx")`、`TIOCGPTN`、`TIOCSPTLCK`、`open("/dev/pts/N")` 全链路可用（仅 `TIOCGPTPEER` 被拦 EACCES，bun 不需要它；`/dev/pts` 目录不可列但文件可开）。
+- 「spawn 后 terminal reader 聋哑」——**spawn 是替罪羊**：无 spawn 的纯写探针同样只收到第一个数据块。
+
+### 实证的内核 bug（HongMeng Kernel 1.12.0；python 独立探针，与 bun 无关）
+
+1. **EPOLLONESHOT 永不解除**：`OUT|ONESHOT` 注册在 pty master 上，触发后每次 wait 都重复返回（不再 armed 语义），Linux 应只触发一次。`MOD` re-arm、EEXIST/ENOENT 错误码语义本身正常。
+2. **pty master→slave 输入方向只通第一行**：第一行输入能进 slave 读队列，之后的输入静默丢弃（python 和 bun 都复现；T49/T50 族谱的又一个内核网络/终端缺陷）。
+3. **fstat(pty fd) 返回 EACCES**（T22 同族，python 也中；实测无害）。
+
+### bun 侧专属症状（未隔离到行）
+
+bun 的 `Bun.Terminal`（openpty + master 双 dup 分离读写 + 双 ONESHOT epoll 注册 + 创建即注册写 poll）在真机上：**第一轮读写完全正常，第一个数据块交付后该 pty 数据面整体死亡**——后续写 master 的字节既不进 slave 队列也不产生 echo（`dd` 直读 master fd 证实队列为空），外部进程写 slave 同样消失。同一二进制在容器（openEuler 内核）完全正常。
+
+排查手段与排除项：容器内插桩构建（`[TDBG]` 5 点 + uws C 循环 2 点，共 3 轮构建）确认注册/re-arm/写全部成功、事件从此缺席；compat-shim 全部拦截器逐个/全量禁用排除；`BUN_FEATURE_FLAG_DISABLE_EPOLL_PWAIT2` 排除；ONESHOT 禁用试验补丁（`baea48bbb6`）**无效**（数据面死亡，非事件丢失）。**~20 组 python/bun:ffi 探针逐维度复制 bun 的全部 pty 系统调用序列（含精确 termios 结构、winsize、fd 拓扑、epoll 注册/删除/再注册模式、RWF_NOWAIT 读）均无法复现**——触发点只在 bun 完整 Terminal 机制中出现，未隔离。插桩与试验补丁已全部 revert（`0addef4d3b`）。
+
+### 结论与处置
+
+- `tty.test.ts` 维持 quarantine。即使数据面修好，该用例需要 P1–P5 五轮双向交互（master 写 ack → child stdin 读），会死在 bug #2 上；唯一通路是全用户态 pty 模拟（socketpair 顶替 + 假 termios 状态机），但该用例还断言**跨进程** termios 状态（父读 `terminal.localFlags` 验证子的 `setRawMode`），模拟层满足不了——**ROI 不成立，明确不做**。
+- 内核 bug 上报材料：本节三条均有独立 python 探针可复现（#1 #2 直接复现，bun 专属症状需要 bun 二进制）。
+- 同簇重新定性（r52 稳定失败清单更正）：`shell-load` 不是 PTY 问题，是 30000 次 spawn × 23.7ms 的进程启动成本（探针实测）；`udp_socket` 挂在「bind fails」用例——非法主机名 `example!!!!!.com` 期望 getaddrinfo 本地拒绝，实测走真实 DNS 查询 4s 超时 ×200 次（T49 族谱），与 UDP 无关。
