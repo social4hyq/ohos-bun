@@ -157,7 +157,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # directly in resolve-dns.test.ts instead of quarantining the whole file.
 
 # --- WASI cannot open '/' (EACCES on OHOS root) ---
-[ OPENHARMONY ] test/js/bun/wasm/wasi.test.js [ Failure ] # wasi preopened-dir tries openSync('/') → EACCES on OHOS
 
 # --- napi: node-gyp found ohos-sdk's older bundled clang (15.0.4, no C++20
 # libc++) instead of llvm@21 via PATH search, regardless of CC/CXX env vars.
@@ -177,7 +176,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # --- cross-compile target binary not available for download on OHOS ---
 # "compile with current platform target string" constructs target bun-linux-aarch64-musl-v1.4.0
 # and tries to download it; that artifact does not exist for this version.
-[ OPENHARMONY ] test/bundler/bun-build-compile.test.ts [ Failure ] # compile with current platform target string — bun-linux-aarch64-musl-v1.4.0 not available for download
 
 # --- bun:internal-for-testing: the "unavailable in release build" premise
 # below was disproven 2026-07-26. scripts/runner.node.mjs's spawnBun() always
@@ -309,8 +307,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 #
 # Four entries are kept below because they fail 100% deterministically
 # (not flaky) for real, still-uninvestigated reasons — see OHOS_TEST_TODO.md.
-[ OPENHARMONY ] test/regression/issue/29290.test.ts [ Failure ] # bun build --compile /nix/store PT_INTERP normalization: readInterp() gets "" instead of the fake nix interpreter path — see OHOS_TEST_TODO.md T23
-[ OPENHARMONY ] test/regression/issue/24742.test.ts [ Failure ] # same PT_INTERP/patchelf root cause as 29290 — see OHOS_TEST_TODO.md T23
 [ OPENHARMONY ] test/regression/issue/24364.test.ts [ Skip ] # react-tailwind template's tsc --noEmit needs @typescript/typescript-openharmony-arm64, which upstream does not publish (same class as test/integration/bun-types/bun-types.test.ts's tsgo gap)
 
 # --- cli/hot + cli/inspect: OHOS unix socket / sourcemap timing ---
