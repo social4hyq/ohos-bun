@@ -3376,10 +3376,10 @@ PR [#174](https://github.com/social4hyq/homebrew-core/pull/174) 合并，bottle 
 - **仅本轮失败 14 个** = 11 个 `bake/dev/*`（run1 未覆盖 bake，属 T18 已知簇，非新失败）+ `bun-add` + `node-http-connect`/`node-http`（隔离转绿，剔除）。
 - **仅 run1 失败本轮转绿 12 个**：`spawn.test.ts`、`node-dns`、`node-net`、`test-net-autoselectfamily`、`test-http-max-http-headers`、`test-child-process-exec-timeout-expire`、`fs-watch-recursive-linux-parallel-remove`、`express-memory-leak`、`bun-pm-why`、`complex-workspace`、`valkey/complex-operations`、`22712`——均为台账记载的摇摆/环境类，按规矩不计入"修复"。
 
-### bun-add 遗留
+### bun-add 复核结论（3/3 已补齐）
 
-`cli/install/bun-add.test.ts` 隔离单跑仍挂 1 个用例：「git dep without package.json and with default branch」300s 超时（git 依赖拉取，疑似外网类 class D），同文件其余用例全过；run1 该文件整体通过。单次隔离不足定性，待 3/3 复跑确认后再决定是否立 quarantine。
+`cli/install/bun-add.test.ts` 隔离单跑 3 次：fail / pass / pass——「git dep without package.json and with default branch」300s 超时只在第 1 次出现，判定为**摇摆**（git 依赖拉取受网络/代理影响，class D 嫌疑），不立 quarantine、不计入稳定失败。
 
 ### 结论
 
-两轮全量（串行批次 vs 并行）在同一二进制上互相印证：**无新回归**。稳定失败 48 + bun-add 单用例待定，全部为环境/平台/上游已知项，本地 class A 为零。`--parallel` 口径可作为后续全量基线的默认跑法（~1h vs ~6h），但失败文件必须经串行复跑+隔离单跑两级复核才能下结论（本轮 68 并行失败里 20 个是并发假象）。
+两轮全量（串行批次 vs 并行）在同一二进制上互相印证：**无新回归**。稳定失败 48 个，全部为环境/平台/上游已知项，本地 class A 为零（bun-add 经 3/3 复核判定摇摆，见上节）。`--parallel` 口径可作为后续全量基线的默认跑法（~1h vs ~6h），但失败文件必须经串行复跑+隔离单跑两级复核才能下结论（本轮 68 并行失败里 20 个是并发假象）。
