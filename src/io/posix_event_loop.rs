@@ -1490,12 +1490,14 @@ unsafe extern "C" fn Bun__internal_dispatch_ready_poll(
 ) {
     let tag = Pollable::from(tagged_pointer);
 
+    std::eprintln!("[TDBG] dispatch_ready_poll tag={}", tag.tag());
     if tag.tag() != Pollable::FILE_POLL_TAG {
         return;
     }
 
     // SAFETY: tag matched FilePoll; pointer was set via Pollable::init in register_with_fd.
     let file_poll: &mut FilePoll = unsafe { &mut *tag.as_file_poll() };
+    std::eprintln!("[TDBG] dispatch_ready_poll ignore_updates={}", file_poll.flags.contains(Flags::IgnoreUpdates));
     if file_poll.flags.contains(Flags::IgnoreUpdates) {
         return;
     }
@@ -1512,7 +1514,10 @@ unsafe extern "C" fn Bun__internal_dispatch_ready_poll(
     #[cfg(any(target_os = "macos", target_os = "freebsd"))]
     file_poll.on_kqueue_event(&ev);
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    file_poll.on_epoll_event(&ev);
+    {
+        std::eprintln!("[TDBG] ready_poll events={:#x}", ev.events);
+        file_poll.on_epoll_event(&ev);
+    }
 }
 
 #[cfg(target_os = "macos")]

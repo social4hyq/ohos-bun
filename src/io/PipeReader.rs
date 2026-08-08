@@ -768,6 +768,7 @@ impl PosixBufferedReader {
         // The vtable is two Copy scalars set once at `start()`; copying it out
         // lets every `on_read_chunk` dispatch run with no borrow of `*this`.
         // SAFETY: caller contract — `this` is live.
+        std::eprintln!("[TDBG] read_blocking_pipe fd={} hup={}", fd.native(), received_hup_initially);
         let vtable = unsafe { (*this).vtable };
         let mut received_hup = received_hup_initially;
         loop {
