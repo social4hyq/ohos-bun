@@ -1048,6 +1048,7 @@ impl IoRequestLoop {
             }
 
             for event in current_events {
+                std::eprintln!("[TDBG] dispatch ev u64={:#x} events={:#x}", event.u64, event.events);
                 let pollable = Pollable::from(event.u64);
                 if pollable.tag() == PollableTag::Empty {
                     // `self` *is* `(*LOOP.get()).assume_init_ref()` (see
@@ -1649,6 +1650,7 @@ impl Poll {
         tag: PollableTag,
         event: linux::epoll_event,
     ) {
+        std::eprintln!("[TDBG] on_update_epoll events={:#x} err_bit={}", event.events, event.events & linux::EPOLL_ERR != 0);
         // ignore empty tags. This case should be unreachable in practice
         if tag == PollableTag::Empty {
             return;

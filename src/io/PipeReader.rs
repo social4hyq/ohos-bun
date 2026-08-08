@@ -944,6 +944,8 @@ impl PosixBufferedReader {
                 return;
             }
 
+            std::eprintln!("[TDBG] hup-drain path fd={}", fd.native());
+
             // We have received HUP. Normally that means all writers are gone
             // and draining the buffer will eventually hit EOF (read() == 0),
             // so we loop locally instead of re-arming the poll (HUP is
@@ -1005,6 +1007,7 @@ impl PosixBufferedReader {
         received_hup: bool,
         sys_fn: impl Fn(Fd, &mut [u8], usize) -> sys::Result<usize>,
     ) {
+        std::eprintln!("[TDBG] read_with_fn fd={} hup={}", fd.native(), received_hup);
         // Copy scalars set once at `start()`; dispatching through the copy
         // keeps `*this` unborrowed across every re-entry point.
         // SAFETY: caller contract — `this` is live.
@@ -1094,6 +1097,7 @@ impl PosixBufferedReader {
                             }
                         }
                         sys::Result::Err(err) => {
+                            std::eprintln!("[TDBG] read_with_fn fd={} err={:?}", fd, err);
                             if err.is_retry() {
                                 if file_type == FileType::File {
                                     bun_core::debug_warn!(

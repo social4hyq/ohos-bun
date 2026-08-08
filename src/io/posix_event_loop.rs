@@ -665,6 +665,7 @@ impl FilePoll {
 
             // SAFETY: FFI syscall; `event` is a stack-local valid for the call.
             let ctl = unsafe { linux::epoll_ctl(watcher_fd, op, fd.native(), &raw mut event) };
+            std::eprintln!("[TDBG] epoll_ctl op={} fd={} mask={:#x} -> rc={}", op, fd, flags, ctl);
             self.flags.insert(Flags::WasEverRegistered);
             if let Some(errno) = errno_sys(ctl, sys::Tag::epoll_ctl) {
                 self.deactivate(loop_);
