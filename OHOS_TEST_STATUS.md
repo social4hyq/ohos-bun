@@ -3407,3 +3407,23 @@ PR [#174](https://github.com/social4hyq/homebrew-core/pull/174) 合并，bottle 
 ### 结论
 
 两轮全量（串行批次 vs 并行）在同一二进制上互相印证：**无新回归**。稳定失败 48 个，全部为环境/平台/上游已知项，本地 class A 为零（bun-add 经 3/3 复核判定摇摆，见上节）。`--parallel` 口径可作为后续全量基线的默认跑法（~1h vs ~6h），但失败文件必须经串行复跑+隔离单跑两级复核才能下结论（本轮 68 并行失败里 20 个是并发假象）。
+
+## r53 发布（2026-08-08）：「测试自身/超时预算」簇处置 + shim 修复上车
+
+对 r52 稳定失败清单里「测试自身/超时预算」4 项逐一深挖后的处置结果：
+
+| 文件 | 根因（本轮新定性） | 处置 |
+|---|---|---|
+| `rust-windows-sys-link` | `Cargo.lock` 缺 `ohos_sign` 条目（fork 合并上游后未重生成），`cargo test --locked` exit 101，与链接无关 | `cargo update --offline` 重生成 lock（顺带清掉 260 行 wit-* 失效条目），提交 `54bc5d5b4a`；runner 复测转绿 |
+| `process.test.js` initgroups 用例 | **compat-shim 副作用**：`getpwuid_r` 兜底对任意 uid 合成当前账户记录，掩盖 ENOENT，预解析通过后走到 initgroups(3) 吃 EPERM（期望 `ERR_UNKNOWN_CREDENTIAL`） | shim 打补丁：兜底仅限 `uid == getuid()/geteuid()`，其余 uid 透传 ENOENT（ohos-compat-shim `098a75a`，内嵌副本同步 `ef127498f4`） |
+| `process.test.js` node 版本用例 | 硬编码期望 host node `v26.3.0`，harmonybrew node 已 v26.7.0 | `it.todoIf(isMacOS || isOHOS)`，提交 `e8e90fceaa` |
+| `test-child-process-execsync` | OHOS `/bin/sh` 不做 `sh -c` exec 优化：timeout SIGTERM 只杀 sh，孙子进程占住管道，execSync 等管道 EOF 直到孙子自然退出（探针 2144ms ≥ SLEEP 2000） | **同机 node 对照同样 2134ms 同挂 → 平台差异，bun 免责**，维持 quarantine 不动 |
+| `security-scanner-matrix-with-node-modules` | 7200 用例矩阵超文件级超时预算（被杀时子用例本身正常） | 维持 expectations quarantine 不动 |
+
+**shim 修复验证链**：smoke / functional 38/38 / real-vs-fallback 全绿 → LD_PRELOAD 补丁 shim 挂 node：未知 uid 抛 `ERR_UNKNOWN_CREDENTIAL` ✓、`os.userInfo()` 本人 uid 正常 ✓ → LD_PRELOAD 对 bun 无效（shim 内嵌编译进二进制，可执行文件自身符号优先）→ 走 CI bottle 发 r53 → 真机 `bun 1.4.0+e8e90fcea`：`process.test.js` **3/3 全绿**（150 pass / 1 todo / 0 fail），`rust-windows-sys-link` 绿。
+
+**发布链**：PR [#232](https://github.com/social4hyq/homebrew-core/pull/232)（`bun 1.4.0_53`，revision `e8e90fceaa`）→ CI pr-validate 全绿（含 source build）→ bottle 回写 `097041c94` → 人工合并 → publish-on-merge + sync-to-atomgit → 真机 `brew upgrade bun` 到 1.4.0_53。
+
+**容器 dev 构建路径回归（另案，未修）**：容器内 bun-bootstrap（08-01 的 `5467a6893`）对完整 repo 跑 `bun install` 段错误（0xFFFFFFFFFFFFFFFF，~160ms），r46 树（08-02 构建成功过）同挂；package.json/bun.lock/缓存（fresh cache 同挂）全部排除 → 容器环境漂移（docker host 08-02 后有变动）。lldb 因容器缺 CAP_SYS_PTRACE 不可用。本轮靠 CI bottle 绕过；后续排查建议记 `docs/remote-docker-setup-guide.md`。
+
+**环境备注**：agent shell 里 `USER=100` 会让 shim 兜底合成 username="100"（`spawn-ohos-node-userinfo` 稳定失败的环境因素之一），非本次 shim 改动引入。
