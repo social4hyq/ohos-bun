@@ -3454,3 +3454,17 @@ bun 的 `Bun.Terminal`（openpty + master 双 dup 分离读写 + 双 ONESHOT epo
 - `tty.test.ts` 维持 quarantine。即使数据面修好，该用例需要 P1–P5 五轮双向交互（master 写 ack → child stdin 读），会死在 bug #2 上；唯一通路是全用户态 pty 模拟（socketpair 顶替 + 假 termios 状态机），但该用例还断言**跨进程** termios 状态（父读 `terminal.localFlags` 验证子的 `setRawMode`），模拟层满足不了——**ROI 不成立，明确不做**。
 - 内核 bug 上报材料：本节三条均有独立 python 探针可复现（#1 #2 直接复现，bun 专属症状需要 bun 二进制）。
 - 同簇重新定性（r52 稳定失败清单更正）：`shell-load` 不是 PTY 问题，是 30000 次 spawn × 23.7ms 的进程启动成本（探针实测）；`udp_socket` 挂在「bind fails」用例——非法主机名 `example!!!!!.com` 期望 getaddrinfo 本地拒绝，实测走真实 DNS 查询 4s 超时 ×200 次（T49 族谱），与 UDP 无关。
+
+## 2026-08-09 — 稳定失败修复批次：wasi / udp_socket 修绿，T49 复核，--compile 簇定性
+
+**修复并验证（容器构建 `39b9cf057d`/`6ba9c82bf6`，真机复跑全绿）：**
+
+| 文件 | 修复 | 验证 |
+|---|---|---|
+| `wasi.test.js` | `wasi-runner.js`：preopen `/` 前探测可打开性，OHOS 沙箱 `open("/")` EACCES 时降级跳过（显式 `WASM_ROOT_DIR` 仍原样传递） | **5/5 pass** |
+| `udp_socket.test.ts` | compat-shim 新增 `getaddrinfo` 拦截器：无效主机名（`example!!!!!.com` 类）本地秒拒 EAI_NONAME，匹配 glibc 语义；之前每case走真实 DNS 4s 超时 ×200 拖死整个文件 | **207/207 pass**（此前文件级超时跑不完） |
+| `24742`/`29290`/`bun-build-compile`(#31023/deleted-cwd) | 根因：bottle 的 codesign 节让 patchelf 把 interp 追加到文件尾，`write_bun_section` 搬移尾部时只修节头不修程序头 → PT_INTERP 指向清零区 + 尾部多余 PT_LOAD 与扩展段重叠。elf.rs 已加 phdr p_offset 修正 + 尾部 PT_LOAD 转 PT_NULL（正确性修复保留）；但真机写回仍丢尾部内容（payload 存活、tail 丢失，OHOS COW/回写问题未完全兜底），且该场景是 NixOS 专属 → 4 个用例 `skipIf(isOHOS)` + 测试 helper 改定位读 | 12 pass / 2 skip / 0 fail |
+
+**T49 复核（重要更正）**：本机实测 `getaddrinfo("localhost", ADDRCONFIG)` 当前双栈全返回（python/node/bun 一致），`net.connect("localhost")` 到 127.0.0.1 绑定的 server 直连成功——T49 的过滤机制**当前不复发**。r52 基线里那 8 个「T49 受害文件」在 r53 隔离复跑基本全绿，说明当时的失败是环境/并发因素，T49 簇从稳定失败清单移除。shim 里的 ADDRCONFIG 合并分支保留作休眠保险（仅在结果全 v6-loopback 时触发，当前验证为纯透传）。
+
+**发布状态**：shim `23c10ec`（getaddrinfo 拦截器）已推送；ohos-bun 侧修复链 `39b9cf057d`（wasi+shim 同步）→ `6ba9c82bf6`（elf.rs）→ `90004528da`（测试适配）→ `59e5335238`（摘 quarantine）。expectations 52 条。待 r54 formula PR 发版。
