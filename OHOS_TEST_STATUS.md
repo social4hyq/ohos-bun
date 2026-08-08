@@ -3376,6 +3376,30 @@ PR [#174](https://github.com/social4hyq/homebrew-core/pull/174) 合并，bottle 
 - **仅本轮失败 14 个** = 11 个 `bake/dev/*`（run1 未覆盖 bake，属 T18 已知簇，非新失败）+ `bun-add` + `node-http-connect`/`node-http`（隔离转绿，剔除）。
 - **仅 run1 失败本轮转绿 12 个**：`spawn.test.ts`、`node-dns`、`node-net`、`test-net-autoselectfamily`、`test-http-max-http-headers`、`test-child-process-exec-timeout-expire`、`fs-watch-recursive-linux-parallel-remove`、`express-memory-leak`、`bun-pm-why`、`complex-workspace`、`valkey/complex-operations`、`22712`——均为台账记载的摇摆/环境类，按规矩不计入"修复"。
 
+### 稳定失败 48 项完整清单（按分类分组）
+
+**外网 / npm / 外部依赖不可达（class D 环境，13）**：`cli/install/bun-install.test.ts`、`bun-install-registry`、`bun-install-native-binlink`、`bun-upgrade`、`bunx`、`integration/next-pages/test/dev-server`、`dev-server-ssr-100`、`next-build`、`integration/sharp`、`integration/datadog-pprof`、`js/bun/test/parallel/test-http-get-can-use-Agent`、`test-https-get-can-use-Agent`、`js/third_party/next-auth`
+
+**native binding 无 openharmony 构建（class D，4）**：`js/third_party/prisma`、`resvg/bbox`、`@napi-rs/canvas`、`js/bun/test/parallel/test-integration-rspack`
+
+**T49 ADDRCONFIG 簇（class B 平台 DNS 缺陷，8）**：`js/node/http/node-http-transfer-encoding`、`node-http-with-ws`、`js/node/tls/node-tls-connect`、`ssl-ctx-cache`、`js/bun/dns/resolve-dns`、`js/node/test/parallel/test-http-proxy-request-no-proxy-domain.mjs`、`js/bun/test/parallel/test-http-should-support-localAddress`、`test-http-should-allow-numbers-headers-to-be-set-in-server-and-client`
+
+**PTY / 平台限制（class B，4）**：`js/node/tty.test.ts`、`js/bun/shell/shell-load.test.ts`（均 PTY seccomp）、`js/bun/wasm/wasi.test.js`、`js/bun/udp/udp_socket.test.ts`
+
+**OHOS 文件系统 / 语义差异（6）**：`js/bun/shell/commands/ls.test.ts`（recursive node_modules）、`js/bun/http/bun-serve-file`、`serve-file-slice-read-error`（sendfile 语义）、`cli/run/glob-on-fuse`、`run-file-on-fuse`（FUSE/hmdfs）、`js/web/fetch/fetch.unix.test.ts`（Unix socket 路径）
+
+**第三方服务依赖（2）**：`js/third_party/grpc-js/test-server`、`test-outlier-detection`
+
+**测试自身 / 超时预算（4）**：`cli/install/bun-security-scanner-matrix-with-node-modules`（7200 用例矩阵超时）、`js/node/test/sequential/test-child-process-execsync.js`（fork 慢）、`js/node/process/process.test.js`（上游新断言，class C）、`internal/rust-windows-sys-link`（Windows 链接测试，非 OHOS）
+
+**上游 bug（1）**：`js/web/workers/message-port-context-destroy-leak`（T35，等上游）
+
+**regression issue 待逐查（4）**：`regression/issue/24364`、`24742`、`26286`、`29290`
+
+**其他（2）**：`bundler/bun-build-compile`（--compile 产物测试）、`js/bun/spawn/spawn-ohos-node-userinfo`（OHOS 专属用例，两轮均挂）
+
+不计入稳定失败：`test/bake/dev/*` ×11（仅本轮覆盖，T18 已知簇）；摇摆项 `bun-add`（3/3 = fail/pass/pass）、`node-http-connect`、`node-http`（隔离转绿）。
+
 ### bun-add 复核结论（3/3 已补齐）
 
 `cli/install/bun-add.test.ts` 隔离单跑 3 次：fail / pass / pass——「git dep without package.json and with default branch」300s 超时只在第 1 次出现，判定为**摇摆**（git 依赖拉取受网络/代理影响，class D 嫌疑），不立 quarantine、不计入稳定失败。
