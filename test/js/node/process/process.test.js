@@ -1,7 +1,7 @@
 import { spawnSync, which } from "bun";
 import { describe, expect, it } from "bun:test";
 import { familySync } from "detect-libc";
-import { bunEnv, bunExe, isMacOS, isWindows, tempDir, tmpdirSync } from "harness";
+import { bunEnv, bunExe, isMacOS, isOHOS, isWindows, tempDir, tmpdirSync } from "harness";
 import { basename, join, resolve } from "path";
 
 const process_sleep = resolve(import.meta.dir, "process-sleep.js");
@@ -748,7 +748,9 @@ it("process.reallyExit does not emit 'exit'", async () => {
 });
 
 describe.concurrent(() => {
-  it.todoIf(isMacOS)("should be the node version on the host that we expect", async () => {
+  // isOHOS: the test pins the host node to v26.3.0 but harmonybrew node moves
+  // forward independently of bun's Node-compat version (host has v26.7.0).
+  it.todoIf(isMacOS || isOHOS)("should be the node version on the host that we expect", async () => {
     const subprocess = Bun.spawn({
       cmd: ["node", "--version"],
       stdout: "pipe",
