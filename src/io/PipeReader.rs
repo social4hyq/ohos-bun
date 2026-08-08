@@ -768,7 +768,6 @@ impl PosixBufferedReader {
         // The vtable is two Copy scalars set once at `start()`; copying it out
         // lets every `on_read_chunk` dispatch run with no borrow of `*this`.
         // SAFETY: caller contract — `this` is live.
-        std::eprintln!("[TDBG] read_blocking_pipe fd={} hup={}", fd.native(), received_hup_initially);
         let vtable = unsafe { (*this).vtable };
         let mut received_hup = received_hup_initially;
         loop {
@@ -787,7 +786,6 @@ impl PosixBufferedReader {
 
                 match sys::read_nonblocking(fd, stack_buffer) {
                     sys::Result::Ok(bytes_read) => {
-                        std::eprintln!("[TDBG] rbp fd={} ok={}", fd.native(), bytes_read);
                         // SAFETY: caller contract; borrow scoped to the call.
                         let over_budget =
                             Self::charge_max_buffer(unsafe { &mut *this }, bytes_read);
@@ -840,7 +838,6 @@ impl PosixBufferedReader {
                         }
                     }
                     sys::Result::Err(err) => {
-                        std::eprintln!("[TDBG] rbp fd={} err={:?}", fd.native(), err);
                         if !err.is_retry() {
                             // SAFETY: caller contract; `on_error` is the tail.
                             unsafe { Self::on_error(this, err) };
@@ -947,8 +944,6 @@ impl PosixBufferedReader {
                 return;
             }
 
-            std::eprintln!("[TDBG] hup-drain path fd={}", fd.native());
-
             // We have received HUP. Normally that means all writers are gone
             // and draining the buffer will eventually hit EOF (read() == 0),
             // so we loop locally instead of re-arming the poll (HUP is
@@ -1010,7 +1005,6 @@ impl PosixBufferedReader {
         received_hup: bool,
         sys_fn: impl Fn(Fd, &mut [u8], usize) -> sys::Result<usize>,
     ) {
-        std::eprintln!("[TDBG] read_with_fn fd={} hup={}", fd.native(), received_hup);
         // Copy scalars set once at `start()`; dispatching through the copy
         // keeps `*this` unborrowed across every re-entry point.
         // SAFETY: caller contract — `this` is live.
@@ -1036,7 +1030,6 @@ impl PosixBufferedReader {
 
                     match sys_fn(fd, buf, offset) {
                         sys::Result::Ok(bytes_read) => {
-                            std::eprintln!("[TDBG] read_with_fn fd={} ok={}", fd.native(), bytes_read);
                             // SAFETY: caller contract; borrow scoped to the call.
                             let over_budget =
                                 Self::charge_max_buffer(unsafe { &mut *this }, bytes_read);
@@ -1101,7 +1094,6 @@ impl PosixBufferedReader {
                             }
                         }
                         sys::Result::Err(err) => {
-                            std::eprintln!("[TDBG] read_with_fn fd={} err={:?}", fd, err);
                             if err.is_retry() {
                                 if file_type == FileType::File {
                                     bun_core::debug_warn!(

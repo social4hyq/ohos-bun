@@ -1897,14 +1897,12 @@ impl Terminal {
 
     // IOReader callbacks
     fn on_reader_done(&self) {
-        std::eprintln!("[TDBG] terminal on_reader_done");
         bun_output::scoped_log!(Terminal, "onReaderDone");
         // exit_code 0 = clean EOF on PTY stream (not subprocess exit code)
         self.on_reader_finished(0);
     }
 
     fn on_reader_error(&self, err: &sys::Error) {
-        std::eprintln!("[TDBG] terminal on_reader_error: {:?}", err);
         bun_output::scoped_log!(Terminal, "onReaderError: {:?}", err);
         // exit_code 1 = I/O error on PTY stream (not subprocess exit code)
         self.on_reader_finished(1);
@@ -1994,7 +1992,6 @@ impl Terminal {
     // Returns true to continue reading, false to pause
     fn on_read_chunk(&self, chunk: &[u8], has_more: ReadState) -> bool {
         let _ = has_more;
-        std::eprintln!("[TDBG] terminal on_read_chunk: {} bytes", chunk.len());
         bun_output::scoped_log!(Terminal, "onReadChunk: {} bytes", chunk.len());
 
         if self.flags.get().contains(Flags::FINALIZED) {

@@ -574,18 +574,6 @@ impl FilePoll {
         one_shot: OneShotFlag,
         fd: Fd,
     ) -> sys::Result<()> {
-        // OHOS kernel (HongMeng 1.12) does not disarm EPOLLONESHOT interests
-        // after they fire (verified 2026-08-08: an OUT|ONESHOT poll on a pty
-        // master re-fires on every wait without re-arm), and one-shot state
-        // tracking on fds sharing a file description (Terminal dups the pty
-        // master into separate read/write fds) loses the co-registered read
-        // interest's events entirely. Level-triggered registration avoids the
-        // broken path; the FilePoll re-register logic is idempotent for LT.
-        #[cfg(target_env = "ohos")]
-        let one_shot = {
-            let _ = one_shot;
-            OneShotFlag::None
-        };
         #[cfg(any(
             target_os = "linux",
             target_os = "android",
@@ -677,7 +665,6 @@ impl FilePoll {
 
             // SAFETY: FFI syscall; `event` is a stack-local valid for the call.
             let ctl = unsafe { linux::epoll_ctl(watcher_fd, op, fd.native(), &raw mut event) };
-            std::eprintln!("[TDBG] epoll_ctl op={} fd={} mask={:#x} -> rc={}", op, fd, flags, ctl);
             self.flags.insert(Flags::WasEverRegistered);
             if let Some(errno) = errno_sys(ctl, sys::Tag::epoll_ctl) {
                 self.deactivate(loop_);
@@ -994,7 +981,6 @@ impl FilePoll {
             let ctl = unsafe {
                 linux::epoll_ctl(watcher_fd, EPOLL::CTL_DEL, fd.native(), ptr::null_mut())
             };
-            std::eprintln!("[TDBG] epoll_ctl DEL fd={} -> rc={}", fd, ctl);
 
             match sys::get_errno(ctl) {
                 sys::E::SUCCESS => {}
@@ -1503,14 +1489,12 @@ unsafe extern "C" fn Bun__internal_dispatch_ready_poll(
 ) {
     let tag = Pollable::from(tagged_pointer);
 
-    std::eprintln!("[TDBG] dispatch_ready_poll tag={}", tag.tag());
     if tag.tag() != Pollable::FILE_POLL_TAG {
         return;
     }
 
     // SAFETY: tag matched FilePoll; pointer was set via Pollable::init in register_with_fd.
     let file_poll: &mut FilePoll = unsafe { &mut *tag.as_file_poll() };
-    std::eprintln!("[TDBG] dispatch_ready_poll ignore_updates={}", file_poll.flags.contains(Flags::IgnoreUpdates));
     if file_poll.flags.contains(Flags::IgnoreUpdates) {
         return;
     }
@@ -1527,10 +1511,7 @@ unsafe extern "C" fn Bun__internal_dispatch_ready_poll(
     #[cfg(any(target_os = "macos", target_os = "freebsd"))]
     file_poll.on_kqueue_event(&ev);
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    {
-        std::eprintln!("[TDBG] ready_poll events={:#x}", ev.events);
-        file_poll.on_epoll_event(&ev);
-    }
+    file_poll.on_epoll_event(&ev);
 }
 
 #[cfg(target_os = "macos")]

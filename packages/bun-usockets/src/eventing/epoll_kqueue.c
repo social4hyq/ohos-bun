@@ -19,7 +19,6 @@
 #include "internal/internal.h"
 #include "internal/fault_inject.h"
 #include <stdlib.h>
-#include <stdio.h>
 #include <time.h>
 #if defined(LIBUS_USE_EPOLL) || defined(LIBUS_USE_KQUEUE)
 
@@ -262,7 +261,6 @@ static void us_internal_dispatch_ready_polls(struct us_loop_t *loop) {
 #ifdef LIBUS_USE_EPOLL
     for (loop->current_ready_poll = 0; loop->current_ready_poll < loop->num_ready_polls; loop->current_ready_poll++) {
         struct us_poll_t *poll = GET_READY_POLL(loop, loop->current_ready_poll);
-        fprintf(stderr, "[TDBG-C] dispatch idx=%d events=0x%x tagged=%d\n", loop->current_ready_poll, loop->ready_polls[loop->current_ready_poll].events, poll ? (CLEAR_POINTER_TAG(poll) != poll) : -1);
         if (LIKELY(poll)) {
             if (CLEAR_POINTER_TAG(poll) != poll) {
                 Bun__internal_dispatch_ready_poll(loop, poll);
@@ -489,7 +487,6 @@ void us_loop_run_bun_tick(struct us_loop_t *loop, const struct timespec* timeout
      * it sets timed_out=1 (line 1952) and returns before any scheduler
      * interaction (line 1975). No equivalent of KEVENT_FLAG_IMMEDIATE needed. */
     loop->num_ready_polls = bun_epoll_pwait2(loop->fd, loop->ready_polls, LIBUS_MAX_READY_POLLS, timeout);
-    fprintf(stderr, "[TDBG-C] tick wait rc=%d\n", loop->num_ready_polls);
 #else
     loop->num_ready_polls = bun_kevent64_wait(loop->fd, loop->ready_polls, LIBUS_MAX_READY_POLLS,
         /* When we won't idle (pending wakeups or zero timeout), use KEVENT_FLAG_IMMEDIATE.
