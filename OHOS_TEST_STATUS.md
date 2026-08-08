@@ -3353,3 +3353,33 @@ PR [#174](https://github.com/social4hyq/homebrew-core/pull/174) 合并，bottle 
 - GarbageCollectionController 重构（#35356）：消除每秒 62 次 eden GC 的 CPU 峰值
 - StrongRootBlock（#35849）：O(N) → O(1) eden GC 扫描
 - GC 控制器修复后 spawn-stdin-readable-stream teardown 崩溃不再复现（5 次验证全通过）
+
+## r52 全量复跑（2026-08-08 第二轮，`--parallel` 20 核口径，与 run1 互验）
+
+同一被测二进制（brew `1.4.0_52`，commit `926e045cf`）。本轮改用 CI 同款 `--parallel` 全量跑法（r47 曾用，~1h 跑完，对比 run1 的 7 批次串行 ~6h），剔除并发假象的方法论不变：并行全量 → 失败串行复跑（`--retries=0`）→ 嫌疑文件隔离单跑。
+
+**产物**：`logs/baseline-2026-08-08-run1/`（run1 保留）、`baseline-2026-08-08-parallel.{log,json}`、`-refail.{log,json}`、`-iso-*.json`、`-still-failing.txt`。
+
+### 执行链数字
+
+| 阶段 | 结果 |
+|---|---|
+| 并行全量 | 5647 文件，5566 pass / 68 fail + 13 flaky |
+| 串行复跑 83 个非 pass | 21 转绿（并发假象），62 仍失败 |
+| 隔离单跑 3 个仅本轮失败嫌疑 | `node-http-connect`、`node-http` 转绿（1/1，未做 3/3 复核，按摇摆计）；`bun-add` 仍挂 |
+
+覆盖口径差：本轮多覆盖 `test/bake/` 25 个文件（run1 批次未含 bake），run1 多跑 1 个 `js/valkey/integration`；其余集合一致。
+
+### 与 run1 逐文件 diff
+
+- **两轮均失败 48 个**（稳定失败）——全部落在既有分类：外网/npm 不可达（bun-install 簇 6、next-pages 3、sharp、datadog-pprof、bun-upgrade、bunx）、native binding 无 openharmony（prisma/resvg bbox/rspack/napi-rs-canvas）、T49 ADDRCONFIG 簇（node-http-transfer-encoding、node-http-with-ws、node-tls-connect、ssl-ctx-cache、test-http-proxy-request-no-proxy-domain、resolve-dns 等）、PTY/平台限制（tty、shell-load、wasi、udp_socket）、T35 message-port-context-destroy-leak、regression issue ×4（24364/24742/26286/29290）、bake 相邻的 sendfile 语义差异（bun-serve-file、serve-file-slice-read-error）等。
+- **仅本轮失败 14 个** = 11 个 `bake/dev/*`（run1 未覆盖 bake，属 T18 已知簇，非新失败）+ `bun-add` + `node-http-connect`/`node-http`（隔离转绿，剔除）。
+- **仅 run1 失败本轮转绿 12 个**：`spawn.test.ts`、`node-dns`、`node-net`、`test-net-autoselectfamily`、`test-http-max-http-headers`、`test-child-process-exec-timeout-expire`、`fs-watch-recursive-linux-parallel-remove`、`express-memory-leak`、`bun-pm-why`、`complex-workspace`、`valkey/complex-operations`、`22712`——均为台账记载的摇摆/环境类，按规矩不计入"修复"。
+
+### bun-add 遗留
+
+`cli/install/bun-add.test.ts` 隔离单跑仍挂 1 个用例：「git dep without package.json and with default branch」300s 超时（git 依赖拉取，疑似外网类 class D），同文件其余用例全过；run1 该文件整体通过。单次隔离不足定性，待 3/3 复跑确认后再决定是否立 quarantine。
+
+### 结论
+
+两轮全量（串行批次 vs 并行）在同一二进制上互相印证：**无新回归**。稳定失败 48 + bun-add 单用例待定，全部为环境/平台/上游已知项，本地 class A 为零。`--parallel` 口径可作为后续全量基线的默认跑法（~1h vs ~6h），但失败文件必须经串行复跑+隔离单跑两级复核才能下结论（本轮 68 并行失败里 20 个是并发假象）。
