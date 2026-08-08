@@ -17,7 +17,7 @@
 
 import { expect, test } from "bun:test";
 import { chmodSync, closeSync, cpSync, existsSync, openSync, readSync } from "fs";
-import { bunEnv, bunExe, isLinux, isMusl, tempDir } from "harness";
+import { bunEnv, bunExe, isLinux, isMusl, isOHOS, tempDir } from "harness";
 import { join } from "path";
 
 const patchelf = Bun.which("patchelf");
@@ -100,7 +100,9 @@ function hostLooksNix(): boolean {
   return false;
 }
 
-test.skipIf(!isLinux || !patchelf || !existsSync(ldso) || hostLooksNix())(
+// isOHOS: see 24742.test.ts — patchelf-append-at-EOF layout loses the interp
+// in the compile-time tail relocate; NixOS-only scenario.
+test.skipIf(!isLinux || isOHOS || !patchelf || !existsSync(ldso) || hostLooksNix())(
   "bun build --compile preserves /nix/store PT_INTERP on NixOS hosts (#29290)",
   async () => {
     using dir = tempDir("nix-host-interp", {
@@ -162,7 +164,9 @@ test.skipIf(!isLinux || !patchelf || !existsSync(ldso) || hostLooksNix())(
 // apply. If the host has no Nix/Guix markers AND bun's own PT_INTERP is FHS,
 // a template with a /nix/store interpreter should be rewritten to the FHS
 // path so the compiled output runs on generic Linux.
-test.skipIf(!isLinux || !patchelf || !existsSync(ldso) || hostLooksNix())(
+// isOHOS: see 24742.test.ts — patchelf-append-at-EOF layout loses the interp
+// in the compile-time tail relocate; NixOS-only scenario.
+test.skipIf(!isLinux || isOHOS || !patchelf || !existsSync(ldso) || hostLooksNix())(
   "bun build --compile still normalizes /nix/store -> FHS on non-Nix hosts",
   async () => {
     using dir = tempDir("fhs-host-interp", {

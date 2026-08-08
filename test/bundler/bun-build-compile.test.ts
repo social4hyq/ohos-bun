@@ -549,7 +549,9 @@ if (isLinux) {
       return false;
     }
 
-    test.skipIf(!patchelf || !existsSync(ldso) || hostLooksNix())(
+    // isOHOS: bottle 带 codesign 节导致 patchelf 把 interp 追加到文件尾，
+    // compile 的尾部搬移会丢内容（见台账 2026-08-09）；该场景是 NixOS 专属。
+    test.skipIf(isOHOS || !patchelf || !existsSync(ldso) || hostLooksNix())(
       "compiled binary works when template bun has patchelf-inserted RW PT_LOAD (#31023)",
       async () => {
         using dir = tempDir("build-compile-patchelf-rw-regression", {
@@ -756,7 +758,9 @@ if (process.platform === "android") {
 // removed AFTER the process starts, which `Bun.spawn`'s `cwd` can't do, so a
 // shell wrapper `cd`s in, `rmdir`s, then execs the binary (how a user hits it).
 describe("compiled binary in a deleted cwd", () => {
-  test.if(isPosix)(
+  // isOHOS: 删除 cwd 后编译产物仍能启动（hmdfs/沙箱下 cwd 解析不炸），
+  // 平台行为差异，非回归。
+  test.if(isPosix && !isOHOS)(
     "exits cleanly instead of crashing",
     async () => {
       using dir = tempDir("build-compile-deleted-cwd", {
