@@ -3483,3 +3483,29 @@ bun 的 `Bun.Terminal`（openpty + master 双 dup 分离读写 + 双 ONESHOT epo
 **本地 class A 缺陷：0。** 两轮全量（r52 串行批次 vs r54 并行）交叉确认无真实回归。
 
 备注：本次全量首次尝试曾因会话进程树被杀中断（spawn error 暴发是假象），nohup 重跑后干净——全量跑必须 nohup。
+
+### r54 基线 58 个仍失败的逐文件定性（2026-08-09）
+
+原始数据：`logs/baseline-2026-08-09-still-failing.txt` + `-refail.{log,json}`。按根因分组（✅可修 / ⚠️部分可修 / ❌不可修）：
+
+**组1 bake dev（11，❌ T18 产品决策）**：bundle / ecosystem / esm / import-meta-inline / plugins / production / react-response / request-cookies / server-sourcemap / ssg-pages-router / vfile——dev server 在 OHOS 不正常退出，60–120s 超时。
+
+**组2 外网/registry（12，❌ 环境死局）**：bun-install-registry / bun-lock / bun-publish / isolated-install / npmrc / update_interactive_formatting（均 ConnectionRefused 下载 manifest）；bun-upgrade / bunx / next-pages×3（turbo wasm + 网络）/ sharp / datadog-pprof。
+
+**组3 T49 localhost（5，✅ 修复进行中）**：node-http-with-ws / node-http-transfer-encoding / ssl-ctx-cache / test-http-should-support-localAddress / test-http-proxy-request-no-proxy-domain——全 ECONNREFUSED ::1；HongMeng 解析器状态依赖，坏状态 ADDRCONFIG 只回 ::1；shim 合并分支（强制 AF_INET 重试）修复中。
+
+**组4 外部 DNS（3，❌）**：resolve-dns（example.com 无 AAAA）/ node-dns（ENOTFOUND ptr.socketify.dev）/ 22712（ENOTFOUND dns.google）。
+
+**组5 native binding（4，⚠️ 生态移植活）**：prisma / resvg bbox / napi-rs-canvas / test-integration-rspack（缺 @rspack/binding-linux-arm64-ohos）。
+
+**组6 PTY/spawn 内核与成本（3，❌ 已收口）**：tty / 26286 / shell-load。
+
+**组7 平台行为差异（7，⚠️ 逐案小）**：test-child-process-execsync（sh 无 exec 优化）/ test-child-process-exec-timeout-expire（同族时序）/ fetch.unix（沙箱 EPERM listen）/ next-auth（EACCES fs.watch el2）/ test-net-autoselectfamily（HE 时序）/ node-net（T21 摇摆件）/ grpc-js test-outlier-detection（90s 网络超时）。
+
+**组8 OHOS 文件系统/语义（4，⚠️）**：ls（recursive node_modules 老案）/ bun-serve-file / serve-file-slice-read-error（sendfile 语义，shim 可拦）/ glob-on-fuse / run-file-on-fuse（测试内 python 辅助脚本 Traceback，值得 30min 一看）。
+
+**组9 测试/上游（4，部分✅）**：message-port-context-destroy-leak（T35 等上游）/ security-scanner-matrix-with-node-modules（超时预算）/ **spawn-ohos-node-userinfo（环境假失败，USER=hyq 下 9/9 绿，应剔除）** / grpc-js test-server。
+
+**组10 其他（3，⚠️ 值得小排查）**：24364（缺 @typescript/typescript-openharmony-arm64 生态包）/ sourcetextmodule-leak / bun-install-native-binlink（后两个可能是真问题）。
+
+动手优先级：组3（进行中）→ 组9 userinfo（零成本）→ 组8 fuse ×2 + 组10 leak/binlink → 组7 逐案。
