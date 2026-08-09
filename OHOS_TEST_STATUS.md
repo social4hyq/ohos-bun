@@ -3584,3 +3584,11 @@ bun 的 `Bun.Terminal`（openpty + master 双 dup 分离读写 + 双 ONESHOT epo
 - `spawn-ohos-node-userinfo`：修测试 ground truth——agent shell `USER=100` 与账户名不符时父 bun 的 os.userInfo() 走 env 兜底不可作基准，改由 bun:ffi 直调 `OH_OsAccount_GetName`；9/9 绿。
 - `glob-on-fuse` / `run-file-on-fuse`：非 bun 缺陷——测试需要 fusermount + python fuse 模块（沙箱均无），加前置探测跳过；0 fail。
 - `sourcetextmodule-leak`：隔离复跑 1/1 绿，系并发假象，无需处理。
+
+### 组7/8/10 小排查结果（2026-08-09 下午）
+
+- `fetch.unix`：**已修**（测试适配，非 bun 缺陷）——沙箱对**相对路径** AF_UNIX listen 直接 EPERM，绝对路径（el2 tmpdir）正常；测试的套接字路径改绝对路径后 5/5 绿（commit `01c82184fc`）。
+- `serve-file-slice-read-error`：❌ 结构性不可测——用例依赖 ptrace 注入 EIO（`PTRACE_TRACEME` EPERM，沙箱无 CAP_SYS_PTRACE），shim 无法替代（bun 读路径走 raw syscall，LD_PRELOAD 拦不到）。
+- `bun-serve-file`：文件级超时，个别大文件用例在 20s 预算内未完成，sendfile 簇待深查（优先级低）。
+- `test-net-autoselectfamily`：❌ 期望外网域名双栈解析（104.20.x.x），本机代理下 v4 记录缺失——环境类。
+- `bun-install-native-binlink`：bin 解析到了主包 stub 而非 `-target` 平台包（`resolve_bin_target` 的 alternate-path 探测未命中），疑似真实 bun 缺陷，**待单独排查**（本组唯一候选 class A）。
