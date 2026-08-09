@@ -827,6 +827,10 @@ int getaddrinfo(const char *node, const char *service,
 
 	struct addrinfo hints2 = *hints;
 	hints2.ai_flags &= ~AI_ADDRCONFIG;
+	/* Force AF_INET for the retry: an AF_UNSPEC no-ADDRCONFIG query on this
+	 * resolver can still come back v6-only (it is stateful), but an explicit
+	 * AF_INET query for a loopback name is answered from /etc/hosts. */
+	hints2.ai_family = AF_INET;
 	struct addrinfo *res2 = NULL;
 	if (real(node, service, &hints2, &res2) != 0) {
 		if (getenv("OHOS_GAI_DEBUG"))
