@@ -3468,3 +3468,18 @@ bun 的 `Bun.Terminal`（openpty + master 双 dup 分离读写 + 双 ONESHOT epo
 **T49 复核（重要更正）**：本机实测 `getaddrinfo("localhost", ADDRCONFIG)` 当前双栈全返回（python/node/bun 一致），`net.connect("localhost")` 到 127.0.0.1 绑定的 server 直连成功——T49 的过滤机制**当前不复发**。r52 基线里那 8 个「T49 受害文件」在 r53 隔离复跑基本全绿，说明当时的失败是环境/并发因素，T49 簇从稳定失败清单移除。shim 里的 ADDRCONFIG 合并分支保留作休眠保险（仅在结果全 v6-loopback 时触发，当前验证为纯透传）。
 
 **发布状态**：shim `23c10ec`（getaddrinfo 拦截器）已推送；ohos-bun 侧修复链 `39b9cf057d`（wasi+shim 同步）→ `6ba9c82bf6`（elf.rs）→ `90004528da`（测试适配）→ `59e5335238`（摘 quarantine）。expectations 52 条。待 r54 formula PR 发版。
+
+## r54 全量基线（2026-08-09，--parallel 口径，bottle 1.4.0+fac61790d）
+
+执行链：并行全量 5647 文件 5572 pass / 65 fail + 10 flaky（~50min）→ 77 个非 pass 串行复跑（`--retries=0`）→ 19 转绿（并发假象）、58 仍失败。产物 `logs/baseline-2026-08-09-parallel.{log,json}`、`-refail.{log,json}`、`-still-failing.txt`。
+
+**修复兑现（r52 稳定失败 → r54 转绿，7 个）**：wasi、udp_socket（本批修复）、process、rust-windows-sys-link（r53）、24742/29290/bun-build-compile（skip 收口）。
+
+**58 个仍失败分类**：
+- 37 个与 r52 稳定失败交集——外网/npm/native-binding/平台/T35 等既有分类，无新面孔；
+- 11 个 `bake/dev/*`——T18 已知簇，本轮口径覆盖 bake 所致，非新增；
+- 10 个环境/摇摆：install 网络簇（bun-lock/bun-publish/isolated-install/npmrc/update_interactive——ConnectionRefused/resolve 失败）、`22712`（ENOTFOUND dns.google）、`node-dns`/`node-net`/`autoselectfamily`/`exec-timeout-expire`（台账既有摇摆件）。
+
+**本地 class A 缺陷：0。** 两轮全量（r52 串行批次 vs r54 并行）交叉确认无真实回归。
+
+备注：本次全量首次尝试曾因会话进程树被杀中断（spawn error 暴发是假象），nohup 重跑后干净——全量跑必须 nohup。
