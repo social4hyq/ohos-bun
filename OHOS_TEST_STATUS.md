@@ -3573,3 +3573,14 @@ bun 的 `Bun.Terminal`（openpty + master 双 dup 分离读写 + 双 ONESHOT epo
 | `js/node/parallel/test-child-process-exec-timeout-expire.js` | code 1 |
 | `js/bun/parallel/test-http-should-support-localAddress.ts` | ECONNREFUSED ::1:40553 |
 
+
+## 2026-08-09（续）— T49 修复闭环 + 快速项收口
+
+**更正本节上文「T49 不复发」的判断**：r54 基线串行复跑中 T49 签名（ECONNREFUSED ::1）重现——HongMeng 解析器是**状态依赖**的（坏状态下 ADDRCONFIG 查 localhost 只回 ::1，好状态双栈全回），此前「不复发」是观测窗口恰好处于好状态。
+
+**T49 修复（compat-shim `e4c2577`）**：getaddrinfo 拦截器在原「快速拒绝」之外完成 ADDRCONFIG 合并分支——结果全为 v6-loopback 时，强制 AF_INET 重试（直接命中 /etc/hosts，不受解析器状态影响）并把 v4 条目并入。调试过程：`OHOS_GAI_DEBUG=1` 日志证实 bun 传参正常、合并触发但首轮重试（仅去 ADDRCONFIG）在坏状态仍回 v6-only → 改强制 AF_INET 后修复。真机验证：`lookup("localhost", ADDRCONFIG, all)` 返回双栈、v4-only server 经 localhost 连接成功、**6 个 T49 受害文件 3/3 全绿**（node-http-with-ws / node-http-transfer-encoding / ssl-ctx-cache / node-tls-connect / localAddress / no-proxy-domain），quarantine 已摘（`a0089a38c8`）；`grpc-js/test-server` 摘后仍偶发 ECONNRESET，保留 quarantine。
+
+**快速项**：
+- `spawn-ohos-node-userinfo`：修测试 ground truth——agent shell `USER=100` 与账户名不符时父 bun 的 os.userInfo() 走 env 兜底不可作基准，改由 bun:ffi 直调 `OH_OsAccount_GetName`；9/9 绿。
+- `glob-on-fuse` / `run-file-on-fuse`：非 bun 缺陷——测试需要 fusermount + python fuse 模块（沙箱均无），加前置探测跳过；0 fail。
+- `sourcetextmodule-leak`：隔离复跑 1/1 绿，系并发假象，无需处理。
