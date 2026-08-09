@@ -17,12 +17,26 @@ describe.skipIf(!isOHOS || !node)("os.userInfo() for a bun-spawned node child (O
   // known baseline instead of whatever this dev machine's shell profile set
   // (bunEnv deliberately does not clear these -- see harness.ts).
   const cleanEnv = { ...bunEnv, USER: undefined, LOGNAME: undefined, NODE_OPTIONS: undefined };
-  // Captured before clearing: on a real device the shim resolves the
-  // username via OH_OsAccount_GetName independent of $USER; in a container
-  // with no OS-account NDK it falls back to the parent bun process's own
-  // $USER/$LOGNAME (i.e. this value) and carries it through
-  // BUN_OHOS_USERNAME -- so this equality holds in both environments.
-  const groundTruth = process.env.USER;
+  // Captured before clearing: ask the OS-account NDK directly via ffi. The
+  // parent bun's own os.userInfo() can't serve as ground truth — the
+  // embedded shim's dlopen("libos_account_ndk.so") fails under the OHOS
+  // dlopen namespace isolation, so bun falls back to $USER which may
+  // disagree with the account name in agent/CI shells (e.g. USER=100),
+  // while the spawned node child's preload shim resolves the real name.
+  const groundTruth = (() => {
+    try {
+      const { dlopen, FFIType, ptr } = require("bun:ffi");
+      const buf = new Uint8Array(256);
+      const lib = dlopen("libos_account_ndk.so", {
+        OH_OsAccount_GetName: { args: [FFIType.ptr, FFIType.u64], returns: FFIType.i32 },
+      });
+      if (lib.symbols.OH_OsAccount_GetName(ptr(buf), 256) !== 0) return undefined;
+      const name = Buffer.from(buf.subarray(0, buf.indexOf(0))).toString();
+      return name || undefined;
+    } catch {
+      return undefined;
+    }
+  })();
 
   const userInfoScript =
     "try { console.log(JSON.stringify(require('os').userInfo())); }" +
