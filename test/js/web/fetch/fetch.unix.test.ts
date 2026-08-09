@@ -138,7 +138,9 @@ function startServerUnix({ fetch, ...options }: ServeOptions): string {
     server_unix.reload({ ...options, fetch });
     return socketPath;
   }
-  const unix = `.${Math.random().toString(36).slice(2)}-socket`.slice(0, 103);
+  // Absolute path: the OHOS sandbox rejects relative AF_UNIX paths with
+  // EPERM at listen() (absolute paths under the app tmpdir are fine).
+  const unix = join(tmp_dir, `${Math.random().toString(36).slice(2)}-socket`.slice(0, 60));
   server_unix = serve({
     ...options,
     fetch,
