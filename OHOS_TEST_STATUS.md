@@ -3509,3 +3509,67 @@ bun 的 `Bun.Terminal`（openpty + master 双 dup 分离读写 + 双 ONESHOT epo
 **组10 其他（3，⚠️ 值得小排查）**：24364（缺 @typescript/typescript-openharmony-arm64 生态包）/ sourcetextmodule-leak / bun-install-native-binlink（后两个可能是真问题）。
 
 动手优先级：组3（进行中）→ 组9 userinfo（零成本）→ 组8 fuse ×2 + 组10 leak/binlink → 组7 逐案。
+
+逐文件错误签名（串行复跑的失败输出首条签名；「-」表示 runner 未截获用例行，签名即判据）：
+
+| 文件 | 错误签名 |
+|---|---|
+| `bake/dev/bundle.test.ts` | code 1 |
+| `bake/dev/ecosystem.test.ts` | timed out after 120000ms |
+| `bake/dev/esm.test.ts` | timed out after 60000ms |
+| `bake/dev/import-meta-inline.test.ts` | timed out after 60000ms |
+| `bake/dev/plugins.test.ts` | timed out after 60000ms |
+| `bake/dev/production.test.ts` | code 1 |
+| `bake/dev/react-response.test.ts` | timed out after 60000ms |
+| `bake/dev/request-cookies.test.ts` | timed out after 60000ms |
+| `bake/dev/server-sourcemap.test.ts` | timed out after 120000ms |
+| `bake/dev/ssg-pages-router.test.ts` | timed out after 60000ms |
+| `bake/dev/vfile.test.ts` | timed out after 60000ms |
+| `cli/install/bun-install-native-binlink.test.ts` | code 1 |
+| `cli/install/bun-install-registry.test.ts` | ConnectionRefused downloading package manifest one-fixed-dep\n\nerror: Connec |
+| `cli/install/bun-lock.test.ts` | ConnectionRefused downloading package manifest optional-peer-deps |
+| `cli/install/bun-publish.test.ts` | ConnectionRefused: failed to publish package |
+| `cli/install/bun-security-scanner-matrix-with-node-modules.test.ts` | timeout |
+| `cli/install/bun-upgrade.test.ts` | code 1 |
+| `cli/install/bunx.test.ts` | code 1 |
+| `cli/install/isolated-install.test.ts` | ConnectionRefused downloading package manifest two-range-deps\nerror: two-ran |
+| `cli/install/npmrc.test.ts` | ConnectionRefused" |
+| `cli/run/glob-on-fuse.test.ts` | ENOENT" |
+| `cli/run/run-file-on-fuse.test.ts` | ENOENT" |
+| `cli/update_interactive_formatting.test.ts` | ConnectionRefused downloading package manifest normal-dep-and-dev-dep |
+| `integration/datadog-pprof/datadog-pprof.test.ts` | code 1 |
+| `integration/next-pages/dev-server-ssr-100.test.ts` | timed out after 100000ms |
+| `integration/next-pages/dev-server.test.ts` | code 1: error: The current platform is not supported. |
+| `integration/next-pages/next-build.test.ts` | code 1: Error: `turbo.createProject` is not supported by the wasm bindings. |
+| `integration/sharp/sharp.test.ts` | code 1: See https://sharp.pixelplumbing.com/install |
+| `js/bun/dns/resolve-dns.test.ts` | code 1 |
+| `js/bun/http/bun-serve-file.test.ts` | timeout |
+| `js/bun/http/serve-file-slice-read-error.test.ts` | code 1 |
+| `js/bun/shell/commands/ls.test.ts` | code 1 |
+| `js/bun/shell/shell-load.test.ts` | timed out after 90000ms |
+| `js/bun/spawn/spawn-ohos-node-userinfo.test.ts` | code 1 |
+| `js/node/dns/node-dns.test.js` | ENOTFOUND ptr.socketify.dev |
+| `js/node/http/node-http-with-ws.test.ts` | ECONNREFUSED ::1:34275 |
+| `js/node/net/node-net.test.ts` | code 1 |
+| `js/node/sequential/test-child-process-execsync.js` | code 1 |
+| `js/node/tls/node-tls-connect.test.ts` | code 1 |
+| `js/node/tty.test.ts` | timed out after 90000ms |
+| `js/third_party/@napi-rs/canvas/napi-rs-canvas.test.ts` | Cannot find native binding |
+| `js/third_party/next-auth/next-auth.test.ts` | EACCES: permission denied, watch '/data/storage/el2' |
+| `js/third_party/prisma/prisma.test.ts` | Cannot find native binding |
+| `js/third_party/resvg/bbox.test.js` | Unsupported OS: openharmony, architecture: arm64 |
+| `js/node/http/node-http-transfer-encoding.test.ts` | ECONNREFUSED ::1:43737 |
+| `js/node/tls/ssl-ctx-cache.test.ts` | ECONNREFUSED ::1:34367 |
+| `js/third_party/grpc-js/test-outlier-detection.test.ts` | timed out after 90000ms |
+| `js/third_party/grpc-js/test-server.test.ts` | code 1 |
+| `js/web/fetch/fetch.unix.test.ts` | EPERM |
+| `js/web/workers/message-port-context-destroy-leak.test.ts` | code 1 |
+| `regression/issue/22712.test.ts` | ENOTFOUND dns.google |
+| `regression/issue/24364.test.ts` | code 1 |
+| `regression/issue/26286.test.ts` | timed out after 90000ms |
+| `js/node/parallel/test-net-autoselectfamily.js` | code 1 |
+| `js/node/parallel/test-http-proxy-request-no-proxy-domain.mjs` | ECONNREFUSED ::1:35579 |
+| `js/bun/parallel/test-integration-rspack.ts` | Cannot find native binding |
+| `js/node/parallel/test-child-process-exec-timeout-expire.js` | code 1 |
+| `js/bun/parallel/test-http-should-support-localAddress.ts` | ECONNREFUSED ::1:40553 |
+
