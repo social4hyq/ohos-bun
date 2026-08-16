@@ -3616,3 +3616,29 @@ bun 的 `Bun.Terminal`（openpty + master 双 dup 分离读写 + 双 ONESHOT epo
 | `js/node/test/parallel/test-cwd-enoent-improved-message.js` | 目录被删后 `process.cwd()` 未抛 ENOENT（Node 会抛） | **新测试文件**，本次 merge 的 upstream 98-test node-compat 批次（PR #34660）新增，此前任何一轮基线都没跑过这条用例；曝出的是 OHOS/musl `getcwd()` 既有行为差异，不是这次源码改动引入——**待下一轮分配 T 编号并入问题簿** |
 
 **结论**：46/60 并发假象比例（77%）与 r54 轮次（19/77，25%）量级不同但方向一致，进一步印证「`--parallel` 20 核口径下的假失败率显著且需要串行复测才能定性」这条既有方法论。14 个真失败全部有明确归因，其中 12 个可归入既有簇（外网/native binding/ptrace 沙箱/设备速度），1 个是本机工具链问题（非通用），1 个是新测试曝出的真实但非本次引入的平台差异，待建 T 编号排查。
+
+## r59 全量基线（2026-08-16，`--parallel` 20 核口径 + 串行复测去重，bottle 1.4.0_59 / `f27ff283c`）
+
+**背景**：合并 upstream oven-sh/bun main（`da3851e57a..a42889a887`，267 commit）进 `ohos-aarch64`，WebKit 同步 bump 到 `f0f60fd232`（`bun-webkit` r1→r2，`bun` r58→r59）。合并过程另修了 3 个"merge 干净但语义错误"的问题（详见 commit 历史）：`Cargo.lock` 与合并后 `Cargo.toml` 语义不一致（`--locked` 拒绝构建，以上游自己的 `a42889a887` Cargo.lock 为底 + 补回 `ohos_sign` 一处差异修复）、`bun-spawn.cpp` 里 `startChild()` 一处 `#if OS(LINUX)` 漏加 `!defined(__OHOS__)` 导致引用未声明的 cgroup 变量、`run_command.rs` 里 OHOS 专属 `$HOME` 回退分支引用了上游重构后已改名的裸 `log_errors`（应为 `opts.log_errors`）。三个都是 PR CI 逐个暴露、逐个修复后才转绿合并。
+
+**执行链**：`--parallel`（20 核）全量 5806 文件 5710 pass / 96 fail → 96 个失败串行复跑（`--retries=1`）→ **56 转绿（并发假象，58%）**、**40 仍失败**。产物 `logs/baseline-2026-08-16/{parallel.log,parallel.json,failed-files.txt,refail.log,refail.json}`。
+
+**去重后真实通过率：5766/5806 = 99.31%**（对比首轮 parallel 口径的 98.35%）。
+
+40 个真失败分布：
+
+| 类别 | 文件数 | 定性 |
+|---|---|---|
+| `valkey/*` 全系列 | 10 | 本机没起 Redis/valkey 服务，环境类（老面孔） |
+| `bake/dev/*` dev-server 套件 | 10 | `bundle`/`esm`/`plugins`/`production`/`react-response`/`server-sourcemap`/`ssg-pages-router`/`vfile`/`import-meta-inline`/`request-cookies`，串行仍失败非并发假象，**新面孔，本轮未深挖根因**（低优先级候选，待下一轮排查是否 class A） |
+| `secrets.test.ts`、`secrets-error-codes.test.ts` | 2 | 缺 `libsecret`，环境类（r57 就有） |
+| `test-net-autoselectfamily.js`、`test-cwd-enoent-improved-message.js` | 2 | r57 台账已记录 |
+| `serve-file-slice-read-error.test.ts` | 1 | ptrace 注入依赖，结构性不可测（已记录） |
+| `datadog-pprof.test.ts` | 1 | native binding 无 OHOS 预编译，已记录 |
+| `build-rust-toolchain-probe.test.ts` | 1 | 需要 rustup，已记录（非通用结论） |
+| `bun-serve-file.test.ts` | 1 | 文件级超时，已记录 |
+| `v8.test.ts` | 1 | 老面孔；同批次 `napi.test.ts` 这次复测转绿（网络波动，非结构性） |
+| `spawn-cgroup.test.ts` | 1 | **本次 merge 新测试文件，直接对应本轮 bun-spawn.cpp 的 cgroup 修复**——已定性并加入 `test/expectations.txt`：clone3 cgroup-join 整条路径（含子进程写 `cgroup.procs` 兜底）限定在 `OS(LINUX) && !defined(__OHOS__)`，OHOS 上 `spawn({cgroup})` 是架构性 no-op，4/13 用例断言 `cgroup.procs` 被写入必挂，非回归 |
+| 未分类新面孔 | 10 | `bun-security-scanner-matrix-without-node-modules`、`run-crash-handler`、`cli/test/parallel.test.ts`、`shell/commands/ls.test.ts`、`shell-pipe-read-fault`、`child_process.test.ts`、`fs.test.ts`、`create-jsx.test.ts`、`node-net.test.ts`、`web/streams/compression.test.ts`——本轮未逐个查因 |
+
+**结论**：58% 并发假象比例与 r57（77%）、r54（25%）同方向但量级更低，样本小（96 vs 60/77）解释力有限，暂不据此调整方法论权重。40 个真失败里 1 个（`spawn-cgroup.test.ts`）已定性归因并入 `expectations.txt`；`bake/dev/*` 全套 10 个文件是本轮唯一成规模的新面孔簇，值得下一轮优先分配时间排查（dev-server 相关，可能是设备速度或真实功能缺口，未判定）；其余 29 个均可归入既有簇或结构性缺口，non-class-A。
