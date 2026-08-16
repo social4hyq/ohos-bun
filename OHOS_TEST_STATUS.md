@@ -3592,3 +3592,27 @@ bun 的 `Bun.Terminal`（openpty + master 双 dup 分离读写 + 双 ONESHOT epo
 - `bun-serve-file`：文件级超时，个别大文件用例在 20s 预算内未完成，sendfile 簇待深查（优先级低）。
 - `test-net-autoselectfamily`：❌ 期望外网域名双栈解析（104.20.x.x），本机代理下 v4 记录缺失——环境类。
 - `bun-install-native-binlink`：bin 解析到了主包 stub 而非 `-target` 平台包（`resolve_bin_target` 的 alternate-path 探测未命中），疑似真实 bun 缺陷，**待单独排查**（本组唯一候选 class A）。
+
+## r57 全量基线（2026-08-11，`--parallel` 20 核口径，bottle 1.4.0_57 / `39602705`）
+
+**背景**：合并 upstream oven-sh/bun main（`45ee9556af..da3851e57a`，58 commit）进 `ohos-aarch64`，WebKit 同步 bump 到 `447082ab68`（`bun-webkit` r1→新版，`bun` r56→r57）。CI `ohos-full-test.yml` 因自己硬编码的 SWR 镜像 digest 过期（一个多月前的 pin，`manifest unknown`）跑不起来——与本次升级无关的既有基建缺口，未修（范围外）。本轮全量回归改在本机真机跑，替代 CI 缺位。
+
+执行链：`--parallel`（20 核）全量 5712 文件 5652 pass / 60 fail → 60 个失败串行复跑（`--retries=1`）→ 46 转绿（并发假象）、2 flaky、**14 仍失败**。产物 `logs/baseline-2026-08-11/{run.log,results.json,failed-files.txt,retest.log,retest-results.json,SUMMARY.md}`。
+
+**本地 class A 缺陷：0。** 14 个仍失败逐一核实，无一可追溯到这次 merge 改动的代码（`filter_run.rs`/`read_file.rs`/`.gitignore`/`Cargo.lock`/两个 OHOS 测试文件/`WEBKIT_VERSION`）：
+
+| 文件 | 定性 | 与既有台账对照 |
+|---|---|---|
+| `js/bun/secrets.test.ts`、`secrets-error-codes.test.ts` | 本机缺 `libsecret` 系统库 | 新面孔，环境类 |
+| `cli/install/bun-security-scanner-matrix-without-node-modules.test.ts` | 本地 registry 超时 | 呼应组9 `-with-node-modules` 变体（超时预算），同族 |
+| `js/bun/shell/commands/ls.test.ts` | 老案 | 与组8 一致（recursive node_modules） |
+| `js/node/test/parallel/test-net-autoselectfamily.js` | 外网域名双栈解析缺失 | 与组7 一致（HE 时序/环境类） |
+| `js/bun/http/bun-serve-file.test.ts` | 文件级超时，非挂起 | 与组8 一致（sendfile 簇，未变化） |
+| `js/bun/http/serve-file-slice-read-error.test.ts` | ptrace 注入 EIO 被沙箱拦（`PTRACE_TRACEME` EPERM） | 与组8 一致，**结构性不可测**（无 CAP_SYS_PTRACE） |
+| `integration/datadog-pprof/datadog-pprof.test.ts` | 原生插件无 OHOS 预编译绑定 | 与组2/组5 一致（native binding 生态缺口） |
+| `cli/create/create-jsx.test.ts` | 6/13 快照失败 + dev server SIGTERM，实网 registry + 多子进程，设备速度敏感 | 台账无此前记录，新面孔，本轮未深挖（低优先级） |
+| `napi/napi.test.ts`、`v8/v8.test.ts` | `curl 404`：`nodejs.org` 从未发布过 openharmony-arm64 构建，harness 假设官方参考二进制存在 | 台账无此前记录；结构性 harness 缺口（不针对任何具体平台版本，任何 ABI 版本号都会 404），本质与组2 外网类同族 |
+| `internal/build-rust-toolchain-probe.test.ts`、`internal/rust-windows-sys-link.test.ts` | 需要 rustup 管理的 pinned nightly 工具链；**本会话机器只有裸 system cargo（无 rustup）**，`rust-windows-sys-link` 之前在 r53 已转绿过一次，这次复现很可能是本机工具链残留（`build/debug/codegen/build_options.rs` 陈旧产物）导致跳过条件失效，**非新回归**，需要下一轮在配好 rustup 的机器上复核排除误报 | ⚠️ 存疑，与本会话本地环境相关，非通用结论 |
+| `js/node/test/parallel/test-cwd-enoent-improved-message.js` | 目录被删后 `process.cwd()` 未抛 ENOENT（Node 会抛） | **新测试文件**，本次 merge 的 upstream 98-test node-compat 批次（PR #34660）新增，此前任何一轮基线都没跑过这条用例；曝出的是 OHOS/musl `getcwd()` 既有行为差异，不是这次源码改动引入——**待下一轮分配 T 编号并入问题簿** |
+
+**结论**：46/60 并发假象比例（77%）与 r54 轮次（19/77，25%）量级不同但方向一致，进一步印证「`--parallel` 20 核口径下的假失败率显著且需要串行复测才能定性」这条既有方法论。14 个真失败全部有明确归因，其中 12 个可归入既有簇（外网/native binding/ptrace 沙箱/设备速度），1 个是本机工具链问题（非通用），1 个是新测试曝出的真实但非本次引入的平台差异，待建 T 编号排查。
