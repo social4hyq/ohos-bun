@@ -380,11 +380,13 @@ impl SpawnSyncEventLoop {
 
     /// Tick the isolated event loop with an optional timeout
     /// This is similar to the main event loop's tick but completely isolated
+    ///
+    /// `timeout` is an absolute deadline on the real (never mocked) clock.
     pub fn tick_with_timeout(&mut self, timeout: Option<&Timespec>) -> TickState {
         let duration_storage: Option<Timespec>;
         let duration: Option<&Timespec> = match timeout {
             Some(ts) => {
-                let mut dur = ts.duration(&Timespec::now(TimespecMockMode::AllowMockedTime));
+                let mut dur = ts.duration(&Timespec::now(TimespecMockMode::ForceRealTime));
                 // OHOS: observed a wrapped-underflow where the target time had
                 // already passed by a small amount, wrapping_sub produced
                 // sec = i64::MAX / nsec = 999_999_999, and that turned into an
@@ -465,7 +467,7 @@ impl SpawnSyncEventLoop {
             #[cfg(not(windows))]
             {
                 self.did_timeout.set(
-                    Timespec::now(TimespecMockMode::AllowMockedTime).order(ts)
+                    Timespec::now(TimespecMockMode::ForceRealTime).order(ts)
                         != core::cmp::Ordering::Less,
                 );
             }
