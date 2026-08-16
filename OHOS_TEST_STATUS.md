@@ -3634,7 +3634,7 @@ bun 的 `Bun.Terminal`（openpty + master 双 dup 分离读写 + 双 ONESHOT epo
 | `secrets.test.ts`、`secrets-error-codes.test.ts` | 2 | 缺 `libsecret`，环境类（r57 就有） |
 | `test-net-autoselectfamily.js`、`test-cwd-enoent-improved-message.js` | 2 | r57 台账已记录 |
 | `serve-file-slice-read-error.test.ts` | 1 | ptrace 注入依赖，结构性不可测（已记录） |
-| `datadog-pprof.test.ts` | 1 | native binding 无 OHOS 预编译，已记录 |
+| `datadog-pprof.test.ts` | 1 | 用例本身硬编码装 `@datadog/pprof`（无 OHOS 预编译），失败仍会复现，**但底层能力缺口已解决**：`@ohos-ports/datadog-pprof@5.17.0-1` 已发布并真机验证通过——`prebuilds/openharmony-arm64/dd_pprof.node.abi147.node` 被 `node-gyp-build` 正确解析加载，跑同款 TimeProfiler 用例输出 `{"sampleCount":1,"locationCount":2,"functionCount":2,"stringCount":8,"hasHotLoop":true,"period":1227000}`，与原用例的全部断言吻合。这条继续留在失败列是因为不改测试源码换包名（见 feedback_dont_modify_tests），不代表生态缺口仍未补上 |
 | `build-rust-toolchain-probe.test.ts` | 1 | 需要 rustup，已记录（非通用结论） |
 | `bun-serve-file.test.ts` | 1 | 文件级超时，已记录 |
 | `v8.test.ts` | 1 | 老面孔；同批次 `napi.test.ts` 这次复测转绿（网络波动，非结构性） |
