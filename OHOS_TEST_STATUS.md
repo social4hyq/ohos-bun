@@ -3836,3 +3836,60 @@ PR #356 合并后，容器（`brew reinstall --force-bottle`，真实发布的 b
 1. 二分子进程存活时长的精确阈值（10ms 干净、150ms 复现，中间取几个点，比如 30ms/60ms/100ms），确认是不是单纯"时长"这一个维度决定的，还是背后另有一个具体事件（比如某次 GC、某次 mimalloc 后台 purge 周期）恰好落在这个时间窗口。
 2. 直接读 `ThreadPool::join()`（`src/threading/ThreadPool.rs` 里 join_event 相关那段，约 960-1040 行区域）的具体等待协议，看有没有"最后一个退出的线程负责唤醒 joiner"这类"依赖某个特定线程一定会跑到"的假设——如果 fork() 后父进程这边线程数/顺序被打乱（哪怕只是巧合的调度时序，不一定是 fork 语义本身的锅），"最后一个线程"这个身份判断错位，唤醒信号就可能发给了错误的目标或者根本没发出去。
 3. 这条 bug 目前定性为独立于 PR #356 的新问题，需要单独立案（不是"PR #356 不彻底"，是"PR #356 修的那个问题已经修好，测试卡在下一个不相关的地方"）。
+
+---
+
+## 2026-08-17 根因定案：非持有 fd 的 reader 泄漏 FilePoll → 二次析构 → mimalloc free-list 成环
+
+上一节把方向指向 `ThreadPool::join()`，那个方向是错的。实际根因已定位到具体一行，并且和"子进程存活时长"、fork、ThreadPool 全都无关——之前那些现象都是同一个内存破坏的下游表现。
+
+### 结论
+
+`src/io/PipeReader.rs` 的 `PosixBufferedReader::close_without_reporting()` 只在 `CLOSE_HANDLE` 置位（reader 自己持有 fd）时销毁 handle。清掉 `CLOSE_HANDLE` 的消费者（fd 归消费者自己管）走这条路时，**FilePoll 被留在事件循环里注册着**，而 poll 里存的正是循环回调时用的 reader 指针——poll 活得比 reader 长。
+
+`Bun.serve()` 返回 `Response(Bun.file(FIFO))` 正是这个形状（`FileResponseStream::start()` 第 197 行清掉 `CLOSE_HANDLE`）。管道到 EOF 后在水平触发下**持续可读**，于是这个悬空 poll 在下一个 tick 打进已释放内存，第二次跑到 `on_reader_done`，把 `FileResponseStream` 析构了两遍：
+
+- body fd 被 `close()` 两次（第二次 EBADF），之后还有一次 `FIONREAD` 打在已关闭的 fd 上；
+- 同一个堆块两次进 mimalloc 的 thread-free 链表，`next` 指针自指成环。
+
+之后任何一次 free-list 收集都会走"走到链表尾再拼接"的循环（`_mi_page_free_collect`），于是**永久自旋在 `_mi_prim_thread_yield()`（这个 fork 里就是 `sleep(0)`）**。这就是"测试早就 PASS 了、进程却不退出、main + mi-scavenger 各吃满一个核"的全部原因。
+
+修复：`1fa3b9c280`（ohos-bun）+ tap PR #357（revision 60 → 61）。在 io 层释放 poll（`close_fd = false`，fd 不动），覆盖所有非持有型消费者；`IOReader` 早就手写了这一步并留了注释说明原因，`FileResponseStream` 没有——这个"契约靠各消费者自觉"就是 bug 的温床，所以修在 io 层而不是 FileResponseStream。
+
+### 关键更正：之前几条"干净"的结论是错的
+
+`_workpool_stress.ts`（20 次 framing、无 fork）和 `_fork_after_close_stress.ts` 当时判定"干净、54ms/78ms 跑完"，是**只看了日志内容没看进程是否退出**。实际这两个进程在几小时后还在以 196% CPU 自旋（`ps -ef` 抓到、`kill -9` 清掉）。修正后的判据一律是"进程是否自行退出"（`timeout -s KILL` + 退出码 137/124 判 HANG）。
+
+同一个错误也解释了为什么之前的"子进程 10ms 干净 / 150ms 卡死"看起来像时长效应：main 线程在 FIFO 响应结束后不久就进入自旋，事件循环从那一刻起彻底停摆。10ms 的子进程在自旋接管前退出被检测到，150ms 的没赶上——不是 `proc.exited` 有问题，也不是 fork 语义有问题。
+
+### 触发面（真机、逐项实测 CLEAN/HANG）
+
+| 场景 | 结果 |
+|---|---|
+| FIFO + `Bun.serve` + 请求（有 body 字节） | HANG |
+| FIFO + `Bun.serve` + 请求（无 body 字节，只发 head） | HANG |
+| FIFO + `Bun.serve`，从不发请求 | CLEAN |
+| 普通文件 + `Bun.serve` + 请求 | CLEAN |
+| 只 open/write/close FIFO，无 server | CLEAN |
+| `Bun.file(FIFO).stream()` 直读，无 server | CLEAN |
+| 上面 HANG 的场景 × {不 client.end / 不 server.stop / 先关 writer 触发 EOF / abort} | 全 HANG |
+
+即：**只要 FIFO 经 `Bun.serve` 真的服务过一次请求就会中毒**，与收尾方式无关。破坏在响应过程中就已发生——`_td_stage.ts` 证明脚本里第一个 `await Bun.sleep()` 处（第一次回到事件循环、触发 mimalloc idle hook）就卡住，不必等到进程退出。
+
+### 排除项
+
+- `MIMALLOC_PURGE_DELAY=-1` / `ARENA_PURGE_MULT=0` / `ABANDONED_RECLAIM_ON_FREE=0` / `SCAVENGER=0`：全部仍 HANG。`SCAVENGER=0` 只是把自旋点从 `_mi_park_leave`（等 scavenger 交还 parked heap）换成 idle hook 内联走同一条 free-list 收集——两条路走的是同一个环。
+- 独立 `pthread_mutex_t` 压力测试（7 线程 × 50 万次）0.659s 跑完、483% CPU：真机 futex/内核没有通用问题。
+- `src/io/`、`src/runtime/server/` 里没有任何 OHOS 专属分支——这是**上游潜伏 bug**，只是 HongMeng 的 FIFO EOF 事件每次都稳定重投，Linux 上未必在进程退出前投第二次。
+- 容器复现不出来，所以 r59/r60 两轮容器验收全绿是真的、不是测错了；这条再次印证硬约束 7（容器只是参照系）。
+
+### 方法学留档：无 ptrace 的采样剖析器
+
+真机沙箱禁 ptrace（strace/gdb 不可用），`/proc/<pid>/syscall` 不存在、`stack` 无权限、`wchan` 恒返 0。定位靠自建 `spinprof.so`（scratchpad，~230 行 C）：
+
+- 构造函数起一个采样线程，延迟 N ms 后扫 `/proc/self/task`，只对状态为 `R` 的线程发 `SIGRTMIN+8`；
+- 信号处理器从 `ucontext` 取 `pc`/`lr`/`sp`/`x0`/`x8`（x8 = 系统调用号，PC 落在 `svc` 之后时直接给出卡在哪个 syscall）+ 做帧指针回溯（`x29` 链，PAC 签名的返回地址掩掉高 16 位）；
+- 每次采样在线程局部缓冲里拼好、一次 `write()` 刷出，避免多线程交错；同时 dump 一份 `/proc/self/maps` 供离线定位。
+- **先用一个已知死循环程序验证过 PC 精度**（落在 `my_hot_spin+0xc`），再拿去测 bun——这一步不能省，第一版因为把采样线程自己也采了，差点把采样器的 nanosleep 当成主线程的自旋。
+
+bun 是 strip 过的（只剩 680 条 `.dynsym`），符号化靠：`/system/lib/ld-musl-aarch64.so.1` 有 dynsym → 定位到 musl `sleep()`；bun 侧靠**按同一 commit 本机重编 mimalloc**（`oven-sh/mimalloc@6e891cb`，`cc -c src/static.c`）后比对"调用 `sleep` 的 10 个点"，把 relocation 表里的偏移映射回函数名（`_mi_park_leave`/`mi_on_thread_idle_end`/`mi_heap_visit_page_at`/…）。区域归属另外用"该地址段引用了哪些字符串字面量"交叉确认（mimalloc 的报错文案）。
