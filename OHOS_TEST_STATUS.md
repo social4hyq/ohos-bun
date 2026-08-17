@@ -3642,3 +3642,93 @@ bun 的 `Bun.Terminal`（openpty + master 双 dup 分离读写 + 双 ONESHOT epo
 | 未分类新面孔 | 10 | `bun-security-scanner-matrix-without-node-modules`、`run-crash-handler`、`cli/test/parallel.test.ts`、`shell/commands/ls.test.ts`、`shell-pipe-read-fault`、`child_process.test.ts`、`fs.test.ts`、`create-jsx.test.ts`、`node-net.test.ts`、`web/streams/compression.test.ts`——本轮未逐个查因 |
 
 **结论**：58% 并发假象比例与 r57（77%）、r54（25%）同方向但量级更低，样本小（96 vs 60/77）解释力有限，暂不据此调整方法论权重。40 个真失败里 1 个（`spawn-cgroup.test.ts`）已定性归因并入 `expectations.txt`；`bake/dev/*` 全套 10 个文件是本轮唯一成规模的新面孔簇，值得下一轮优先分配时间排查（dev-server 相关，可能是设备速度或真实功能缺口，未判定）；其余 29 个均可归入既有簇或结构性缺口，non-class-A。
+
+## `bun-serve-file.test.ts` 文件级超时改判：不是慢，是真卡死（2026-08-17）
+
+**背景**：台账多轮（r54/r57/r59）都把这个文件的失败记成"个别大文件用例在 20s 预算内未完成，sendfile 簇待深查（优先级低）"。本轮用本机 brew 装的 `bun 1.4.0`（对应 r59 bottle）直接手跑复核，发现定性有误——不是预算差一点，是真挂死，应改判并提优先级。
+
+**加大超时验证（结论：加不救）**：`bun test test/js/bun/http/bun-serve-file.test.ts --timeout=180000`（单测超时放宽到 3 分钟）跑了近 3 小时仍未退出（`ps` 显示进程只攒了 ~20 分钟 CPU 时间，其余时间纯阻塞等待，不是忙等）；`stdbuf -oL` 强制行缓冲后重跑，60s+ 内连一个测试点都没打印——对照该文件在 harness 全量基线里正常应在几十秒到几分钟内跑完全部 106+ 用例并持续输出点号，说明这不是"边界慢"，是事件循环层面真被卡住。
+
+**二分定位**：文件里 108 个用例（含 `describe.concurrent` 各组）单独抽出来跑全过（6.33s），问题在 `describe("Bun.file in serve routes", ...)` 主块**之外**的 4 个顶层 `test(...)`。4 个各自单独跑都是几百毫秒到几秒内通过；两两组合排查后定位到最小复现：
+
+- `test.skipIf(isWindows)("Response(Bun.file(FIFO)) frames the body as chunked, not Content-Length: 0", ...)`（约第 1093 行，FIFO chunked framing 用例）
+- 紧跟着跑 `test("file response with a pending request body keeps serving when body bytes arrive mid-stream", ...)`（约第 1173 行，32MB 常规文件 + 原始 TCP socket，完全不碰 FIFO）
+
+这两个按文件原始顺序背靠背跑必卡死；调换顺序（pending-body 先跑、framing 后跑）700ms 内全过，不卡。说明是 **framing 用例跑完后给进程留了脏状态，污染了下一个测试**，不是 pending-body 自身的问题，也不是 `describe.concurrent` 并发调度导致的死锁（原先怀疑方向已排除）。
+
+**根因方向第一版（已被下面 trace-shim/qemu 结果部分推翻）**：最初怀疑是 framing 用例全程用 `openSync(fifoPath, "r+")` 占住 FIFO 写端不放，导致 `Bun.serve()` 内部给 FIFO 建的读端 fd 没被彻底释放、进而在 `fork()` 时被 pending-body 测试 `Bun.spawn` 出的子进程继承、扰乱子进程自己的 fd/epoll 状态。这个方向被 `ohos-trace-shim`（LD_PRELOAD）的追踪结果初步支持：子进程最后可见活动是关闭第一轮原始 socket（`close(10)/close(14)`、`recv()=0`、`close(13)`），再往后子进程再无任何 libc 层面调用，看起来像是卡在紧接着的 self-fetch（`fetch(".../alive")`）里——但 trace-shim 只能看见经过 libc 命名符号的调用，Bun 自己的文件/网络 I/O 走 Rust `rustix` `linux_raw` 后端直发 syscall，这条路径对 trace-shim 是盲区，所以"卡在 self-fetch"当时只是基于"最后一条可见活动之后"的推测，未经证实。
+
+## trace-shim → qemu-aarch64 -strace 深挖：定位到真实卡点（2026-08-17 续）
+
+**minimal reproducer**：把 framing 用例 + pending-body 用例内部的 fixture.ts 逻辑抽成两个不经过 `bun:test` 框架的脚本（`repro-main.ts` 先做 framing 阶段，再 `Bun.spawn` 出跑 fixture 逻辑的子进程），原生跑确认同样卡在 `about-to-spawn-child` 之后——复现有效，且启动开销远小于整个测试文件，便于灌给 qemu。
+
+**trace-shim 结果（有效但盲区暴露）**：`LD_PRELOAD="ohos-compat-shim.so ohos-trace-shim.so" OHOS_TRACE=file,fd,proc,net,raw` 挂到卡死场景上，能看到父进程 `fork()=23711` → 子进程 `execve` 之后一路收发数据直到关闭第一轮 socket，随后再无 libc 符号层面的调用——但看不到 FIFO 自身的 `open`/`close`（Bun 内部文件 I/O 完全绕开被 hook 的 libc 符号），也看不到子进程接下来自己发起的 self-fetch 具体卡在哪个系统调用，只能定位到"子进程活着，但看不见的地方卡住了"。
+
+**qemu-aarch64 -strace 结果（关键突破）**：`qemu-aarch64 -strace -D <log> bun repro-main.ts` 全量 syscall 级追踪（不受 libc 符号限制，缺点是仿真开销极大，几分钟就能吐几百 MB～1GB+ 日志，且一个和逻辑无关的运行时线程会高频 `nanosleep`，必须 `grep -vE "nanosleep|futex"` 先过滤掉噪声）。追出的真实卡点和 trace-shim 给的方向**完全不同**：
+
+- 子进程 `fork()`+`execve()` 本身**成功**（一开始误读到一行 `clone(...) = -1 errno=110 (Operation timed out)`，后来核实是多线程并发写日志导致的行交错假象——真实返回值紧跟在下一行 `= 45933`，clone 没有失败）。
+- execve 落地后，子进程（tid 例如 `50776`）在长达 2.5 分钟+ 的追踪窗口内**再没有产生任何新的系统调用**——比 trace-shim 看到的"卡在 self-fetch"要早得多，子进程甚至没跑到能触发第一次网络请求的地方。
+- 真正卡住的是子进程紧接着 `mmap`+`mprotect`+`sigaltstack`+`prctl`+`getrandom`+`gettid` 起来的一个新线程（`pthread_create` 典型启动序列，tid 例如 `50788`，大概率是 Bun/JS 引擎自己的线程池初始化线程）：
+
+  ```
+  50788 futex(0x...4ac, FUTEX_PRIVATE_FLAG|FUTEX_WAIT, 1, {tv_sec=0,tv_nsec=100000000}, 0x7, 0) = -1 errno=110 (Operation timed out)
+  50788 futex(0x...4ac, FUTEX_PRIVATE_FLAG|FUTEX_WAIT, 1, NULL,                          0x7, 0) = -1 errno=110 (Operation timed out)
+  ```
+
+  第一次调用带 100ms 超时、按预期超时返回，完全正常。**第二次调用 `timeout=NULL`（语义是"无限等待，直到被唤醒"）却同样返回 `errno=110 Operation timed out`——这是明确违反 futex(2) 语义的行为，NULL 超时的 FUTEX_WAIT 在真实 Linux 上永远不应该超时。** 这行之后，该 tid 再无任何系统调用（大概率转入纯用户态死循环/自旋，不再触达内核），子进程彻底冻结，父进程因此永远等不到 `proc.exited`。作为对照，同一份日志里父进程另一个线程（`50589`）几乎同一时刻做了同样模式的 `futex(..., {100ms 超时}, ...)` 调用，正常返回 `= 0`（被正常唤醒，非超时），证明 futex 机制本身不是全面失效，只是这一次特定调用命中了异常路径。
+
+**结论（本轮 qemu 阶段的定案——下面交叉验证一节已修正"卡在子进程"这个具体定位，结论仅保留到"排除了什么"这一层）**：卡死不是 FIFO fd 继承/epoll 丢唤醒（第一版猜测已排除，没有证据支持），也不是 self-fetch 网络层问题（trace-shim 的"最后可见活动之后"推测过早）；qemu 追踪当时读到的"子进程卡在线程池启动的 `FUTEX_WAIT(..., timeout=NULL)`"这个具体位置，后来被下面的交叉验证证明是仿真窗口不够导致的误判（子进程其实跑完退出了）。真正的卡点见下一节。和 [[T50]] 一样属于"内核对等待原语的语义偏离"这个大类猜测仍然成立，只是载体判断错了一次，修正后见下文。
+
+## 交叉验证：不依赖 qemu，直接读 `/proc` 验证是否为仿真层伪影（2026-08-17 续二）
+
+**方法**：qemu-aarch64 本身是"strace 替代品"，仿真层自己出 bug 的可能性不能排除。设计了一个完全不经过 qemu 的独立验证——原生跑最小复现脚本（已确认必卡），卡死后直接读 `/proc/<pid>/stat`、`/proc/<pid>/task/*/stat` 看进程/线程的内核态状态（`R`/`S`/`D`/`Z`）和 CPU 时间增量，不需要 ptrace、不需要 strace，纯文件读取，本机沙箱对这类只读 procfs 访问没有限制。
+
+**结果、且推翻了 qemu 追踪给出的"卡在子进程"这个定位**：
+
+- 子进程 `/proc/<child_pid>/stat` 状态是 **`Z`（zombie）**——子进程其实**已经正常退出了**，不是卡死在线程池初始化里。`cmdline` 读出来是空的，`ps` 显示成 `[/storage/Users/]`（procfs 对已退出但未回收进程的标准展示方式），这与之前用 qemu 追踪时看到的"子进程 execve 后再无任何系统调用"表面矛盾，实际上是**qemu 仿真开销太大，追踪窗口（几分钟）根本没等到子进程跑完**——子进程原生跑只需要几百毫秒到几秒；之前给它的追踪预算不够，误把"还没跑完"读成了"卡死在这"。
+- 真正卡住的是**父进程**：主线程 `/proc/<pid>/task/<main_tid>/stat` 状态是 **`R`（运行/可运行）**，30 秒真实时间窗口内 `utime` 从 11295 涨到 29349（tick），持续、显著增长——这是**货真价实的忙自旋（busy spin）**，不是内核态阻塞睡眠。父进程的子进程等待机制（对应 `Bun.spawn().exited` 的实现）没有被正确唤醒/通知子进程已退出，没有转入干净的睡眠等待，而是在用户态死循环里反复重试。
+
+**结论修正**：
+1. **卡点不在子进程线程池初始化**（qemu 追踪的原始结论作废，是仿真慢导致的追踪窗口不足产生的误判）。
+2. **卡点在父进程等待子进程退出的路径**：子进程已经干净退出变成 zombie，父进程对应的"子进程退出通知"永远没有到达（或到达了但没能正确唤醒等待线程），父进程转入用户态忙自旋而不是阻塞等待，导致 `proc.exited` 永不 resolve、`Promise.all` 永远挂起。
+3. **这次交叉验证本身就是"不依赖 qemu"的独立证据**：完全脱离 qemu、在真机原生执行路径上，同样观测到"本该无限期阻塞等待的原语没有正常工作，代码退化成忙自旋"这个同类病理现象（只是这次的载体是父进程等子退出，不是子进程线程池启动）。这足以说明 qemu 追踪到的 `futex(timeout=NULL)` 错误返回超时**不是 qemu 自己独有的仿真伪影**——真机原生执行同样表现出"该无限等待的原语没有按预期阻塞"这一类问题，只是具体卡在哪条调用上，两次观测到的不是同一处（qemu 那次可能真的是仿真环境下追踪窗口不够导致的误判，不能直接当成"两处观测到同一个 bug"，但两者共享同一种"platform 级无限等待原语失效"的病理特征，指向同一大类根因，而非各自独立的巧合）。
+4. **下一步收窄方向**：不用再纠结"qemu 是不是自己出 bug"，应该直接在父进程侧排查——Bun 的 `Bun.spawn` 在这条设备/内核上用什么机制感知子进程退出（`SIGCHLD` + `waitpid`，还是 `pidfd_open` + `epoll`/`poll`），以及为什么在"framing 用例跑完 + fork 出子进程"这个特定前置条件下，这个通知机制会失灵、代码转入忙自旋而非清洁阻塞。这比继续深挖 qemu 内部实现性价比高得多。
+
+## 源码定位 + 决定性证据：`server.stop(true)` 对 FIFO 响应遗留一个延迟关闭的 fd（2026-08-17 续三）
+
+**Bun 子进程退出检测机制源码定位**（只读 agent 调研，Rust 源码，构建链早已切 cargo/rust-nightly 与此一致）：
+
+- `Bun.spawn().exited` 走 `Process::watch()`（`src/spawn/process.rs:366-437`）：把 `pidfd_open()` 拿到的 pidfd 注册进 JS 事件循环共享的那一个 epoll 实例（level-triggered），等 `EPOLLIN` 后做非阻塞 `wait4(WNOHANG)`。fallback 路径是专用等待线程 `poll(eventfd, POLLIN, i32::MAX)`（`process.rs:924-1420`），触发条件是 `pidfd_open()` 失败（ENOSYS/ENOTSUP/EPERM/EACCES/EINVAL）。
+- 已有的 OHOS carve-out **只在 `spawnSync`/no-orphans 路径**（`process.rs:3199-3379`），注释原文：*"OHOS: wait_linux_signalfd uses signalfd+pidfd which hangs. Use poll+wait4 with pidfd parent-death detection instead"*（`process.rs:3203-3206`，2026-06-09 验证过）。**这条 async `Bun.spawn` 路径（`Process::watch()`）完全没有对应的 OHOS carve-out**——`cfg!(target_env = "ohos")` 在这附近一次都没出现。
+- 两条路径都不用 futex/condvar；"无限等待"原语是 level-triggered epoll（主路径）或 `poll()` 传 `i32::MAX`（fallback 路径）。
+
+**qemu 日志里的 epoll 记录**（已有日志翻出来的，不用重新抓）：`epoll_pwait` 的超时参数在正常倒数（不是每次传 0，不是纯粹忙等），但几乎每次调用都在超时前提前返回 `= 1`——有个 fd 在这个共享 epoll 集合里持续"抢跑"就绪，逼着事件循环反复短周期重入而不是安心睡到超时，和 `/proc` 观测到的父进程 `R` 态、CPU 持续增长对得上。
+
+**原生诊断脚本给出决定性证据（不依赖 qemu）**：写了个脚本，在 framing 用例的每个阶段用 `readdirSync("/proc/self/fd")` + `readlinkSync` 逐个 fd 打印指向，结果：
+
+- framing 阶段中途：`Bun.serve()` 内部给 `Bun.file(fifoPath)` 单独开了一个读端 fd（记为 fd 13，和 `openSync(fifoPath,"r+")` 拿到的 writerFd 即 fd 9 是两个不同的 fd）。
+- **`client.end()` + `await server.stop(true)` + `closeSync(writerFd)` 全部跑完之后**：fd 9（writerFd）已正确关闭，两个 socket fd（10/12）也已关闭，但 **fd 13（`Bun.serve()` 内部给 FIFO 开的读端）依然原样指向该 FIFO 路径，没有被 `server.stop(true)` 同步关掉**。
+- 再等 50ms（一次 `Bun.sleep`）之后复查，fd 13 才终于消失——说明这个 fd 是靠某个**延迟/异步的清理回调**（很可能是线程池上的 `uv_fs_close` 之类）才关掉的，`server.stop(true)` 的 promise resolve 时刻并不代表这个 fd 已经释放。
+
+**结论**：`Bun.serve()` 服务 FIFO-backed `Response(Bun.file(fifo))` 时内部持有的读端 fd，在 `await server.stop(true)` resolve 之后仍存在一个至少几十毫秒的**真实竞态窗口**——这段时间里这个 fd 还挂在进程 fd 表里。pending-body 用例的 `Bun.spawn()` 紧跟在 framing 用例结束后立刻触发 `fork()`，如果恰好落在这个窗口内，子进程会在 `fork()` 时把这个本该已经关闭、仍处于"残留引用一个 FIFO 读端"状态的 fd 一并复制过去（虽然子进程自己 exec 前会把 `/proc/self/fd` 枚举出的所有 fd 标记 `FD_CLOEXEC`，execve 时会关掉，但从 `fork()` 到 `execve()` 之间，子进程仍短暂持有这个 fd 的一份引用）——这是否是导致下游 epoll 状态异常的直接原因还没有 100% 闭环（需要更细的时序仪器才能证明"就是这几十毫秒的窗口命中了"），但已经是目前唯一一个**独立于 qemu、可在原生环境稳定复现**的具体缺陷：**`Bun.serve()` 对 FIFO 响应的内部读端 fd 清理不同步于 `server.stop()` 的 resolve 时机**，值得作为独立 bug 先报告/修复，无论它是否是本案卡死的完整解释。
+
+**建议的落地方式（原计划两处，实际只动了一处，另一处看过实现后否决——见下）**：
+
+## 修复落地（2026-08-17 续四）
+
+**已实施 —— OHOS 强制走 waiter-thread 兜底路径**（`src/spawn_sys/lib.rs:119-139`）：`waiter_thread_flag` 模块的 `SHOULD_USE_WAITER_THREAD` 静态量原来固定 `false`，只有在其他平台上 `pidfd_open()` 实际失败（ENOSYS/ENOTSUP/EPERM/EACCES/EINVAL）时才会被 `pifd_from_pid()`（`spawn_sys/spawn_process.rs:513-546`）反应式地置位。改成 `AtomicBool::new(cfg!(target_env = "ohos"))`——OHOS 编译期直接默认置位，让 `pifd_from_pid()` 一开始就直接返回 `ENOSYS`，永远不走 `pidfd_open()`，子进程退出检测统一走独立的 `poll(eventfd, POLLIN, i32::MAX)` 等待线程（`process.rs:924-1420`），彻底绕开共享 uWebSockets epoll loop。这条改动完全复用已有的 fallback 机制（和"其他平台 pidfd_open 失败时"走的是同一套代码路径），不是新写的分支，风险面小；且不管真正触发机制是"pidfd 事件丢失"还是"共享 loop 的重入 drop 事件"（`process.rs:76-85` 注释里就写明了这类已知风险——level-triggered 设计本来就是为了扛住 oneshot 丢事件，但重入导致 `ready_polls`/`current_ready_poll` 被覆盖是另一种丢事件方式，未必被 level-triggered 救得回来），把子进程退出检测整个搬出这条共享 loop 都能绕开。
+
+**已否决 —— `FileResponseStream`/`Closer` 的 fd 关闭时序不改**：原计划是让 `server.stop()` 等 FIFO fd 真正关闭再 resolve。看了 `src/runtime/server/FileResponseStream.rs:622-634`（`Drop` 里调 `Closer::close`）和 `src/io/lib.rs:2242-2254`（`Closer::close` 实际把 `fd.close()` 扔给 `WorkPool::schedule_owned` 在线程池里异步执行）之后否决了这个方案：**这是横跨所有平台、所有 fd 类型（不止 FIFO，普通文件关闭也走这条路）的既有异步关闭设计**，大概率是为了不让 `close()` 偶尔的慢 I/O 阻塞主线程。改成同步等待是一个影响面广、没有 OHOS 专属证据支撑的大改动，贸然做有重新引入"主线程阻塞在 close() 上"这类问题的风险，不符合"只做已证据支撑的最小改动"的原则。竞态窗口（fd 在 `server.stop()` resolve 后仍存活几十毫秒）确认是真实存在的，但没有证据表明修复它是必须的——上面的 waiter-thread 改动已经把父进程从"依赖这条共享 loop 感知子进程退出"这个受影响路径里摘出去了，理论上足以让 `bun-serve-file.test.ts` 转绿。如果验证后发现还不够，再回头单独评估这处的窄口径修法（比如只对 pollable fd 类型做同步关闭，不动常规文件）。
+
+**验证状态（2026-08-17 续五）**：`cargo check` 级别已通过，**完整 bottle 构建 + 测试回归尚未做**（用户明确选择先只做本地编译检查，未走 formula 正规重编流程）。
+
+- 做法：容器里 `docker cp` 了本地 `src/`（含改动）+ `Cargo.toml`/`Cargo.lock`/`rust-toolchain.toml` + `vendor/lolhtml`（workspace 成员 `bun_bundler` 的 path 依赖，resolve 阶段就需要，即使不检它）到 `/root/bun-check`；`cargo`/`rustc` 直接用容器里已有的 `rust-nightly-2026-07-20` 解包工具链（`bun.rb` formula 同款版本），不经 rustup；`LD_LIBRARY_PATH` 补 `~/.harmonybrew/lib`（cargo 自身链的 libssl/libcrypto/libz）；`CARGO_HTTP_CAINFO`/`SSL_CERT_FILE` 指到 `/etc/ssl/certs/cacert.pem` 绕开 tuna 镜像证书链问题；`bun_core::build_options` 需要的 `build_options.rs`（正常由 `bun bd --configure-only` 走 `scripts/build/buildOptionsRs.ts` 生成）手写了一份占位版本放到 `build/debug/codegen/` 下，字段照抄该脚本的输出格式，仅用于让编译跑起来，不代表真实版本号/sha。
+- 结果：`cargo check -p bun_spawn_sys`（改动所在 crate）和 `cargo check -p bun_spawn`（消费 `waiter_thread_flag` 的 `process.rs` 所在 crate，顺带验证下游没连带坏）**均 `Finished` 无错误、无警告**。
+- 这只证明**语法/类型层面合法**，不代表运行时行为正确（`cfg!()` 求值、`AtomicBool` 初始值这类改动本身逻辑简单，编译过基本等于验证过）。容器内临时目录 `/root/bun-check` 已清理，没有留下任何痕迹，本地/远程仓库均未改动到这一步之外的东西。
+- **仍然欠缺、且是唯一能验证"修复是否真的解决了卡死"的一步**：完整 formula 化重编（commit + push `ohos-aarch64` 分支 + bump `bun.rb` revision + 容器内 `brew install --build-bottle social4hyq/core/bun` 产出真实 bottle）+ `bun-serve-file.test.ts` 全量回归——用户上一轮明确选择不做这步，需要另外确认才能推进。
+
+**方法论备注**：
+- `--timeout` 只对"单个用例慢"有效；判断"卡死 vs 慢"应先看 harness 是否曾在该文件上产出过任何测试点号输出（有点号说明在推进，没有点号且长时间挂起要怀疑真卡死），别单纯看总耗时超没超预算就归为"慢"。
+- LD_PRELOAD 类工具（trace-shim/compat-shim）只能看见 libc 命名符号；Bun 自己的 I/O 大量走 Rust `rustix` 内联 syscall，同一个"最后可见活动"结论必须标注"这是 libc 可见层面的最后活动"，不能直接当成"卡点就在这附近"——本轮就因为这个误差先定位错了一次方向。
+- `qemu-aarch64 -strace` 追全量 syscall 时，先起一个几秒钟的冒烟测试（`bun --version`）确认可用，再上真实场景；正式追踪必须限定运行时长（几分钟量级）并及时 kill，日志会以每分钟数百 MB 的速度增长（主要是一个高频 `nanosleep` 后台线程的噪声），分析前先 `grep -vE "nanosleep|futex"` 过滤，否则几千万行肉眼扫不动。
+- 二分/复现类调查产生的临时测试文件，一律放进目标目录用 `_` 前缀命名（如 `_bisect_A.test.ts`、`_repro_main.ts`），跑完立刻删、`git status` 确认目录干净，绝不提交这类脚手架。
