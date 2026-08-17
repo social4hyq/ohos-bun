@@ -3893,3 +3893,25 @@ PR #356 合并后，容器（`brew reinstall --force-bottle`，真实发布的 b
 - **先用一个已知死循环程序验证过 PC 精度**（落在 `my_hot_spin+0xc`），再拿去测 bun——这一步不能省，第一版因为把采样线程自己也采了，差点把采样器的 nanosleep 当成主线程的自旋。
 
 bun 是 strip 过的（只剩 680 条 `.dynsym`），符号化靠：`/system/lib/ld-musl-aarch64.so.1` 有 dynsym → 定位到 musl `sleep()`；bun 侧靠**按同一 commit 本机重编 mimalloc**（`oven-sh/mimalloc@6e891cb`，`cc -c src/static.c`）后比对"调用 `sleep` 的 10 个点"，把 relocation 表里的偏移映射回函数名（`_mi_park_leave`/`mi_on_thread_idle_end`/`mi_heap_visit_page_at`/…）。区域归属另外用"该地址段引用了哪些字符串字面量"交叉确认（mimalloc 的报错文案）。
+
+### 真机验收（r61 bottle，2026-08-17）
+
+`brew reinstall --force-bottle social4hyq/core/bun` 装到 `1.4.0_61` 后逐项复测，判据统一为"进程是否自行退出"（`timeout -s KILL` + 退出码 137/124 判 HANG）：
+
+| 检查 | r60（修复前） | r61（修复后） |
+|---|---|---|
+| FIFO + serve + 请求（有 body） | HANG | CLEAN |
+| FIFO + serve + 请求（无 body） | HANG | CLEAN |
+| 不 client.end | HANG | CLEAN |
+| 先关 writer 触发 EOF | HANG | CLEAN |
+| abort（终止连接） | HANG | CLEAN |
+| 普通文件 + serve + 请求 | CLEAN | CLEAN |
+| 脚本中途探针（第一个 await 处） | 卡住 | 跑到 SCRIPT-DONE |
+| 原失败的两个用例 | 文件级超时 | 2 pass，436ms，进程自退 |
+| **整文件 bun-serve-file.test.ts** | 文件级超时 | **105 pass / 1 skip / 3 todo / 0 fail，6.49s** |
+
+一个例外说明：探针里的 `no-server-stop` 模式（不调 `server.stop()`）修复后仍判 HANG，这是**探针设计问题不是 bug**——监听中的 server 本身就会让事件循环保持存活，脚本不该退出。已单独核验：`bun -e 'Bun.serve(...)'` 不 stop 必然不退出（rc=137），加上 `await s.stop(true)` 就 rc=0。
+
+顺手复查了 quarantine 里那条"dev server that never exits"（`test/bake/dev/ecosystem.test.ts`，怀疑同源）：r61 下仍失败，但形态是**用例级 60s 超时后正常退出（rc=1）**，不是进程自旋不退——跟本 bug 不是同一个问题，quarantine 条目保留。
+
+tap PR #357：CI 全绿（bottle write-back commit 触发的第二轮 run 卡在 `action_required`，手动 approve 后重活 job 正确跳过），`mergeable=MERGEABLE / CLEAN`。
