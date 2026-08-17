@@ -3818,3 +3818,21 @@ PR #356 合并后，容器（`brew reinstall --force-bottle`，真实发布的 b
 **当前结论**：卡死需要 pending-body 用例的**完整负载**（32MB `Bun.write`、原始 socket 写 64KB body、pipelined GET、自请求 `/alive`）配合 framing 遗留的某个时序窗口才会触发，不是"fork"或"WorkPool 调度"单独就能复现的简单模式。大概率是一个**窄时序竞态**——`await server.stop(true)` resolve 时刻和 `Closer::close` 异步任务真正被某个 `Bun Pool` 线程执行完成的时刻之间存在几十毫秒的窗口（之前 `/proc` fd 检查已经证实过这个窗口真实存在），孤立的最简 fork 测试因为跑得太快（<10ms 就 fork 完）大概率根本没撞上这个窗口，而 pending-body 用例因为自身有真实的 I/O 耗时，更容易落在窗口内。
 
 **下一步（未执行）**：不再猜"哪个动作触发"，改成缩小 pending-body 那个 fixture 本身——保留 framing 在前，把子进程的负载从"trivial exit"逐步加量（先加一个 `Bun.write` 32MB 但不碰 socket，再加原始 socket 但不 pipeline，等等），找到最小的、依然能触发卡死的负载组合，用二分而不是猜测去缩小时序窗口的具体来源。这条路子仍然不需要重编，纯 JS/TS 脚本可以继续做。
+
+## 关键转折：不是"检测不到子进程退出"，是进程收尾阶段卡住（2026-08-17 续十一）
+
+继续按上面"给子进程加时长"这条思路二分，跳过"猜哪个具体负载"，先纯粹测"子进程活多久"这一个变量：
+
+- 子进程只 `Bun.sleep(150)` 后 `process.exit(0)`（不写文件、不碰 socket）：**复现卡死**（197% CPU，持续增长，和原 bug 同一个模式）。
+- 子进程只 `Bun.sleep(10)` 后 `process.exit(0)`：**这次 `child exited code=0` 真的打印出来了**——`await proc.exited` 确实 resolve 了，`Bun.spawn` 整条链路工作正常！但打印完这行之后，脚本已经没有更多代码要跑，**进程本身却没有退出**，CPU 依然稳定攀升（复查线程状态，还是熟悉的 main + mi-scavenger 一起 `R` 态自旋）。
+
+**这彻底改写了之前的结论**：卡死的位置不是 `Bun.spawn(...).exited` 这个 Promise（那个已经被 waiter-thread 修复解决了，真的在正常工作），而是**脚本逻辑全部跑完之后，bun 进程自己的收尾/退出阶段**——大概率就是 `ThreadPool` 的 `Drop` 实现（`src/threading/ThreadPool.rs`）：`fn drop(&mut self) { self.shutdown(); self.join(); }`，`join()` 在等工作线程确认关闭时用的还是同一套 futex `notify`/`wait` 协议，如果 framing+fork 这个序列让线程池内部的 `spawned`/`idle` 原子计数出现了不一致（`fork()` 只保留调用线程，其余线程在子进程里直接消失但这是子进程侧的经典坑，父进程本不该受影响——具体机制还没有查清楚，只是过程巧合触发同一个 futex 协议），`join()` 就会永远等不到所有工作线程的确认，卡死在收尾阶段。
+
+**这也补上了最开始那次"零输出卡了 3 小时"的解释**：bun 的 stdout 在非 tty 场景下是完全缓冲的，只有进程退出或缓冲区写满才会 flush——如果卡的是进程收尾（不是测试逻辑本身），那测试本该已经 PASS、点号已经排队在缓冲区里，只是永远等不到 flush 的机会，表现出来就是"什么都没打印，卡死"。之前几轮追踪反复看到"子进程活动之后再无任何信号"，很可能一直都是这同一个"收尾阶段卡住 + 输出缓冲遮蔽了已完成的工作"现象，不是子进程本身或 `proc.exited` 本身出了新问题。
+
+**waiter-thread 修复（PR #356）的定位需要修正**：它确实修好了它要修的那个东西（`pidfd`+`epoll` 检测不到子进程退出），这一点被这轮测试再次证实（`proc.exited` 现在稳定 resolve）。`bun-serve-file.test.ts` 目前卡死的根因是**另一个独立的 bug**——`ThreadPool::join()` 在真机上的收尾死锁，只是恰好被同一个 framing→fork 测试序列触发，和 waiter-thread 那个 bug 前后脚出现在同一份诊断记录里，容易被误认为是同一个问题的两个症状。
+
+**下一步（未执行，比之前更精确）**：
+1. 二分子进程存活时长的精确阈值（10ms 干净、150ms 复现，中间取几个点，比如 30ms/60ms/100ms），确认是不是单纯"时长"这一个维度决定的，还是背后另有一个具体事件（比如某次 GC、某次 mimalloc 后台 purge 周期）恰好落在这个时间窗口。
+2. 直接读 `ThreadPool::join()`（`src/threading/ThreadPool.rs` 里 join_event 相关那段，约 960-1040 行区域）的具体等待协议，看有没有"最后一个退出的线程负责唤醒 joiner"这类"依赖某个特定线程一定会跑到"的假设——如果 fork() 后父进程这边线程数/顺序被打乱（哪怕只是巧合的调度时序，不一定是 fork 语义本身的锅），"最后一个线程"这个身份判断错位，唤醒信号就可能发给了错误的目标或者根本没发出去。
+3. 这条 bug 目前定性为独立于 PR #356 的新问题，需要单独立案（不是"PR #356 不彻底"，是"PR #356 修的那个问题已经修好，测试卡在下一个不相关的地方"）。
