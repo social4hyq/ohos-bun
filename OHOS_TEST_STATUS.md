@@ -3915,3 +3915,5 @@ bun 是 strip 过的（只剩 680 条 `.dynsym`），符号化靠：`/system/lib
 顺手复查了 quarantine 里那条"dev server that never exits"（`test/bake/dev/ecosystem.test.ts`，怀疑同源）：r61 下仍失败，但形态是**用例级 60s 超时后正常退出（rc=1）**，不是进程自旋不退——跟本 bug 不是同一个问题，quarantine 条目保留。
 
 tap PR #357：CI 全绿（bottle write-back commit 触发的第二轮 run 卡在 `action_required`，手动 approve 后重活 job 正确跳过），`mergeable=MERGEABLE / CLEAN`。
+
+**同族遗留（未修，非本 bug 必需）**：`PosixBufferedReader::finish()` 在 `CLOSE_HANDLE` 未置位时会**提前 return 且不设 `IS_DONE`**（早退条件是"handle 还没 Closed"，而非持有型 reader 的 handle 本来就一直不 Closed）。本次修复让 poll 在 reader 析构时就注销，所以那条路已经打不到；但如果哪天出现"非持有型 reader 在 `on_reader_done` 后仍存活"的消费者（父对象引用计数没归零），EOF 事件会被反复投递、`is_done()` 却一直是 false，表现为空转而不是崩溃。真要收口，把早退条件改成 `CLOSE_HANDLE && (…)` 即可，但那会改动所有 reader 的行为，需要单独验证，没跟这次的修复混在一起。
