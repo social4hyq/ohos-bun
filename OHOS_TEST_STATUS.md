@@ -3781,7 +3781,24 @@ PR #356 合并后，容器（`brew reinstall --force-bottle`，真实发布的 b
 
 **已经做了但还不够的事**：PR #356 已经合并、bump 了 formula、容器和真机都升级到了 1.4.0_60——这个动作本身没有问题（waiter-thread 修复大概率仍是必要的改动，只是不充分），但**真机上 `Bun.spawn().exited` 在这个场景下的卡死并未真正解决**，需要重新立案排查，且这次必须优先在真机而非容器上做诊断（容器这条路径已经不可信了，它掩盖了真机的真实行为）。
 
+## 真机根因深挖：waiter-thread 修复确实生效，卡点在更下游一步（2026-08-17 续九）
+
+用真机原生环境（不经 qemu，`ohos-trace-shim` + `ohos-compat-shim` LD_PRELOAD，`OHOS_TRACE=file,fd,proc,net,raw`）重新挂上去追了一遍 `frames the body as chunked` → `pending request body keeps serving` 这个最小复现，同时配合 `/proc/<pid>/task/*/stat` 看线程状态。结论比之前更精确：
+
+**waiter-thread 修复本身确认生效**：
+- 线程列表里能直接看到一个叫 **`Waitpid`** 的线程（`bun_spawn::WaiterThread` 的名字，对应 `process.rs:924-1420` 那条 `poll(eventfd, POLLIN, i32::MAX)` 循环）——证明这次拿到的 bottle 确实编译进了 `cfg!(target_env = "ohos")` 分支，`waiter_thread_flag` 确实被置位了，不是"代码改了但没生效"这种低级问题（对照台账里"下一步"原本列的怀疑项 3，已排除）。
+- 这个 `Waitpid` 线程全程稳定 `S`（睡眠）状态，`utime` 几乎不动——它没有在自旋，不是 CPU 消耗的来源。
+- **子进程这次被干净回收了**：`/proc/<child_pid>/stat` 直接 "No such file or directory"，连 zombie 痕迹都没有（对比之前容器/真机负载污染那两轮观测到的 `Z` 状态）——说明 `wait4()` 这次真的被成功调用并回收了子进程，比之前"子进程变 zombie、父进程根本没感知到"那个问题更进一步。
+
+**真正卡住的地方，在"子进程已回收"之后的下一跳**：
+- CPU 消耗集中在**主线程 + `mi-scavenger`（mimalloc 后台内存清理线程）**，两者 `utime` 几乎同步增长（配对采样 utime 9654→10594 / 9667→10603，几乎逐 tick 对齐），持续、真实的忙碌，不是快照误判。
+- `ohos-trace-shim` 抓到的是**7 个不同线程在同一个 futex 地址上高频 `FUTEX_WAIT`/`FUTEX_WAKE` 打转**（`syscall(nr=98, addr, 0x80/0x81, ...)`），偶尔夹一次 `errno=11`（EAGAIN，futex 竞态下的正常重试信号，不是错误）。这次是真机原生跑的，不经 qemu，排除了"这是仿真层伪影"这条退路——是真实存在的锁竞争风暴。
+- 这个 futex 地址目前没能对应到具体是哪个锁（`ConcurrentTask.rs`/`bun_dispatch`/`bun_event_loop` 源码里都没搜到显式的 `Mutex`/`Condvar`/futex 关键字，说明用的是 Rust std 的 `Mutex`/`Condvar` 这类在 Linux/OHOS 上间接靠 futex 实现的原语，源码里看不出字面量）；参与竞争的线程包含好几个 "Bun Pool N" 工作线程，加上 mi-scavenger 也在同步忙碌，指向**跨线程内存回收/工作队列相关的一把锁**，但没有精确定位到具体是哪一把。
+
+**修正后的问题定位**：不是"子进程退出检测不到"（这一层已经被 waiter-thread 修复解决了），而是**waiter-thread 把"子进程退出了"这个结果往 JS 主线程回传的下一跳，撞上了一个真机特有的 futex 锁竞争活锁**——多个线程在抢同一把锁时反复 WAIT/WAKE，长期占着不放行。这解释了为什么容器里全绿（可能容器内核的 futex 唤醒公平性/调度策略不同，不会触发这种 herd 效应）而真机上稳定复现。
+
 **下一步（未执行，供下一轮参考）**：
-1. 真机上目前没有 `qemu-aarch64 -strace` 之外更好的手段，但既然容器路径已经被证明会掩盖真机行为，`qemu-aarch64` 本身是否也会有类似的失真需要重新审视——优先用 `/proc/<pid>/task/*/stat` 这类零依赖手段在真机上直接复现观测（这次复现里还没顾上做，先杀了进程用于排查噪音源）。
-2. 用同样的方式在真机上验证：子进程是否也变成了 zombie（`Z` 状态），父进程是否在忙自旋（`R` 状态、`utime` 持续增长）——如果模式一致，说明 waiter-thread 修复根本没有在真机上生效（分支判断或者 `pidfd_open()` 在真机上的行为和容器不一致）；如果模式不同，说明真机上还有另一个独立的卡死机制。
-3. 优先检查一个基础问题：真机的 `target_env` 编译期判断（`cfg!(target_env = "ohos")`）在这次实际拿到的 bottle 里是否真的走了 waiter-thread 分支——不要想当然认为"改了代码就等于真机运行时生效了"，这个具体 bottle 是从 CI 构建的，CI runner 的 OHOS 目标三元组配置需要和真机的 `target_env` 完全一致才算数。
+1. 精确定位这把 futex 保护的到底是哪个锁——候选：mimalloc 内部的跨线程 segment/page 回收锁（`mi-scavenger` 参与竞争是强烈信号）、`bun_threading::work_pool` 的任务队列锁、或者 uWS loop 自身某个跨线程 wakeup 用的锁。可以用 `readelf`/`nm` 在 bottle 二进制里按 futex 地址附近的栈回溯（若能拿到）反查符号，或者给 `bun_threading`/`bun_alloc` 相关源码加临时 `eprintln!` 探针重新编译验证（走 formula 流程，成本高，先想有没有更轻的办法）。
+2. 既然子进程回收本身已经没问题，可以把复现范围进一步缩小：写一个不涉及 `Bun.serve()` 的最小脚本，纯粹起够数量的并发工作线程/触发几次跨线程内存回收，看能不能脱离 HTTP/FIFO 场景单独复现这个 futex 活锁——如果能复现，说明这是一个更通用的 mimalloc/线程池并发问题，不是这个测试文件专属。
+3. 这类问题很可能需要 Bun 上游或更底层的内核态视角（真机没有 ptrace，`qemu-aarch64 -strace` 只在容器里验证过，且这次已经不完全信任容器路径能复现真机行为）——如果轻量手段挖不动，可能要考虑向 oven-sh/bun 上游反馈这类 futex 锁竞争问题在特定 ARM/OHOS 内核调度策略下的表现，或者找有没有 mimalloc 层面的已知 issue 可以对照。
+4. `bun-serve-file.test.ts` 目前已经因为 PR #356 合并被认为"已修复"上线，但真机实测证明并未完全解决——需要评估是否要把 `--timeout` 相关的处理方式重新拉回 quarantine（例如给这两个用例加真机已知问题的标注），而不是让它继续在台账里显示为绿色，误导后续排查优先级。
