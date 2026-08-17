@@ -3749,3 +3749,14 @@ bun 的 `Bun.Terminal`（openpty + master 双 dup 分离读写 + 双 ONESHOT epo
 - LD_PRELOAD 类工具（trace-shim/compat-shim）只能看见 libc 命名符号；Bun 自己的 I/O 大量走 Rust `rustix` 内联 syscall，同一个"最后可见活动"结论必须标注"这是 libc 可见层面的最后活动"，不能直接当成"卡点就在这附近"——本轮就因为这个误差先定位错了一次方向。
 - `qemu-aarch64 -strace` 追全量 syscall 时，先起一个几秒钟的冒烟测试（`bun --version`）确认可用，再上真实场景；正式追踪必须限定运行时长（几分钟量级）并及时 kill，日志会以每分钟数百 MB 的速度增长（主要是一个高频 `nanosleep` 后台线程的噪声），分析前先 `grep -vE "nanosleep|futex"` 过滤，否则几千万行肉眼扫不动。
 - 二分/复现类调查产生的临时测试文件，一律放进目标目录用 `_` 前缀命名（如 `_bisect_A.test.ts`、`_repro_main.ts`），跑完立刻删、`git status` 确认目录干净，绝不提交这类脚手架。
+
+## PR 已提（2026-08-17 续七）
+
+用户提出用 ohos-bun 最新 HEAD（`d1359065a8`，比容器验证时用的 `357aee3245` 多带了一条"ohos-compat-shim 同步到 v0.4.0"的 commit——用户自己/并行会话已经做完并推送）之后，走了完整 homebrew-core PR 流程：
+
+- 分支 `bump-bun-waiter-thread-ohos-fix`，切在最新 `github/main`（已含 PR #355 ohos-compat-shim 0.4.0 合并，不冲突）上。
+- `bun.rb`：`url revision:` 改指到 `d1359065a8bcc1483196ff4d4d8583011cbd0929`（重新核对了完整哈希，这次没有再手滑）；`revision 60` 沿用（还没发布过 60，不需要再往上加）。
+- 只提交了 `bun.rb`——tap 工作区里同时还躺着一份不是我改的 `claude-code.rb`（另一条并行调查的未完成改动），`git add` 时特意排除，没有混进这次 PR。
+- style/audit/readall 三项复核：干净（`audit` 的"should specify a tag"提示是这个 formula 一直有的既有模式，非新增）。
+- PR：**https://github.com/social4hyq/homebrew-core/pull/356**，CI（`build (bun)`/`light-check`/`lint-commits`/`upstream-diff`）已触发，等 `ci-passed` 转绿。
+- 本机容器里跑通的那次全量验证（bottle 1.4.0_60 @ `357aee3245`）用的是旧一点的 commit，逻辑等价（compat-shim 同步不影响 waiter-thread 修复本身），但 CI 这次会用 `d1359065a8` 重新走一遍真实构建管线，等于又验证一次。
