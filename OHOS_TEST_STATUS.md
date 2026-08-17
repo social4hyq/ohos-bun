@@ -3727,6 +3727,23 @@ bun 的 `Bun.Terminal`（openpty + master 双 dup 分离读写 + 双 ONESHOT epo
 - 这只证明**语法/类型层面合法**，不代表运行时行为正确（`cfg!()` 求值、`AtomicBool` 初始值这类改动本身逻辑简单，编译过基本等于验证过）。容器内临时目录 `/root/bun-check` 已清理，没有留下任何痕迹，本地/远程仓库均未改动到这一步之外的东西。
 - **仍然欠缺、且是唯一能验证"修复是否真的解决了卡死"的一步**：完整 formula 化重编（commit + push `ohos-aarch64` 分支 + bump `bun.rb` revision + 容器内 `brew install --build-bottle social4hyq/core/bun` 产出真实 bottle）+ `bun-serve-file.test.ts` 全量回归——用户上一轮明确选择不做这步，需要另外确认才能推进。
 
+## 完整验证：真实 bottle 构建 + 全量回归，卡死已修复（2026-08-17 续六）
+
+用户明确同意后，走完了完整链路：
+
+1. **push**：本地两个 commit（`538e58ffa4` fix + `357aee3245` docs）推到 `origin/ohos-aarch64`。
+2. **bump `bun.rb`**：`url revision:` 指到 `357aee32459e804b42f541376f747cb6b8b8ebf0`（推送前先核对了完整哈希——第一次手填漏了后半截，被自己查出来改正,教训是复制 `git rev-parse HEAD` 的完整输出，不能凭短哈希前缀往后编)；`revision 59 → 60`。`brew style`/`brew audit --strict`/`brew readall` 三项过（`audit` 报的"should specify a tag"是这个 formula 一直用 `revision:` 而非 tag 的既有模式，改动前就有，非新增问题）。
+3. **踩坑：容器有独立的一份 tap，不随宿主机修改同步**——容器 `brew --repository social4hyq/core` 报的路径和宿主机字面相同，但内容是两份独立文件；第一次直接在容器里 `brew install --build-bottle` 读到的还是宿主机改之前的 revision 56（"already installed but outdated" 那条提示就是信号）。`docker cp` 把改好的 `bun.rb` 覆盖进容器对应路径才生效。
+4. **踩坑二：`bun-webkit.rb` 也要同步**——只同步 `bun.rb` 那次构建在 C++/JSC 绑定编译阶段炸了（`no member named 'createWithLazyExports' in 'JSC::SyntheticSourceProvider'`），根因是容器那份 `bun-webkit.rb` 还锁在 `ddea71318f`（r59 合并前的旧 WebKit），而新 bun 源码期望 r59 合并后同步 bump 的 `f0f60fd232`。同样 `docker cp` 覆盖后重跑。
+5. **构建结果**：`social4hyq/core/bun 1.4.0_60`，19 分 4 秒，容器内产出真实 bottle（Rust 全量重编约 17 分钟 + C++/JSC 绑定编译，签名两层都过）。`bun --revision` 确认是 `357aee324`，即改动落地的那个 commit。
+6. **回归结果**（`docker cp` 了 `test/`（去掉 `node_modules`）到容器，用新 bun 跑）：
+   - 原最小复现（`frames the body as chunked` → `pending request body keeps serving` 背靠背跑）：**1.48 秒内两个都 PASS**（此前是 3 小时+ 死锁)。
+   - 整个 `bun-serve-file.test.ts` 全量跑：**105 pass / 1 skip（Windows 专属用例，预期跳过）/ 3 todo（历史遗留未实现，与本次改动无关）/ 0 fail，全程 10.55 秒**。包括之前最耗时的 FIFO backpressure 用例（`pollable file response survives a client that stops reading and then disconnects`，7.1 秒，符合它自身内建的有界轮询设计，不是卡死）。
+
+**结论**：卡死已确认修复，且未引入任何回归。容器内验证目录已清理干净。
+
+**未做、且明确不属于本次授权范围的事**：容器里产出的这个 bottle 只存在于容器本地 Cellar，没有上传到 atomgit；`bun.rb` 里 `bottle do` 块的 sha256 仍是 revision 59 的旧值，没有更新成新 bottle 的哈希。真正让这个 revision 60 对所有人可用（CI 跑 `bottle-build.yml`、上传 atomgit、`bottle do` 块回填正确 sha256）是走 homebrew-core tap 的正规 PR 流程，这是比"验证修复有效"更进一步的"对外发布"动作，需要用户另外确认才能推进；宿主机上 `harmonybrew-core` tap 里 `bun.rb`/`bun-webkit.rb` 的本地改动目前也还**没有 commit**（那是一个独立于 `ohos-bun` 仓库的 git 仓库）。
+
 **方法论备注**：
 - `--timeout` 只对"单个用例慢"有效；判断"卡死 vs 慢"应先看 harness 是否曾在该文件上产出过任何测试点号输出（有点号说明在推进，没有点号且长时间挂起要怀疑真卡死），别单纯看总耗时超没超预算就归为"慢"。
 - LD_PRELOAD 类工具（trace-shim/compat-shim）只能看见 libc 命名符号；Bun 自己的 I/O 大量走 Rust `rustix` 内联 syscall，同一个"最后可见活动"结论必须标注"这是 libc 可见层面的最后活动"，不能直接当成"卡点就在这附近"——本轮就因为这个误差先定位错了一次方向。
