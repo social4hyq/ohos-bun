@@ -18,6 +18,7 @@ BUN_1.2 {
 	getpwuid_r;
 	tmpfile;
 	linkat;
+	link;
 	symlinkat;
 	splice;
 
