@@ -3802,3 +3802,19 @@ PR #356 合并后，容器（`brew reinstall --force-bottle`，真实发布的 b
 2. 既然子进程回收本身已经没问题，可以把复现范围进一步缩小：写一个不涉及 `Bun.serve()` 的最小脚本，纯粹起够数量的并发工作线程/触发几次跨线程内存回收，看能不能脱离 HTTP/FIFO 场景单独复现这个 futex 活锁——如果能复现，说明这是一个更通用的 mimalloc/线程池并发问题，不是这个测试文件专属。
 3. 这类问题很可能需要 Bun 上游或更底层的内核态视角（真机没有 ptrace，`qemu-aarch64 -strace` 只在容器里验证过，且这次已经不完全信任容器路径能复现真机行为）——如果轻量手段挖不动，可能要考虑向 oven-sh/bun 上游反馈这类 futex 锁竞争问题在特定 ARM/OHOS 内核调度策略下的表现，或者找有没有 mimalloc 层面的已知 issue 可以对照。
 4. `bun-serve-file.test.ts` 目前已经因为 PR #356 合并被认为"已修复"上线，但真机实测证明并未完全解决——需要评估是否要把 `--timeout` 相关的处理方式重新拉回 quarantine（例如给这两个用例加真机已知问题的标注），而不是让它继续在台账里显示为绿色，误导后续排查优先级。
+
+## 真机根因继续深挖：定位到自研 futex 线程池，但缩小复现范围两次都排除了（2026-08-17 续十）
+
+**先做了一次零成本 A/B**：`MIMALLOC_PURGE_DELAY=-1`（关掉 mimalloc 后台清理线程，不需要重编，纯环境变量）重跑同一对最小复现——`mi-scavenger` 线程确认消失（`/proc` 里直接不存在这个线程了），CPU 从稳定 ~200%（两核）降到 ~100%（一核），**但卡死依然存在**，只是少了一个参与方。说明 mi-scavenger 放大了问题但不是根因。
+
+**用 `ohos-trace-shim` 追这次单核自旋场景**，发现即使去掉 scavenger，futex 地址上仍然是 **7 个不同 tid**（`Bun Pool 0/1/2` 等工作线程）反复 `FUTEX_WAIT`(`0x80`,val=2) / `FUTEX_WAKE`(`0x81`) 打转——说明 `/proc` 快照当时只抓到主线程是 `R` 态是采样粒度不够细，实际上工作线程池本身在持续被唤醒又睡回去。
+
+**顺藤摸瓜找到源码**：`src/threading/ThreadPool.rs` 是 Bun 自研的、futex 驱动的线程池调度器（不是标准 `std::sync::Mutex`，所以之前搜不到 `Mutex`/`Condvar` 字面量）。`wake_for_idle_events()` 会做真正的"唤醒全部线程"（`idle_event.wake(Event::NOTIFIED, u32::MAX)`），但全仓库唯一调用点在 `src/bundler/bundle_v2.rs:5014`——只有 bundler 用它，和我们的 HTTP/spawn 场景完全无关，排除。真正在起作用的是常规单播 `notify()`/`notify_slow()`（每次 `WorkPool::schedule_owned` 调度任务时触发，`Closer::close` 关 FIFO fd 走的就是这条路）。
+
+**两次缩小复现范围的尝试都排除了简化假设**（都不需要重编，纯 JS/TS 脚本直接跑）：
+1. **纯重复调度，不 fork**：把 framing 用例的 FIFO 响应模式连续跑 20 遍（每遍都会触发一次 `Closer::close` → `WorkPool::schedule_owned`），完全不涉及 `Bun.spawn`。结果：**20 遍全部干净，54ms 跑完**。排除"WorkPool 在重复调度压力下自己就会卡"这个假设。
+2. **最简 fork，不带真实负载**：framing 跑完 + `await server.stop(true)` resolve 之后，立刻 `Bun.spawn` 一个什么都不干、直接 `process.exit(0)` 的子进程（不写 32MB 文件、不开原始 socket、不发 pipelined 请求）。结果：**framing-phase-done +39ms → about-to-fork +39ms → forked +45ms → child exited +78ms，全程干净**。排除"framing 之后紧跟 fork 这个动作本身就会触发"这个假设。
+
+**当前结论**：卡死需要 pending-body 用例的**完整负载**（32MB `Bun.write`、原始 socket 写 64KB body、pipelined GET、自请求 `/alive`）配合 framing 遗留的某个时序窗口才会触发，不是"fork"或"WorkPool 调度"单独就能复现的简单模式。大概率是一个**窄时序竞态**——`await server.stop(true)` resolve 时刻和 `Closer::close` 异步任务真正被某个 `Bun Pool` 线程执行完成的时刻之间存在几十毫秒的窗口（之前 `/proc` fd 检查已经证实过这个窗口真实存在），孤立的最简 fork 测试因为跑得太快（<10ms 就 fork 完）大概率根本没撞上这个窗口，而 pending-body 用例因为自身有真实的 I/O 耗时，更容易落在窗口内。
+
+**下一步（未执行）**：不再猜"哪个动作触发"，改成缩小 pending-body 那个 fixture 本身——保留 framing 在前，把子进程的负载从"trivial exit"逐步加量（先加一个 `Bun.write` 32MB 但不碰 socket，再加原始 socket 但不 pipeline，等等），找到最小的、依然能触发卡死的负载组合，用二分而不是猜测去缩小时序窗口的具体来源。这条路子仍然不需要重编，纯 JS/TS 脚本可以继续做。
