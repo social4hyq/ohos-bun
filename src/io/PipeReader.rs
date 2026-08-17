@@ -297,6 +297,21 @@ impl PosixBufferedReader {
             if self.flags.contains(PosixFlags::CLOSE_HANDLE) {
                 let owner = std::ptr::from_mut(self).cast::<c_void>();
                 self.handle.close(Some(owner), None::<fn(*mut c_void)>);
+            } else if matches!(self.handle, PollOrFd::Poll(_)) {
+                // The fd belongs to whoever cleared `CLOSE_HANDLE`, but the
+                // FilePoll is ours and must not outlive us: the loop dispatches
+                // through the reader pointer it carries. A pipe at EOF stays
+                // readable (level-triggered), so a poll left registered here
+                // fires into freed memory and reaches `on_reader_done` a second
+                // time, tearing the parent down twice. `close_fd = false` leaves
+                // the fd alone. `IOReader` already does this by hand before its
+                // own `close`; doing it here covers every non-owning consumer,
+                // and its explicit call stays a no-op (handle is `Closed` by
+                // then). Note `Closer::close` is asynchronous, so a parent that
+                // closes the fd from its own `Drop` may get here after that was
+                // queued — unregistering a watch for an fd already closed is
+                // benign (epoll drops the registration with the fd).
+                self.handle.close_impl(None, None::<fn(*mut c_void)>, false);
             }
         }
     }
