@@ -11,7 +11,28 @@ BUN_1.2 {
 	   --export-dynamic-symbol/--dynamic-list in lld, so this global list
 	   is the only way to export them. On non-OHOS targets these names are
 	   undefined imports from libc and a version script has no effect on
-	   undefined symbols — this block is a no-op there. */
+	   undefined symbols — this block is a no-op there.
+
+	   2026-08-18 validation pass: the shim interposes 16 symbols total
+	   (`nm -D --defined-only libohos_compat.so`); this list had drifted to
+	   9, silently leaving dlopen'd native addons (@ohos-ports/* —
+	   opentui-core, bun-pty, lightningcss, tailwindcss-oxide) unprotected
+	   for the missing ones. `close`/`epoll_ctl`/`epoll_wait`/`epoll_pwait`
+	   backfilled together deliberately: they're one interceptor cluster
+	   sharing g_ep_pipes_lock's registry (ohos_compat_shim.c epoll_pipe
+	   cluster) — exporting the epoll trio without `close` would let a
+	   dlopen'd addon's close() bypass the shim's cleanup hook and leave a
+	   stale registry entry that later synthesizes EPOLLIN carrying a
+	   different consumer's udata on a recycled fd number.
+
+	   `poll`/`ppoll` deliberately NOT exported here: bench.c (added same
+	   pass) measured ep_shim_patch_pollfds' per-idle-fd fstat() cost as
+	   real and O(N) (128 idle fds: +115.7us/call for plain fds, +312.3us
+	   for pipe fds — see test/bench.c and the shim repo's validation
+	   report). Exporting them would make every dlopen'd addon's poll loop
+	   pay that tax unconditionally. Revisit once the shim caches
+	   per-fd fifo-ness (invalidated in its close() hook) instead of an
+	   uncached fstat() per idle fd per call. */
 	syscall;
 	close_range;
 	getcwd;
@@ -21,6 +42,11 @@ BUN_1.2 {
 	link;
 	symlinkat;
 	splice;
+	getaddrinfo;
+	close;
+	epoll_ctl;
+	epoll_wait;
+	epoll_pwait;
 
 
   uv_accept;

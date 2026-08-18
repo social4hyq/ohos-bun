@@ -177,8 +177,12 @@ function needsOhosCompatShim(cfg: Config): boolean {
  * semantics. NOTE: the version script's `local: *` overrides
  * --export-dynamic-symbol/--dynamic-list in lld (verified empirically on
  * LLD 21), so linker.lds is the only working export mechanism here.
- * linkat/symlinkat/splice interposers are default-on and can be disabled
- * per-symbol via OHOS_COMPAT_SHIM_DISABLE, same as the preload .so.
+ * All 16 interposed symbols are default-on and can be disabled per-symbol
+ * via OHOS_COMPAT_SHIM_DISABLE, same as the preload .so — but as of
+ * 2026-08-18 only 14 are re-exported here (`poll`/`ppoll` intentionally
+ * withheld pending a shim-side fix for their measured O(N) idle-fd cost;
+ * see the comment block in linker.lds), so dlopen'd addons currently see
+ * shim protection for everything except those two.
  */
 
 /**
