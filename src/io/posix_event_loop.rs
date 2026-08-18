@@ -1495,6 +1495,23 @@ unsafe extern "C" fn Bun__internal_dispatch_ready_poll(
 
     // SAFETY: tag matched FilePoll; pointer was set via Pollable::init in register_with_fd.
     let file_poll: &mut FilePoll = unsafe { &mut *tag.as_file_poll() };
+
+    // TEMPORARY DIAGNOSTIC (not for upstreaming): the plain us_poll_t probe
+    // in epoll_kqueue.c reported near-zero volume (calls~=370k/2s but fd
+    // histogram summed to <10) because almost every ready entry in
+    // claude-code's real epoll set is a tagged FilePoll, not a plain
+    // us_poll_t -- this is that missing majority. Reuses the exact same
+    // fd-histogram aggregator in bun_runtime::ohos_spin_probe (cross-crate
+    // FFI via the #[no_mangle] C-ABI symbol; bun_io cannot depend on
+    // bun_runtime directly).
+    {
+        unsafe extern "C" {
+            fn ohos_spin_probe_record_ready_polls(n: i32, fds: *const i32, events: *const i32);
+        }
+        let fd_raw: i32 = file_poll.fd.native();
+        let ev_raw: i32 = 0;
+        unsafe { ohos_spin_probe_record_ready_polls(1, &fd_raw, &ev_raw) };
+    }
     if file_poll.flags.contains(Flags::IgnoreUpdates) {
         return;
     }
