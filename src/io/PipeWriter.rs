@@ -178,19 +178,41 @@ pub trait PosixPipeWriter {
             // we're in the pathological "same fd, empty buffer, forever"
             // pattern -- so insert a real sleep (yields the core) once a
             // streak of consecutive empty wakes for the *same* fd is
-            // detected. Threshold is picked to fire only in the storm case:
-            // on a correct kernel this branch is rare (drain-then-idle is a
-            // one-time event per writer), so the counter should almost
-            // never cross the threshold there.
+            // detected.
+            //
+            // v12.1: gate the streak on a time window, not just fd identity.
+            // A long-running process can legitimately hit this branch many
+            // times over its life for the *same* fd (write, fully drain,
+            // idle for seconds, repeat) -- fd identity alone would
+            // eventually cross THRESHOLD purely from that healthy pattern
+            // and start adding pointless sleeps on every future drain, on
+            // any platform. The storm's actual signature is hundreds of
+            // thousands of calls/sec (microsecond spacing); a real drain
+            // cycle is ms-to-seconds apart even when it recurs. Only count
+            // consecutive-same-fd occurrences that land within
+            // STORM_WINDOW_MS of the previous one.
             {
                 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+                use std::sync::Mutex;
+                use std::time::Instant;
                 static LAST_FD: AtomicI32 = AtomicI32::new(i32::MIN);
                 static STREAK: AtomicU32 = AtomicU32::new(0);
+                static LAST_SEEN: Mutex<Option<Instant>> = Mutex::new(None);
                 const THRESHOLD: u32 = 20;
                 const SLEEP_MS: u64 = 2;
+                const STORM_WINDOW_MS: u128 = 10;
 
+                let now = Instant::now();
                 let prev_fd = LAST_FD.swap(__probe_fd, Ordering::Relaxed);
-                let streak = if prev_fd == __probe_fd {
+                let within_window = {
+                    let mut guard = LAST_SEEN.lock().unwrap();
+                    let within = guard
+                        .map(|t| now.duration_since(t).as_millis() <= STORM_WINDOW_MS)
+                        .unwrap_or(false);
+                    *guard = Some(now);
+                    within
+                };
+                let streak = if prev_fd == __probe_fd && within_window {
                     STREAK.fetch_add(1, Ordering::Relaxed) + 1
                 } else {
                     STREAK.store(1, Ordering::Relaxed);
