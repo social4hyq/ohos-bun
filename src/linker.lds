@@ -13,26 +13,31 @@ BUN_1.2 {
 	   undefined imports from libc and a version script has no effect on
 	   undefined symbols — this block is a no-op there.
 
-	   2026-08-18 validation pass: the shim interposes 16 symbols total
+	   2026-08-18 validation pass: the shim now interposes 18 symbols total
 	   (`nm -D --defined-only libohos_compat.so`); this list had drifted to
 	   9, silently leaving dlopen'd native addons (@ohos-ports/* —
 	   opentui-core, bun-pty, lightningcss, tailwindcss-oxide) unprotected
-	   for the missing ones. `close`/`epoll_ctl`/`epoll_wait`/`epoll_pwait`
-	   backfilled together deliberately: they're one interceptor cluster
+	   for the missing ones. All 18 are exported here now:
+	   `close`/`epoll_ctl`/`epoll_wait`/`epoll_pwait` are one cluster
 	   sharing g_ep_pipes_lock's registry (ohos_compat_shim.c epoll_pipe
-	   cluster) — exporting the epoll trio without `close` would let a
-	   dlopen'd addon's close() bypass the shim's cleanup hook and leave a
-	   stale registry entry that later synthesizes EPOLLIN carrying a
-	   different consumer's udata on a recycled fd number.
+	   cluster) and must move together — exporting the epoll trio without
+	   `close` would let a dlopen'd addon's close() bypass the shim's
+	   cleanup hook and leave a stale registry entry that later
+	   synthesizes EPOLLIN carrying a different consumer's udata on a
+	   recycled fd number. `dup2`/`dup3` exist purely to close that same
+	   staleness risk for fd-renumbering, not to fix a broken syscall.
 
-	   `poll`/`ppoll` deliberately NOT exported here: bench.c (added same
-	   pass) measured ep_shim_patch_pollfds' per-idle-fd fstat() cost as
-	   real and O(N) (128 idle fds: +115.7us/call for plain fds, +312.3us
-	   for pipe fds — see test/bench.c and the shim repo's validation
-	   report). Exporting them would make every dlopen'd addon's poll loop
-	   pay that tax unconditionally. Revisit once the shim caches
-	   per-fd fifo-ness (invalidated in its close() hook) instead of an
-	   uncached fstat() per idle fd per call. */
+	   `poll`/`ppoll` were withheld from the first pass in this same
+	   commit series: their per-idle-fd fstat() cost (ep_shim_patch_pollfds)
+	   measured real and O(N) (128 idle fds: +115.7us/call for plain fds).
+	   A same-day follow-up added a direct-mapped fd->is-fifo cache
+	   (invalidated via close()/dup2()/dup3() and their raw-syscall
+	   equivalents, all now covered above) that cut the idle-fd case to
+	   +3.7% (was +710%) — see test/bench.c's poll_patch_idle_* numbers
+	   and the shim repo's validation report. Registered-pipe fds still
+	   pay a real, uncacheable ioctl(FIONREAD) per call (pending-byte
+	   count isn't a static fact about the fd), but that's the epoll_pipe
+	   repair doing its actual job, not overhead a cache could remove. */
 	syscall;
 	close_range;
 	getcwd;
@@ -43,6 +48,10 @@ BUN_1.2 {
 	symlinkat;
 	splice;
 	getaddrinfo;
+	poll;
+	ppoll;
+	dup2;
+	dup3;
 	close;
 	epoll_ctl;
 	epoll_wait;
