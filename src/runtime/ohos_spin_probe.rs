@@ -266,6 +266,90 @@ pub fn record_timeout(have_timeout: bool, sec: i64, nsec: i64) {
     write_line(&line);
 }
 
+// on_poll branch histogram (see record_onpoll below) -- which fd hits the
+// PosixPipeWriter trait-default on_poll, and whether it takes the
+// force-unregister-on-empty-buffer branch (the ca2bb787e9 HongMeng fix) or
+// falls through to the normal write-attempt path.
+static OP_CALLS: AtomicU64 = AtomicU64::new(0);
+static OP_EMPTY_UNREGISTERED: AtomicU64 = AtomicU64::new(0); // buf_len==0 && !hup -> force unregister taken
+static OP_EMPTY_BUT_HUP: AtomicU64 = AtomicU64::new(0); // buf_len==0 && hup -> falls through instead
+static OP_NONEMPTY: AtomicU64 = AtomicU64::new(0); // buf_len>0 -> falls through (real data)
+static OP_EMPTY_NOT_POLL_HANDLE: AtomicU64 = AtomicU64::new(0); // empty+no hup but handle() wasn't PollOrFd::Poll -- unregister() SKIPPED entirely
+static OP_UNREGISTER_ERR: AtomicU64 = AtomicU64::new(0); // handle() was Poll but poll.unregister() itself returned Err
+static OP_LAST_FD: AtomicU64 = AtomicU64::new(u64::MAX);
+static OP_LAST_FD_SAME_COUNT: AtomicU64 = AtomicU64::new(0);
+static OP_DISTINCT_FD_SWITCHES: AtomicU64 = AtomicU64::new(0);
+static LAST_OP_REPORT_MS: AtomicU64 = AtomicU64::new(0);
+
+/// `handle_outcome`: 0 = fell through (nonempty or hup); 1 = empty+no-hup,
+/// handle() was PollOrFd::Poll, unregister() returned Ok; 2 = same but
+/// unregister() returned Err; 3 = empty+no-hup but handle() was NOT
+/// PollOrFd::Poll (unregister() never even attempted).
+///
+/// `extern "C"` + `#[unsafe(no_mangle)]`: called cross-crate from `bun_io`'s
+/// `PipeWriter.rs`, which cannot depend on this crate (`bun_runtime`).
+#[unsafe(no_mangle)]
+pub extern "C" fn ohos_spin_probe_record_onpoll(fd: i32, buf_len: usize, received_hup: bool, handle_outcome: i32) {
+    if !enabled() {
+        return;
+    }
+    OP_CALLS.fetch_add(1, Ordering::Relaxed);
+    if buf_len == 0 {
+        if received_hup {
+            OP_EMPTY_BUT_HUP.fetch_add(1, Ordering::Relaxed);
+        } else {
+            OP_EMPTY_UNREGISTERED.fetch_add(1, Ordering::Relaxed);
+            match handle_outcome {
+                2 => {
+                    OP_UNREGISTER_ERR.fetch_add(1, Ordering::Relaxed);
+                }
+                3 => {
+                    OP_EMPTY_NOT_POLL_HANDLE.fetch_add(1, Ordering::Relaxed);
+                }
+                _ => {}
+            }
+        }
+    } else {
+        OP_NONEMPTY.fetch_add(1, Ordering::Relaxed);
+    }
+    let fd_u = fd.max(-1) as i64 as u64;
+    let prev = OP_LAST_FD.swap(fd_u, Ordering::Relaxed);
+    if prev == fd_u {
+        OP_LAST_FD_SAME_COUNT.fetch_add(1, Ordering::Relaxed);
+    } else if prev != u64::MAX {
+        OP_DISTINCT_FD_SWITCHES.fetch_add(1, Ordering::Relaxed);
+    }
+
+    let now = now_ms();
+    let last = LAST_OP_REPORT_MS.load(Ordering::Relaxed);
+    if last == 0 {
+        LAST_OP_REPORT_MS.store(now, Ordering::Relaxed);
+        return;
+    }
+    if now.saturating_sub(last) < 2000 {
+        return;
+    }
+    if LAST_OP_REPORT_MS
+        .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    let calls = OP_CALLS.swap(0, Ordering::Relaxed);
+    let unreg = OP_EMPTY_UNREGISTERED.swap(0, Ordering::Relaxed);
+    let empty_hup = OP_EMPTY_BUT_HUP.swap(0, Ordering::Relaxed);
+    let nonempty = OP_NONEMPTY.swap(0, Ordering::Relaxed);
+    let not_poll = OP_EMPTY_NOT_POLL_HANDLE.swap(0, Ordering::Relaxed);
+    let unreg_err = OP_UNREGISTER_ERR.swap(0, Ordering::Relaxed);
+    let same = OP_LAST_FD_SAME_COUNT.swap(0, Ordering::Relaxed);
+    let switches = OP_DISTINCT_FD_SWITCHES.swap(0, Ordering::Relaxed);
+    let line = format!(
+        "[spin-onpoll] calls={} empty_unregistered={} empty_but_hup={} nonempty={} empty_not_poll_handle={} unregister_err={} last_fd={} same_fd_streak={} fd_switches={}\n",
+        calls, unreg, empty_hup, nonempty, not_poll, unreg_err, fd, same, switches
+    );
+    write_line(&line);
+}
+
 fn write_line(line: &str) {
     use std::os::unix::io::FromRawFd;
     unsafe {

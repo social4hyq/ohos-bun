@@ -130,6 +130,12 @@ pub trait PosixPipeWriter {
                 self_addr,
                 self.handle().tag_name()
             );
+            // TEMPORARY DIAGNOSTIC (not for upstreaming): confirm this
+            // force-unregister branch actually disarms the fd for every
+            // writer type (buffered/streaming/plain), not just the
+            // child-stdin case ca2bb787e9 was verified against.
+            let __probe_fd: i32 = self.get_fd().native();
+            let __probe_outcome: i32;
             if let PollOrFd::Poll(poll) = self.handle() {
                 log!(
                     "PosixPipeWriter(0x{:x}) got 0, registered state = {}",
@@ -144,9 +150,37 @@ pub trait PosixPipeWriter {
                 // `force` because on such a kernel the fd is still armed —
                 // the needs_rearm fast path skips the syscall entirely.
                 // The next buffered write re-registers via register_poll().
-                _ = poll.unregister(crate::Loop::get(), true);
+                let __r = poll.unregister(crate::Loop::get(), true);
+                __probe_outcome = if __r.is_ok() { 1 } else { 2 };
+            } else {
+                __probe_outcome = 3;
+            }
+            {
+                unsafe extern "C" {
+                    fn ohos_spin_probe_record_onpoll(
+                        fd: i32,
+                        buf_len: usize,
+                        received_hup: bool,
+                        handle_outcome: i32,
+                    );
+                }
+                unsafe {
+                    ohos_spin_probe_record_onpoll(__probe_fd, buffer_len, received_hup, __probe_outcome)
+                };
             }
             return;
+        }
+        {
+            let __probe_fd: i32 = self.get_fd().native();
+            unsafe extern "C" {
+                fn ohos_spin_probe_record_onpoll(
+                    fd: i32,
+                    buf_len: usize,
+                    received_hup: bool,
+                    handle_outcome: i32,
+                );
+            }
+            unsafe { ohos_spin_probe_record_onpoll(__probe_fd, buffer_len, received_hup, 0) };
         }
 
         let max_write = if size_hint > 0 && self.get_file_type().is_blocking() {
