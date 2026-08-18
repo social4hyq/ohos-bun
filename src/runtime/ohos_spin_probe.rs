@@ -355,7 +355,10 @@ pub extern "C" fn ohos_spin_probe_record_onpoll(fd: i32, buf_len: usize, receive
 // `branch`: 1 = top no-op (no Poll* flags set at all, syscall never
 // attempted); 2 = flag-resolution fallthrough (should be unreachable); 3 =
 // NeedsRearm-skip (should never fire since on_poll always passes force=true);
-// 4 = real epoll_ctl(CTL_DEL) issued -- `extra` carries its raw return value.
+// 4 = real epoll_ctl(CTL_DEL) issued from the *existing* flags-gated path --
+// `extra` carries its raw return value; 5 = the EXPLORATORY FIX's
+// unconditional pre-attempt (issued whenever force_unregister=true,
+// independent of self.flags) -- same `extra` encoding.
 static UB_CALLS: AtomicU64 = AtomicU64::new(0);
 static UB_NOOP_NO_FLAGS: AtomicU64 = AtomicU64::new(0);
 static UB_FLAG_FALLTHROUGH: AtomicU64 = AtomicU64::new(0);
@@ -363,6 +366,9 @@ static UB_NEEDSREARM_SKIP: AtomicU64 = AtomicU64::new(0);
 static UB_SYSCALL_OK: AtomicU64 = AtomicU64::new(0);
 static UB_SYSCALL_ALREADY_GONE: AtomicU64 = AtomicU64::new(0);
 static UB_SYSCALL_ERR: AtomicU64 = AtomicU64::new(0);
+static UB_FORCE_OK: AtomicU64 = AtomicU64::new(0);
+static UB_FORCE_ALREADY_GONE: AtomicU64 = AtomicU64::new(0);
+static UB_FORCE_ERR: AtomicU64 = AtomicU64::new(0);
 static LAST_UB_REPORT_MS: AtomicU64 = AtomicU64::new(0);
 
 #[unsafe(no_mangle)]
@@ -390,6 +396,15 @@ pub extern "C" fn ohos_spin_probe_record_unregister_branch(branch: i32, extra: i
                 UB_SYSCALL_ERR.fetch_add(1, Ordering::Relaxed);
             }
         }
+        5 => {
+            if extra == 0 {
+                UB_FORCE_OK.fetch_add(1, Ordering::Relaxed);
+            } else if extra == -2 {
+                UB_FORCE_ALREADY_GONE.fetch_add(1, Ordering::Relaxed);
+            } else {
+                UB_FORCE_ERR.fetch_add(1, Ordering::Relaxed);
+            }
+        }
         _ => {}
     }
 
@@ -415,9 +430,12 @@ pub extern "C" fn ohos_spin_probe_record_unregister_branch(branch: i32, extra: i
     let sys_ok = UB_SYSCALL_OK.swap(0, Ordering::Relaxed);
     let sys_gone = UB_SYSCALL_ALREADY_GONE.swap(0, Ordering::Relaxed);
     let sys_err = UB_SYSCALL_ERR.swap(0, Ordering::Relaxed);
+    let force_ok = UB_FORCE_OK.swap(0, Ordering::Relaxed);
+    let force_gone = UB_FORCE_ALREADY_GONE.swap(0, Ordering::Relaxed);
+    let force_err = UB_FORCE_ERR.swap(0, Ordering::Relaxed);
     let line = format!(
-        "[spin-unreg] calls={} noop_no_flags={} flag_fallthrough={} needsrearm_skip={} syscall_ok={} syscall_already_gone={} syscall_err={}\n",
-        calls, noop, fallthrough, rearm_skip, sys_ok, sys_gone, sys_err
+        "[spin-unreg] calls={} noop_no_flags={} flag_fallthrough={} needsrearm_skip={} syscall_ok={} syscall_already_gone={} syscall_err={} force_ok={} force_already_gone={} force_err={}\n",
+        calls, noop, fallthrough, rearm_skip, sys_ok, sys_gone, sys_err, force_ok, force_gone, force_err
     );
     write_line(&line);
 }

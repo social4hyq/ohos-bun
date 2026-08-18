@@ -924,6 +924,37 @@ impl FilePoll {
     ) -> sys::Result<()> {
         debug_assert!(fd.native() >= 0 && fd != INVALID_FD);
 
+        // EXPLORATORY FIX (unverified, diagnostic build only): v9/v10 probes
+        // proved that on this HongMeng kernel, the epoll_ctl(CTL_DEL) below
+        // can succeed once yet the kernel keeps delivering ready events for
+        // `fd` forever afterward -- while this FilePoll's own Poll* flags
+        // are correctly cleared, meaning the no-op guard right below (which
+        // trusts that bookkeeping, not the kernel) silently skips every
+        // subsequent attempt. CTL_DEL only needs the fd number on Linux (no
+        // direction), so when the caller is explicitly forcing (on_poll's
+        // empty-buffer branch), issue one more raw, best-effort attempt
+        // unconditionally, independent of what self.flags currently
+        // believes. Harmless no-op (ENOENT) if the kernel really did clear
+        // it already.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        if force_unregister {
+            use bun_sys::linux::{self, EPOLL};
+            // SAFETY: FFI syscall; null event is valid for CTL_DEL on Linux ≥2.6.9.
+            let ctl =
+                unsafe { linux::epoll_ctl(loop_.fd, EPOLL::CTL_DEL, fd.native(), ptr::null_mut()) };
+            {
+                unsafe extern "C" {
+                    fn ohos_spin_probe_record_unregister_branch(branch: i32, extra: i32);
+                }
+                let extra = match sys::get_errno(ctl) {
+                    sys::E::SUCCESS => 0,
+                    e if deregistration_already_gone(e) => -2,
+                    e => e as i32,
+                };
+                unsafe { ohos_spin_probe_record_unregister_branch(5, extra) };
+            }
+        }
+
         if !(self.flags.contains(Flags::PollReadable)
             || self.flags.contains(Flags::PollWritable)
             || self.flags.contains(Flags::PollProcess)
