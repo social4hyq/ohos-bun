@@ -181,6 +181,17 @@ static int bun_epoll_pwait2(int epfd, struct epoll_event *events, int maxevents,
         timeoutMs = ms > (uint64_t) INT_MAX ? INT_MAX : (int) ms;
     }
 
+    /* TEMPORARY DIAGNOSTIC (not for upstreaming): confirm whether the legacy
+     * epoll_pwait fallback is returning immediately because it's reporting
+     * REAL ready events (a spuriously-always-ready fd) vs returning 0 events
+     * despite a nonzero requested timeout (a kernel-level timeout bug). An
+     * isolated on-device test with zero registered fds proved epoll_pwait
+     * honors its timeout correctly, so the suspicion is a specific fd in
+     * claude-code's real epoll set that never gets properly drained. */
+    extern void ohos_spin_probe_record_epoll(int timeout_ms, int ret, long long elapsed_ns);
+    struct timespec __probe_t0, __probe_t1;
+    clock_gettime(CLOCK_MONOTONIC, &__probe_t0);
+
     for (;;) {
         ret = epoll_pwait(epfd, events, maxevents, timeoutMs, &mask);
         if (!IS_EINTR(ret)) break;
@@ -191,6 +202,12 @@ static int bun_epoll_pwait2(int epfd, struct epoll_event *events, int maxevents,
         uint64_t left_ms = (left_ns + 999999ULL) / 1000000ULL;
         timeoutMs = left_ms > (uint64_t) INT_MAX ? INT_MAX : (int) left_ms;
     }
+
+    clock_gettime(CLOCK_MONOTONIC, &__probe_t1);
+    ohos_spin_probe_record_epoll(
+        timeoutMs, ret,
+        (long long)(__probe_t1.tv_sec - __probe_t0.tv_sec) * 1000000000LL +
+            (__probe_t1.tv_nsec - __probe_t0.tv_nsec));
 
     return ret;
 }

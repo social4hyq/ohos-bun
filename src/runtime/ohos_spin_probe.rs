@@ -25,6 +25,69 @@ static LAST_REPORT_MS: AtomicU64 = AtomicU64::new(0);
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static ENABLED_INIT: AtomicBool = AtomicBool::new(false);
 
+// Legacy epoll_pwait return-value histogram (see record_epoll below).
+static EP_CALLS: AtomicU64 = AtomicU64::new(0);
+static EP_ZERO_EVENTS: AtomicU64 = AtomicU64::new(0); // ret == 0 (genuine timeout, no events)
+static EP_HAS_EVENTS: AtomicU64 = AtomicU64::new(0); // ret > 0 (real ready fds reported)
+static EP_ERROR: AtomicU64 = AtomicU64::new(0); // ret < 0
+static EP_ELAPSED_SUB_MS: AtomicU64 = AtomicU64::new(0); // returned in <1ms regardless of requested timeout
+static EP_ELAPSED_SUM_NS: AtomicU64 = AtomicU64::new(0);
+static EP_REQ_TIMEOUT_SUM_MS: AtomicU64 = AtomicU64::new(0);
+static LAST_EP_REPORT_MS: AtomicU64 = AtomicU64::new(0);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ohos_spin_probe_record_epoll(timeout_ms: i32, ret: i32, elapsed_ns: i64) {
+    if !enabled() {
+        return;
+    }
+    EP_CALLS.fetch_add(1, Ordering::Relaxed);
+    if ret == 0 {
+        EP_ZERO_EVENTS.fetch_add(1, Ordering::Relaxed);
+    } else if ret > 0 {
+        EP_HAS_EVENTS.fetch_add(1, Ordering::Relaxed);
+    } else {
+        EP_ERROR.fetch_add(1, Ordering::Relaxed);
+    }
+    let elapsed_ns_u = elapsed_ns.max(0) as u64;
+    if elapsed_ns_u < 1_000_000 {
+        EP_ELAPSED_SUB_MS.fetch_add(1, Ordering::Relaxed);
+    }
+    EP_ELAPSED_SUM_NS.fetch_add(elapsed_ns_u, Ordering::Relaxed);
+    if timeout_ms > 0 {
+        EP_REQ_TIMEOUT_SUM_MS.fetch_add(timeout_ms as u64, Ordering::Relaxed);
+    }
+
+    let now = now_ms();
+    let last = LAST_EP_REPORT_MS.load(Ordering::Relaxed);
+    if last == 0 {
+        LAST_EP_REPORT_MS.store(now, Ordering::Relaxed);
+        return;
+    }
+    if now.saturating_sub(last) < 2000 {
+        return;
+    }
+    if LAST_EP_REPORT_MS
+        .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    let calls = EP_CALLS.swap(0, Ordering::Relaxed);
+    let zero = EP_ZERO_EVENTS.swap(0, Ordering::Relaxed);
+    let has = EP_HAS_EVENTS.swap(0, Ordering::Relaxed);
+    let err = EP_ERROR.swap(0, Ordering::Relaxed);
+    let submsc = EP_ELAPSED_SUB_MS.swap(0, Ordering::Relaxed);
+    let elapsed_sum = EP_ELAPSED_SUM_NS.swap(0, Ordering::Relaxed);
+    let req_sum_ms = EP_REQ_TIMEOUT_SUM_MS.swap(0, Ordering::Relaxed);
+    let avg_elapsed_ns = if calls > 0 { elapsed_sum as f64 / calls as f64 } else { 0.0 };
+    let avg_req_ms = if calls > 0 { req_sum_ms as f64 / calls as f64 } else { 0.0 };
+    let line = format!(
+        "[spin-epoll] calls={} zero_events={} has_events={} error={} elapsed_sub_ms={} avg_elapsed_ns={:.0} avg_requested_ms={:.1}\n",
+        calls, zero, has, err, submsc, avg_elapsed_ns, avg_req_ms
+    );
+    write_line(&line);
+}
+
 // Timeout-value histogram (see record_timeout below).
 static TO_CALLS: AtomicU64 = AtomicU64::new(0);
 static TO_NO_TIMEOUT: AtomicU64 = AtomicU64::new(0); // have_timeout == false (infinite wait armed)
