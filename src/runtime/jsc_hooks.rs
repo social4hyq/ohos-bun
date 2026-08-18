@@ -1038,9 +1038,17 @@ unsafe fn auto_tick(vm: *mut VirtualMachine) {
         // reflects next-tick immediates (queued during the drain above).
         // SAFETY: `el` is the live per-thread event loop.
         // SAFETY: `el` is the live per-thread event loop.
-        let has_pending_immediate = has_yielded_tasks
-            || !unsafe { &*el }.immediate_tasks.is_empty()
-            || unsafe { &*el }.has_pending_tasks();
+        let probe_yielded = has_yielded_tasks;
+        let probe_immediates = !unsafe { &*el }.immediate_tasks.is_empty();
+        let probe_pending = unsafe { &*el }.has_pending_tasks();
+        let has_pending_immediate = probe_yielded || probe_immediates || probe_pending;
+        crate::ohos_spin_probe::record(
+            probe_yielded,
+            probe_immediates,
+            probe_pending,
+            unsafe { &*el }.tasks.readable_length(),
+            unsafe { &*el }.concurrent_tasks.is_empty(),
+        );
         // Fold the QUIC deadline into the poll timeout.
         // SAFETY: `loop_` is the live per-thread uws loop.
         let quic_next_tick_us = unsafe {
