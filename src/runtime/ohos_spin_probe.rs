@@ -422,6 +422,112 @@ pub extern "C" fn ohos_spin_probe_record_unregister_branch(branch: i32, extra: i
     write_line(&line);
 }
 
+// Dispatch-time flag snapshot: was PollWritable still set on the FilePoll
+// *before* on_epoll_event() mutates anything, at the exact moment the ready
+// entry comes back out of epoll_pwait's buffer? Answers whether the kernel
+// is still delivering events for an fd bun's own bookkeeping already thinks
+// is unregistered (real kernel bug), or something re-armed it every tick
+// (application-level re-register loop).
+static DF_CALLS: AtomicU64 = AtomicU64::new(0);
+static DF_WRITABLE_SET: AtomicU64 = AtomicU64::new(0); // PollWritable was still set at dispatch time
+static DF_WRITABLE_CLEAR: AtomicU64 = AtomicU64::new(0); // already cleared -- kernel re-delivered anyway
+static DF_ONESHOT_SET: AtomicU64 = AtomicU64::new(0);
+static DF_NEEDSREARM_SET: AtomicU64 = AtomicU64::new(0);
+static LAST_DF_REPORT_MS: AtomicU64 = AtomicU64::new(0);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ohos_spin_probe_record_dispatch_flags(
+    fd: i32,
+    poll_writable: bool,
+    one_shot: bool,
+    needs_rearm: bool,
+) {
+    if !enabled() {
+        return;
+    }
+    DF_CALLS.fetch_add(1, Ordering::Relaxed);
+    if poll_writable {
+        DF_WRITABLE_SET.fetch_add(1, Ordering::Relaxed);
+    } else {
+        DF_WRITABLE_CLEAR.fetch_add(1, Ordering::Relaxed);
+    }
+    if one_shot {
+        DF_ONESHOT_SET.fetch_add(1, Ordering::Relaxed);
+    }
+    if needs_rearm {
+        DF_NEEDSREARM_SET.fetch_add(1, Ordering::Relaxed);
+    }
+
+    let now = now_ms();
+    let last = LAST_DF_REPORT_MS.load(Ordering::Relaxed);
+    if last == 0 {
+        LAST_DF_REPORT_MS.store(now, Ordering::Relaxed);
+        return;
+    }
+    if now.saturating_sub(last) < 2000 {
+        return;
+    }
+    if LAST_DF_REPORT_MS
+        .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    let calls = DF_CALLS.swap(0, Ordering::Relaxed);
+    let wset = DF_WRITABLE_SET.swap(0, Ordering::Relaxed);
+    let wclear = DF_WRITABLE_CLEAR.swap(0, Ordering::Relaxed);
+    let oneshot = DF_ONESHOT_SET.swap(0, Ordering::Relaxed);
+    let rearm = DF_NEEDSREARM_SET.swap(0, Ordering::Relaxed);
+    let line = format!(
+        "[spin-dispatch] calls={} last_fd={} writable_set={} writable_clear={} oneshot_set={} needsrearm_set={}\n",
+        calls, fd, wset, wclear, oneshot, rearm
+    );
+    write_line(&line);
+}
+
+// register_with_fd_impl entry counter: is anything calling epoll_ctl(ADD/MOD)
+// for fd11 at a high rate (an application-level re-register loop), or is
+// register basically never called again after the first registration
+// (pointing at the kernel re-delivering a stale/deleted registration)?
+static REG_CALLS: AtomicU64 = AtomicU64::new(0);
+static REG_ADD: AtomicU64 = AtomicU64::new(0);
+static REG_MOD: AtomicU64 = AtomicU64::new(0);
+static LAST_REG_REPORT_MS: AtomicU64 = AtomicU64::new(0);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ohos_spin_probe_record_register(fd: i32, is_mod: bool) {
+    if !enabled() {
+        return;
+    }
+    REG_CALLS.fetch_add(1, Ordering::Relaxed);
+    if is_mod {
+        REG_MOD.fetch_add(1, Ordering::Relaxed);
+    } else {
+        REG_ADD.fetch_add(1, Ordering::Relaxed);
+    }
+
+    let now = now_ms();
+    let last = LAST_REG_REPORT_MS.load(Ordering::Relaxed);
+    if last == 0 {
+        LAST_REG_REPORT_MS.store(now, Ordering::Relaxed);
+        return;
+    }
+    if now.saturating_sub(last) < 2000 {
+        return;
+    }
+    if LAST_REG_REPORT_MS
+        .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    let calls = REG_CALLS.swap(0, Ordering::Relaxed);
+    let add = REG_ADD.swap(0, Ordering::Relaxed);
+    let modc = REG_MOD.swap(0, Ordering::Relaxed);
+    let line = format!("[spin-register] calls={} add={} mod={} last_fd={}\n", calls, add, modc, fd);
+    write_line(&line);
+}
+
 fn write_line(line: &str) {
     use std::os::unix::io::FromRawFd;
     unsafe {

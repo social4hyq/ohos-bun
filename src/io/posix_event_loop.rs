@@ -663,6 +663,13 @@ impl FilePoll {
                 EPOLL::CTL_ADD
             };
 
+            {
+                unsafe extern "C" {
+                    fn ohos_spin_probe_record_register(fd: i32, is_mod: bool);
+                }
+                unsafe { ohos_spin_probe_record_register(fd.native(), op == EPOLL::CTL_MOD) };
+            }
+
             // SAFETY: FFI syscall; `event` is a stack-local valid for the call.
             let ctl = unsafe { linux::epoll_ctl(watcher_fd, op, fd.native(), &raw mut event) };
             self.flags.insert(Flags::WasEverRegistered);
@@ -1545,6 +1552,30 @@ unsafe extern "C" fn Bun__internal_dispatch_ready_poll(
         let fd_raw: i32 = file_poll.fd.native();
         let ev_raw: i32 = 0;
         unsafe { ohos_spin_probe_record_ready_polls(1, &fd_raw, &ev_raw) };
+    }
+    // TEMPORARY DIAGNOSTIC (not for upstreaming): snapshot flags BEFORE
+    // on_epoll_event()/on_update() mutate anything, to tell apart "the
+    // kernel keeps delivering ready events for an fd this FilePoll's own
+    // bookkeeping already thinks is unregistered" from "something
+    // re-registers it every tick".
+    {
+        unsafe extern "C" {
+            fn ohos_spin_probe_record_dispatch_flags(
+                fd: i32,
+                poll_writable: bool,
+                one_shot: bool,
+                needs_rearm: bool,
+            );
+        }
+        let fd_raw: i32 = file_poll.fd.native();
+        unsafe {
+            ohos_spin_probe_record_dispatch_flags(
+                fd_raw,
+                file_poll.flags.contains(Flags::PollWritable),
+                file_poll.flags.contains(Flags::OneShot),
+                file_poll.flags.contains(Flags::NeedsRearm),
+            )
+        };
     }
     if file_poll.flags.contains(Flags::IgnoreUpdates) {
         return;
