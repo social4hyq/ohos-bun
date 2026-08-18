@@ -11,7 +11,9 @@
  * block was only updated for some of them — `close`, `poll`, `ppoll`,
  * `epoll_ctl`, `epoll_wait`, `epoll_pwait`, and `getaddrinfo` were compiled
  * in and functional for bun's own internal calls (statically bound) but
- * invisible to dlopen'd addons for months before anyone noticed.
+ * invisible to dlopen'd addons for months before anyone noticed. Fixed and
+ * this guard added 2026-08-18; the shim grew two more (`dup2`/`dup3`) the
+ * same day, exported from the start this time.
  *
  * This test extracts every top-level (non-static) function definition from
  * the vendored shim source — which is exactly the set of interposed libc
@@ -36,11 +38,14 @@ const LINKER_LDS_PATH = join(REPO_ROOT, "src/linker.lds");
  * Symbols intentionally NOT re-exported, with the reason. Keep this list
  * short and every entry justified — it is the only sanctioned way for this
  * test to pass without linker.lds actually exporting a symbol.
+ *
+ * (poll/ppoll were here briefly on 2026-08-18, withheld for their measured
+ * O(N) per-idle-fd fstat() cost -- a same-day follow-up added a per-fd
+ * fifo-ness cache that cut it to +3.7% at 128 idle fds, so they're exported
+ * now. Kept this list's shape/comment so the next entry follows the same
+ * pattern.)
  */
-const INTENTIONALLY_NOT_EXPORTED: Record<string, string> = {
-  poll: "measured O(N) per-idle-fd fstat() cost in ep_shim_patch_pollfds (test/bench.c, ohos-compat-shim repo, 2026-08-18 validation pass: +115.7us/call at 128 idle fds) -- exporting would make every dlopen'd addon's poll loop pay it unconditionally. Revisit once the shim caches per-fd fifo-ness instead of an uncached fstat() per idle fd per call.",
-  ppoll: "same cost as poll (shares ep_shim_patch_pollfds) -- see the poll entry above.",
-};
+const INTENTIONALLY_NOT_EXPORTED: Record<string, string> = {};
 
 /** Extract every top-level (column-0, non-static) C function name defined in `src`. */
 function extractTopLevelFunctionNames(src: string): string[] {
@@ -87,13 +92,15 @@ describe("linker.lds shim export list matches ohos_compat_shim.c interposers", (
     const ldsSrc = readFileSync(LINKER_LDS_PATH, "utf8");
 
     const interposers = extractTopLevelFunctionNames(shimSrc);
-    // Sanity check on the extractor itself: this file interposes exactly 16
+    // Sanity check on the extractor itself: this file interposes exactly 18
     // libc symbols as of the 2026-08-18 validation pass (confirmed via
-    // `nm -D --defined-only libohos_compat.so` in the canonical repo). If
-    // this drifts, the extractor's own pattern likely needs revisiting
-    // before trusting its output -- fail loudly rather than silently
-    // checking a wrong/partial list.
-    expect(interposers.length).toBeGreaterThanOrEqual(16);
+    // `nm -D --defined-only libohos_compat.so` in the canonical repo --
+    // 16 plus dup2/dup3, added same day to fix fd-reuse staleness in the
+    // epoll_pipe registry and the new fifo-ness cache). If this drifts, the
+    // extractor's own pattern likely needs revisiting before trusting its
+    // output -- fail loudly rather than silently checking a wrong/partial
+    // list.
+    expect(interposers.length).toBeGreaterThanOrEqual(18);
 
     const exported = extractLdsShimExports(ldsSrc);
 
