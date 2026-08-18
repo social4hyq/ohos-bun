@@ -588,6 +588,37 @@ void us_loop_run_bun_tick(struct us_loop_t *loop, const struct timespec* timeout
     if (handed_off)
         mi_on_thread_idle_end();
 
+    /* TEMPORARY DIAGNOSTIC (not for upstreaming): identify which specific
+     * fd(s) keep coming back ready on this thread's hot idle loop. A prior
+     * probe found the loop's requested poll timeout is genuine (~70ms avg)
+     * and legacy epoll_pwait's ret is >0 (real events) on ~every call, yet
+     * only ~81 real eventfd writes/sec were observed via LD_PRELOAD trace --
+     * far too few to explain the ~200-370k calls/sec measured. Log every
+     * ready poll's fd + events bitmask so the histogram can show whether
+     * it's one fd being redelivered (an EPOLLET edge-retrigger bug) or
+     * many distinct fds each independently far busier than expected.
+     */
+#ifdef LIBUS_USE_EPOLL
+    {
+        extern void ohos_spin_probe_record_ready_polls(int n, const int *fds, const int *events);
+        int __n = loop->num_ready_polls;
+        if (__n > 0) {
+            int __fds[LIBUS_MAX_READY_POLLS];
+            int __evs[LIBUS_MAX_READY_POLLS];
+            if (__n > LIBUS_MAX_READY_POLLS) __n = LIBUS_MAX_READY_POLLS;
+            for (int __i = 0; __i < __n; __i++) {
+                struct us_poll_t *__p = (struct us_poll_t *) loop->ready_polls[__i].data.ptr;
+                struct us_poll_t *__pc = (struct us_poll_t *) CLEAR_POINTER_TAG(__p);
+                __fds[__i] = (__pc == __p && __p) ? us_poll_fd(__p) : -1;
+                __evs[__i] = loop->ready_polls[__i].events;
+            }
+            ohos_spin_probe_record_ready_polls(__n, __fds, __evs);
+        } else {
+            ohos_spin_probe_record_ready_polls(0, NULL, NULL);
+        }
+    }
+#endif
+
     us_internal_dispatch_ready_polls(loop);
     us_internal_drain_ready_polls(loop);
     us_internal_sweep_if_due(loop);

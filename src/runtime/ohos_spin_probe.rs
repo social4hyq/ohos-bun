@@ -25,6 +25,118 @@ static LAST_REPORT_MS: AtomicU64 = AtomicU64::new(0);
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static ENABLED_INIT: AtomicBool = AtomicBool::new(false);
 
+// Ready-poll fd histogram (see record_ready_polls below). Fixed-size table,
+// no heap allocation on this hot path -- linear scan is fine at this size.
+const FD_TABLE_SIZE: usize = 64;
+static FD_SLOTS: [AtomicU64; FD_TABLE_SIZE] = {
+    const ZERO: AtomicU64 = AtomicU64::new(0);
+    [ZERO; FD_TABLE_SIZE]
+};
+static FD_COUNTS: [AtomicU64; FD_TABLE_SIZE] = {
+    const ZERO: AtomicU64 = AtomicU64::new(0);
+    [ZERO; FD_TABLE_SIZE]
+};
+static FD_OTHER_COUNT: AtomicU64 = AtomicU64::new(0); // overflow beyond the 64-slot table
+static RP_CALLS: AtomicU64 = AtomicU64::new(0);
+static RP_ZERO_N: AtomicU64 = AtomicU64::new(0); // calls with n==0 (genuinely nothing ready)
+static RP_N_SUM: AtomicU64 = AtomicU64::new(0);
+static RP_N_MAX: AtomicU64 = AtomicU64::new(0);
+static LAST_RP_REPORT_MS: AtomicU64 = AtomicU64::new(0);
+
+/// # Safety
+/// `fds`/`events` must be valid for `n` reads (or null if `n == 0`), called
+/// from the single event-loop thread owning `loop` -- no concurrent access.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ohos_spin_probe_record_ready_polls(n: i32, fds: *const i32, events: *const i32) {
+    if !enabled() {
+        return;
+    }
+    RP_CALLS.fetch_add(1, Ordering::Relaxed);
+    if n <= 0 {
+        RP_ZERO_N.fetch_add(1, Ordering::Relaxed);
+    } else {
+        RP_N_SUM.fetch_add(n as u64, Ordering::Relaxed);
+        RP_N_MAX.fetch_max(n as u64, Ordering::Relaxed);
+        if !fds.is_null() {
+            for i in 0..n as isize {
+                // SAFETY: caller contract.
+                let fd = unsafe { *fds.offset(i) };
+                let _ev = if events.is_null() { 0 } else { unsafe { *events.offset(i) } };
+                if fd < 0 {
+                    continue;
+                }
+                let fd_u = fd as u64;
+                let mut placed = false;
+                for slot in 0..FD_TABLE_SIZE {
+                    let cur = FD_SLOTS[slot].load(Ordering::Relaxed);
+                    if cur == fd_u {
+                        FD_COUNTS[slot].fetch_add(1, Ordering::Relaxed);
+                        placed = true;
+                        break;
+                    }
+                    if cur == 0 {
+                        // Claim this slot (racy across threads, but this loop
+                        // is single-threaded per-loop in practice; worst case
+                        // a slot gets double-claimed and one fd undercounts).
+                        if FD_SLOTS[slot]
+                            .compare_exchange(0, fd_u, Ordering::Relaxed, Ordering::Relaxed)
+                            .is_ok()
+                        {
+                            FD_COUNTS[slot].fetch_add(1, Ordering::Relaxed);
+                            placed = true;
+                            break;
+                        }
+                    }
+                }
+                if !placed {
+                    FD_OTHER_COUNT.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+    }
+
+    let now = now_ms();
+    let last = LAST_RP_REPORT_MS.load(Ordering::Relaxed);
+    if last == 0 {
+        LAST_RP_REPORT_MS.store(now, Ordering::Relaxed);
+        return;
+    }
+    if now.saturating_sub(last) < 2000 {
+        return;
+    }
+    if LAST_RP_REPORT_MS
+        .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    let calls = RP_CALLS.swap(0, Ordering::Relaxed);
+    let zero_n = RP_ZERO_N.swap(0, Ordering::Relaxed);
+    let n_sum = RP_N_SUM.swap(0, Ordering::Relaxed);
+    let n_max = RP_N_MAX.swap(0, Ordering::Relaxed);
+    let mut pairs: [(u64, u64); FD_TABLE_SIZE] = [(0, 0); FD_TABLE_SIZE];
+    for slot in 0..FD_TABLE_SIZE {
+        let fdv = FD_SLOTS[slot].swap(0, Ordering::Relaxed);
+        let cnt = FD_COUNTS[slot].swap(0, Ordering::Relaxed);
+        pairs[slot] = (fdv, cnt);
+    }
+    pairs.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+    let other = FD_OTHER_COUNT.swap(0, Ordering::Relaxed);
+    let avg_n = if calls > 0 { n_sum as f64 / calls as f64 } else { 0.0 };
+    let mut top = String::new();
+    for &(fdv, cnt) in pairs.iter().take(8) {
+        if cnt == 0 {
+            break;
+        }
+        top.push_str(&format!("fd{}={} ", fdv, cnt));
+    }
+    let line = format!(
+        "[spin-fds] calls={} zero_n={} avg_n={:.2} max_n={} other_overflow={} top: {}\n",
+        calls, zero_n, avg_n, n_max, other, top
+    );
+    write_line(&line);
+}
+
 // Legacy epoll_pwait return-value histogram (see record_epoll below).
 static EP_CALLS: AtomicU64 = AtomicU64::new(0);
 static EP_ZERO_EVENTS: AtomicU64 = AtomicU64::new(0); // ret == 0 (genuine timeout, no events)
