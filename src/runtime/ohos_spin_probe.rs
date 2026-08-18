@@ -99,8 +99,29 @@ pub fn record(
     let sum = TASKS_LEN_SUM.swap(0, Ordering::Relaxed);
     let mx = TASKS_LEN_MAX.swap(0, Ordering::Relaxed);
     let avg = if t > 0 { sum as f64 / t as f64 } else { 0.0 };
-    eprintln!(
-        "[spin-probe] {:.1}s ticks={} ({:.0}/s) yielded={} immediates={} pending={} pending_only={} blocking={} concurrent_nonempty={} tasks_len avg={:.2} max={}",
+    let line = format!(
+        "[spin-probe] {:.1}s ticks={} ({:.0}/s) yielded={} immediates={} pending={} pending_only={} blocking={} concurrent_nonempty={} tasks_len avg={:.2} max={}\n",
         secs, t, t as f64 / secs, y, i, p, po, b, cn, avg, mx
     );
+    // eprintln! produced zero output in this build (suspected OHOS musl
+    // stdio quirk unrelated to this probe -- JS console.error/stdout.write
+    // work fine, only Rust's raw stderr write seems to vanish). Write
+    // straight to a file with O_APPEND via a raw fd instead, sidestepping
+    // any libstd stdio buffering/backfill path entirely.
+    use std::os::unix::io::FromRawFd;
+    unsafe {
+        let path = c"/data/storage/el2/base/tmp/ohos-spin-probe.log";
+        let fd = libc::open(
+            path.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_APPEND,
+            0o644,
+        );
+        if fd >= 0 {
+            let mut f = std::fs::File::from_raw_fd(fd);
+            use std::io::Write;
+            let _ = f.write_all(line.as_bytes());
+            let _ = f.flush();
+            std::mem::forget(f); // don't close via Drop; next call reopens (O_APPEND is stateless enough here)
+        }
+    }
 }
