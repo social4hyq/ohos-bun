@@ -546,6 +546,49 @@ pub extern "C" fn ohos_spin_probe_record_register(fd: i32, is_mod: bool) {
     write_line(&line);
 }
 
+// v12 backoff counter: how often the empty-buffer streak crossed the
+// threshold and we actually slept, plus cumulative sleep time -- lets us
+// correlate the /proc CPU%% measurement against how aggressively we backed
+// off.
+static BK_CALLS: AtomicU64 = AtomicU64::new(0);
+static BK_SLEPT_MS_SUM: AtomicU64 = AtomicU64::new(0);
+static BK_MAX_STREAK: AtomicU64 = AtomicU64::new(0);
+static LAST_BK_REPORT_MS: AtomicU64 = AtomicU64::new(0);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ohos_spin_probe_record_backoff(fd: i32, streak: u32, slept_ms: u64) {
+    if !enabled() {
+        return;
+    }
+    BK_CALLS.fetch_add(1, Ordering::Relaxed);
+    BK_SLEPT_MS_SUM.fetch_add(slept_ms, Ordering::Relaxed);
+    BK_MAX_STREAK.fetch_max(streak as u64, Ordering::Relaxed);
+
+    let now = now_ms();
+    let last = LAST_BK_REPORT_MS.load(Ordering::Relaxed);
+    if last == 0 {
+        LAST_BK_REPORT_MS.store(now, Ordering::Relaxed);
+        return;
+    }
+    if now.saturating_sub(last) < 2000 {
+        return;
+    }
+    if LAST_BK_REPORT_MS
+        .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    let calls = BK_CALLS.swap(0, Ordering::Relaxed);
+    let slept_sum = BK_SLEPT_MS_SUM.swap(0, Ordering::Relaxed);
+    let max_streak = BK_MAX_STREAK.swap(0, Ordering::Relaxed);
+    let line = format!(
+        "[spin-backoff] calls={} slept_ms_sum={} max_streak={} last_fd={}\n",
+        calls, slept_sum, max_streak, fd
+    );
+    write_line(&line);
+}
+
 fn write_line(line: &str) {
     use std::os::unix::io::FromRawFd;
     unsafe {

@@ -168,6 +168,42 @@ pub trait PosixPipeWriter {
                     ohos_spin_probe_record_onpoll(__probe_fd, buffer_len, received_hup, __probe_outcome)
                 };
             }
+            // EXPLORATORY FIX v12 (unverified, diagnostic build only): the
+            // v11 CTL_DEL retry cut iteration count ~2x but NOT measured
+            // CPU% (confirmed via /proc ground truth: ~102% unfixed vs
+            // ~98% fixed -- noise-level difference) because this loop is
+            // syscall-bound, never idle, regardless of how many iterations
+            // per second it manages. The only way to actually free the core
+            // is to stop calling epoll_pwait so often once we recognize
+            // we're in the pathological "same fd, empty buffer, forever"
+            // pattern -- so insert a real sleep (yields the core) once a
+            // streak of consecutive empty wakes for the *same* fd is
+            // detected. Threshold is picked to fire only in the storm case:
+            // on a correct kernel this branch is rare (drain-then-idle is a
+            // one-time event per writer), so the counter should almost
+            // never cross the threshold there.
+            {
+                use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+                static LAST_FD: AtomicI32 = AtomicI32::new(i32::MIN);
+                static STREAK: AtomicU32 = AtomicU32::new(0);
+                const THRESHOLD: u32 = 20;
+                const SLEEP_MS: u64 = 2;
+
+                let prev_fd = LAST_FD.swap(__probe_fd, Ordering::Relaxed);
+                let streak = if prev_fd == __probe_fd {
+                    STREAK.fetch_add(1, Ordering::Relaxed) + 1
+                } else {
+                    STREAK.store(1, Ordering::Relaxed);
+                    1
+                };
+                if streak > THRESHOLD {
+                    unsafe extern "C" {
+                        fn ohos_spin_probe_record_backoff(fd: i32, streak: u32, slept_ms: u64);
+                    }
+                    unsafe { ohos_spin_probe_record_backoff(__probe_fd, streak, SLEEP_MS) };
+                    std::thread::sleep(std::time::Duration::from_millis(SLEEP_MS));
+                }
+            }
             return;
         }
         {
