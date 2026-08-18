@@ -1091,6 +1091,7 @@ unsafe fn auto_tick(vm: *mut VirtualMachine) {
                     &mut now,
                 )
             };
+            crate::ohos_spin_probe::record_timeout(have_timeout, timespec.sec, timespec.nsec);
             let now_ns = now.map_or(bun_uws::NOW_NS_UNKNOWN, |t| t.ns());
             // SAFETY: `loop_` is the live per-thread uws loop.
             unsafe {
@@ -1226,6 +1227,7 @@ unsafe fn auto_tick_active(vm: *mut VirtualMachine) {
                     &mut now,
                 )
             };
+            crate::ohos_spin_probe::record_timeout(have_timeout, timespec.sec, timespec.nsec);
             let now_ns = now.map_or(bun_uws::NOW_NS_UNKNOWN, |t| t.ns());
             // SAFETY: `loop_` is the live per-thread uws loop.
             unsafe {

@@ -25,6 +25,91 @@ static LAST_REPORT_MS: AtomicU64 = AtomicU64::new(0);
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static ENABLED_INIT: AtomicBool = AtomicBool::new(false);
 
+// Timeout-value histogram (see record_timeout below).
+static TO_CALLS: AtomicU64 = AtomicU64::new(0);
+static TO_NO_TIMEOUT: AtomicU64 = AtomicU64::new(0); // have_timeout == false (infinite wait armed)
+static TO_ZERO: AtomicU64 = AtomicU64::new(0); // exactly 0
+static TO_SUB_MS: AtomicU64 = AtomicU64::new(0); // >0 and <1ms
+static TO_1_10MS: AtomicU64 = AtomicU64::new(0);
+static TO_OVER_10MS: AtomicU64 = AtomicU64::new(0);
+static TO_MIN_NS: AtomicU64 = AtomicU64::new(u64::MAX);
+static TO_SUM_NS: AtomicU64 = AtomicU64::new(0);
+static LAST_TO_REPORT_MS: AtomicU64 = AtomicU64::new(0);
+
+pub fn record_timeout(have_timeout: bool, sec: i64, nsec: i64) {
+    if !enabled() {
+        return;
+    }
+    TO_CALLS.fetch_add(1, Ordering::Relaxed);
+    if !have_timeout {
+        TO_NO_TIMEOUT.fetch_add(1, Ordering::Relaxed);
+    } else {
+        let ns: u64 = (sec.max(0) as u64).saturating_mul(1_000_000_000).saturating_add(nsec.max(0) as u64);
+        if ns == 0 {
+            TO_ZERO.fetch_add(1, Ordering::Relaxed);
+        } else if ns < 1_000_000 {
+            TO_SUB_MS.fetch_add(1, Ordering::Relaxed);
+        } else if ns <= 10_000_000 {
+            TO_1_10MS.fetch_add(1, Ordering::Relaxed);
+        } else {
+            TO_OVER_10MS.fetch_add(1, Ordering::Relaxed);
+        }
+        TO_MIN_NS.fetch_min(ns, Ordering::Relaxed);
+        TO_SUM_NS.fetch_add(ns, Ordering::Relaxed);
+    }
+
+    let now = now_ms();
+    let last = LAST_TO_REPORT_MS.load(Ordering::Relaxed);
+    if last == 0 {
+        LAST_TO_REPORT_MS.store(now, Ordering::Relaxed);
+        return;
+    }
+    if now.saturating_sub(last) < 2000 {
+        return;
+    }
+    if LAST_TO_REPORT_MS
+        .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    let calls = TO_CALLS.swap(0, Ordering::Relaxed);
+    let none = TO_NO_TIMEOUT.swap(0, Ordering::Relaxed);
+    let zero = TO_ZERO.swap(0, Ordering::Relaxed);
+    let submsc = TO_SUB_MS.swap(0, Ordering::Relaxed);
+    let m10 = TO_1_10MS.swap(0, Ordering::Relaxed);
+    let over10 = TO_OVER_10MS.swap(0, Ordering::Relaxed);
+    let minns = TO_MIN_NS.swap(u64::MAX, Ordering::Relaxed);
+    let sumns = TO_SUM_NS.swap(0, Ordering::Relaxed);
+    let with_timeout = calls.saturating_sub(none);
+    let avg_ns = if with_timeout > 0 { sumns as f64 / with_timeout as f64 } else { 0.0 };
+    let min_display: i64 = if minns == u64::MAX { -1 } else { minns as i64 };
+    let line = format!(
+        "[spin-timeout] calls={} no_timeout={} zero={} sub_ms={} 1to10ms={} over10ms={} min_ns={} avg_ns={:.0}\n",
+        calls, none, zero, submsc, m10, over10, min_display, avg_ns
+    );
+    write_line(&line);
+}
+
+fn write_line(line: &str) {
+    use std::os::unix::io::FromRawFd;
+    unsafe {
+        let path = c"/data/storage/el2/base/tmp/ohos-spin-probe.log";
+        let fd = libc::open(
+            path.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_APPEND,
+            0o644,
+        );
+        if fd >= 0 {
+            let mut f = std::fs::File::from_raw_fd(fd);
+            use std::io::Write;
+            let _ = f.write_all(line.as_bytes());
+            let _ = f.flush();
+            std::mem::forget(f);
+        }
+    }
+}
+
 fn enabled() -> bool {
     if !ENABLED_INIT.load(Ordering::Relaxed) {
         let on = std::env::var("OHOS_SPIN_PROBE").map(|v| v == "1").unwrap_or(false);
@@ -103,25 +188,5 @@ pub fn record(
         "[spin-probe] {:.1}s ticks={} ({:.0}/s) yielded={} immediates={} pending={} pending_only={} blocking={} concurrent_nonempty={} tasks_len avg={:.2} max={}\n",
         secs, t, t as f64 / secs, y, i, p, po, b, cn, avg, mx
     );
-    // eprintln! produced zero output in this build (suspected OHOS musl
-    // stdio quirk unrelated to this probe -- JS console.error/stdout.write
-    // work fine, only Rust's raw stderr write seems to vanish). Write
-    // straight to a file with O_APPEND via a raw fd instead, sidestepping
-    // any libstd stdio buffering/backfill path entirely.
-    use std::os::unix::io::FromRawFd;
-    unsafe {
-        let path = c"/data/storage/el2/base/tmp/ohos-spin-probe.log";
-        let fd = libc::open(
-            path.as_ptr(),
-            libc::O_WRONLY | libc::O_CREAT | libc::O_APPEND,
-            0o644,
-        );
-        if fd >= 0 {
-            let mut f = std::fs::File::from_raw_fd(fd);
-            use std::io::Write;
-            let _ = f.write_all(line.as_bytes());
-            let _ = f.flush();
-            std::mem::forget(f); // don't close via Drop; next call reopens (O_APPEND is stateless enough here)
-        }
-    }
+    write_line(&line);
 }
