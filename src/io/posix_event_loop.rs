@@ -924,6 +924,12 @@ impl FilePoll {
             || self.flags.contains(Flags::PollMemoryPressure))
         {
             // no-op
+            {
+                unsafe extern "C" {
+                    fn ohos_spin_probe_record_unregister_branch(branch: i32, extra: i32);
+                }
+                unsafe { ohos_spin_probe_record_unregister_branch(1, 0) };
+            }
             return sys::Result::Ok(());
         }
 
@@ -947,6 +953,12 @@ impl FilePoll {
             if self.flags.contains(Flags::PollMemoryPressure) {
                 break 'brk Flags::MemoryPressure;
             }
+            {
+                unsafe extern "C" {
+                    fn ohos_spin_probe_record_unregister_branch(branch: i32, extra: i32);
+                }
+                unsafe { ohos_spin_probe_record_unregister_branch(2, 0) };
+            }
             return sys::Result::Ok(());
         };
 
@@ -961,6 +973,12 @@ impl FilePoll {
             self.flags.remove(Flags::PollWritable);
             self.flags.remove(Flags::PollMachport);
             self.flags.remove(Flags::PollMemoryPressure);
+            {
+                unsafe extern "C" {
+                    fn ohos_spin_probe_record_unregister_branch(branch: i32, extra: i32);
+                }
+                unsafe { ohos_spin_probe_record_unregister_branch(3, 0) };
+            }
             return sys::Result::Ok(());
         }
 
@@ -983,9 +1001,25 @@ impl FilePoll {
             };
 
             match sys::get_errno(ctl) {
-                sys::E::SUCCESS => {}
-                e if deregistration_already_gone(e) => {}
-                e => return sys::Result::Err(sys::Error::from_code(e, sys::Tag::epoll_ctl)),
+                sys::E::SUCCESS => {
+                    unsafe extern "C" {
+                        fn ohos_spin_probe_record_unregister_branch(branch: i32, extra: i32);
+                    }
+                    unsafe { ohos_spin_probe_record_unregister_branch(4, 0) };
+                }
+                e if deregistration_already_gone(e) => {
+                    unsafe extern "C" {
+                        fn ohos_spin_probe_record_unregister_branch(branch: i32, extra: i32);
+                    }
+                    unsafe { ohos_spin_probe_record_unregister_branch(4, -2) };
+                }
+                e => {
+                    unsafe extern "C" {
+                        fn ohos_spin_probe_record_unregister_branch(branch: i32, extra: i32);
+                    }
+                    unsafe { ohos_spin_probe_record_unregister_branch(4, e as i32) };
+                    return sys::Result::Err(sys::Error::from_code(e, sys::Tag::epoll_ctl));
+                }
             }
         }
         #[cfg(target_os = "macos")]

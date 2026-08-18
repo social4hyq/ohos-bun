@@ -350,6 +350,78 @@ pub extern "C" fn ohos_spin_probe_record_onpoll(fd: i32, buf_len: usize, receive
     write_line(&line);
 }
 
+// unregister_with_fd_impl branch histogram -- which of the three early-return
+// paths (or the real epoll_ctl syscall) actually fires for the fd11 storm.
+// `branch`: 1 = top no-op (no Poll* flags set at all, syscall never
+// attempted); 2 = flag-resolution fallthrough (should be unreachable); 3 =
+// NeedsRearm-skip (should never fire since on_poll always passes force=true);
+// 4 = real epoll_ctl(CTL_DEL) issued -- `extra` carries its raw return value.
+static UB_CALLS: AtomicU64 = AtomicU64::new(0);
+static UB_NOOP_NO_FLAGS: AtomicU64 = AtomicU64::new(0);
+static UB_FLAG_FALLTHROUGH: AtomicU64 = AtomicU64::new(0);
+static UB_NEEDSREARM_SKIP: AtomicU64 = AtomicU64::new(0);
+static UB_SYSCALL_OK: AtomicU64 = AtomicU64::new(0);
+static UB_SYSCALL_ALREADY_GONE: AtomicU64 = AtomicU64::new(0);
+static UB_SYSCALL_ERR: AtomicU64 = AtomicU64::new(0);
+static LAST_UB_REPORT_MS: AtomicU64 = AtomicU64::new(0);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ohos_spin_probe_record_unregister_branch(branch: i32, extra: i32) {
+    if !enabled() {
+        return;
+    }
+    UB_CALLS.fetch_add(1, Ordering::Relaxed);
+    match branch {
+        1 => {
+            UB_NOOP_NO_FLAGS.fetch_add(1, Ordering::Relaxed);
+        }
+        2 => {
+            UB_FLAG_FALLTHROUGH.fetch_add(1, Ordering::Relaxed);
+        }
+        3 => {
+            UB_NEEDSREARM_SKIP.fetch_add(1, Ordering::Relaxed);
+        }
+        4 => {
+            if extra == 0 {
+                UB_SYSCALL_OK.fetch_add(1, Ordering::Relaxed);
+            } else if extra == -2 {
+                UB_SYSCALL_ALREADY_GONE.fetch_add(1, Ordering::Relaxed);
+            } else {
+                UB_SYSCALL_ERR.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        _ => {}
+    }
+
+    let now = now_ms();
+    let last = LAST_UB_REPORT_MS.load(Ordering::Relaxed);
+    if last == 0 {
+        LAST_UB_REPORT_MS.store(now, Ordering::Relaxed);
+        return;
+    }
+    if now.saturating_sub(last) < 2000 {
+        return;
+    }
+    if LAST_UB_REPORT_MS
+        .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    let calls = UB_CALLS.swap(0, Ordering::Relaxed);
+    let noop = UB_NOOP_NO_FLAGS.swap(0, Ordering::Relaxed);
+    let fallthrough = UB_FLAG_FALLTHROUGH.swap(0, Ordering::Relaxed);
+    let rearm_skip = UB_NEEDSREARM_SKIP.swap(0, Ordering::Relaxed);
+    let sys_ok = UB_SYSCALL_OK.swap(0, Ordering::Relaxed);
+    let sys_gone = UB_SYSCALL_ALREADY_GONE.swap(0, Ordering::Relaxed);
+    let sys_err = UB_SYSCALL_ERR.swap(0, Ordering::Relaxed);
+    let line = format!(
+        "[spin-unreg] calls={} noop_no_flags={} flag_fallthrough={} needsrearm_skip={} syscall_ok={} syscall_already_gone={} syscall_err={}\n",
+        calls, noop, fallthrough, rearm_skip, sys_ok, sys_gone, sys_err
+    );
+    write_line(&line);
+}
+
 fn write_line(line: &str) {
     use std::os::unix::io::FromRawFd;
     unsafe {
