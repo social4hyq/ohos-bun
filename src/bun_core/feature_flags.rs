@@ -2,7 +2,16 @@
 //! instead.
 
 use crate::env;
-use crate::feature_flag;
+// BUG (confirmed via CI probe, 2026-08-19): this used to be `use crate::feature_flag;`,
+// which resolves to the *stub* module in lib.rs (`pub mod feature_flag { ... .get() { false } }`,
+// documented there as "for flags not yet wired [into env_var::feature_flag]"), NOT the real
+// env-var-backed accessors in `env_var::feature_flag`. Both BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE
+// and BUN_FEATURE_FLAG_NO_LIBDEFLATE are already properly wired in env_var.rs, but this stale
+// import silently shadowed them with hardcoded-false stubs -- the env var override for `bake()`
+// (and is_libdeflate_enabled()'s disable switch) never worked, on any platform, regardless of
+// the actual environment. See CLAUDE_PROBE_BAKE probes below/in ServerConfig.rs/DevServer.rs
+// for the empirical trace that isolated this to the import.
+use crate::env_var::feature_flag;
 
 /// Store and reuse file descriptors during module resolution
 /// This was a ~5% performance improvement
