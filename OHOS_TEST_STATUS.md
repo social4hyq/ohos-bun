@@ -4080,4 +4080,14 @@ pub mod feature_flag {
 
 手工验证（`BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE=1` + `minimalFramework` 同构配置）：**`/_bun/hmr` 的 WebSocket 握手从 404（`connectSocket()` 卡死不 resolve 也不 reject）变成了 `OPEN`**——这正是 19 个 `bake/dev/*` 文件卡在 60s 外层超时的根本机制，现在已经修复。手写的 fixture 里框架文件系统路由 `/` 仍 404（大概率是我这个验证脚本的 `nextjs-pages` 路由约定没跟 `bake-harness.ts` 真实产出的目录结构对齐，不是同一个 bug——WS 握手成功已经证明 `DevServer::init()`/`set_routes()` 现在真正执行到了，跟 fix 前"整条链路被 `bake()` 恒 false 短路掉、什么都不执行"是本质区别）。
 
-**尚未做**：`test/bake/dev/*` 完整套件的全量重跑（`bun install` 补 `react`/`react-refresh`/`react-server-dom-bun` 等 canary 专属依赖后再跑），确认这 19 个文件里到底有多少真正转绿、多少换了个新形态的失败（比如缺依赖导致的 `ModuleNotFound`）。下一轮直接从这里接着做，不要重新诊断根因。
+### `test/bake/dev/*` 全量重跑结果（r67，同日）
+
+`--include=bake/dev`（21 个相关文件，含子串匹配到的 `dev-and-prod.test.ts`；`bunEnv` 本身就带 `BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE: "1"`，无需额外配置）。产物 `logs/baseline-2026-08-19-bakedev/{run.log,results.json}`。
+
+**文件级：9/21 真实转绿**（不含两条 `package.json` lockfile 校验）——`plugins`/`production`/`react-response`/`request-cookies`/`server-sourcemap`/`vfile` 全部由"整文件卡 60s 超时"变成**真正通过**，加上两个此前未纳入统计的新文件 `import-meta-inline-negative`/`response-to-bake-response` 也是干净通过。**直接实锤了 fix 的效果**——这 6 个正是本轮根因定位时挑出的"桶一"（WS 握手真卡死）代表案例。
+
+**子用例级：69 pass / 81 fail**（跨全部 21 个文件汇总，含仍失败文件里部分转绿的子用例）——不是文件级全灭，实质进展明显。
+
+**仍失败的 12 个文件**（`dev-and-prod`/`bundle`/`css`/`ecosystem`/`esm`/`hot`/`html`/`import-meta-inline`/`incremental-graph-edge-deletion`/`react-spa`/`sourcemap`/`ssg-pages-router`/`stress`）里，`bundle`（5 pass/16 fail）、`esm`（10 pass/1 todo/6 fail）、`import-meta-inline`（5 pass/1 fail）这三个此前同属"桶一"的文件，**已经不再是整文件卡死**——现在能真正跑完全部子用例，只是部分子用例本身有别的失败原因。抽查了几个失败签名，主导模式是 `error: Client exited with code 0`（即台账 r66 条目里定性过的"桶二"：happy-dom 无头浏览器子进程提前退出，与 feature_flag bug 是两条独立故障线）——`html.test.ts` 则是纯粹的功能性子用例失败（6 pass/4 fail，看起来是真实断言不通过，非平台缺陷类）。
+
+**结论**：feature_flag 修复对"桶一"分类完全对号入座——凡是此前归类桶一的文件，这轮要么整文件转绿、要么从"卡死"变成"能跑完但部分子用例因桶二问题失败"，没有反例。下一轮如果要继续推进这批文件，入口是**桶二**（`Client exited with code 0`，happy-dom 子进程为何提前退出）——但注意这轮子用例失败量看起来比 r66 阶段直觉上更多，可能是"框架路由现在真的工作了 → headless client 真的会去发更多请求/触发更多渲染路径 → 撞见桶二 bug 的机会也变多了"，即桶二问题本身的暴露面可能被这次 fix 放大了，不代表桶二问题本身变严重，下一轮排查时留意这层因果关系再下结论。
