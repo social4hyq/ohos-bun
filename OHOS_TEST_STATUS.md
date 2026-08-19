@@ -4090,4 +4090,41 @@ pub mod feature_flag {
 
 **仍失败的 12 个文件**（`dev-and-prod`/`bundle`/`css`/`ecosystem`/`esm`/`hot`/`html`/`import-meta-inline`/`incremental-graph-edge-deletion`/`react-spa`/`sourcemap`/`ssg-pages-router`/`stress`）里，`bundle`（5 pass/16 fail）、`esm`（10 pass/1 todo/6 fail）、`import-meta-inline`（5 pass/1 fail）这三个此前同属"桶一"的文件，**已经不再是整文件卡死**——现在能真正跑完全部子用例，只是部分子用例本身有别的失败原因。抽查了几个失败签名，主导模式是 `error: Client exited with code 0`（即台账 r66 条目里定性过的"桶二"：happy-dom 无头浏览器子进程提前退出，与 feature_flag bug 是两条独立故障线）——`html.test.ts` 则是纯粹的功能性子用例失败（6 pass/4 fail，看起来是真实断言不通过，非平台缺陷类）。
 
-**结论**：feature_flag 修复对"桶一"分类完全对号入座——凡是此前归类桶一的文件，这轮要么整文件转绿、要么从"卡死"变成"能跑完但部分子用例因桶二问题失败"，没有反例。下一轮如果要继续推进这批文件，入口是**桶二**（`Client exited with code 0`，happy-dom 子进程为何提前退出）——但注意这轮子用例失败量看起来比 r66 阶段直觉上更多，可能是"框架路由现在真的工作了 → headless client 真的会去发更多请求/触发更多渲染路径 → 撞见桶二 bug 的机会也变多了"，即桶二问题本身的暴露面可能被这次 fix 放大了，不代表桶二问题本身变严重，下一轮排查时留意这层因果关系再下结论。
+**结论**：feature_flag 修复对"桶一"分类完全对号入座——凡是此前归类桶一的文件，这轮要么整文件转绿、要么从"卡死"变成"能跑完但部分子用例因桶二问题失败"，没有反例。
+
+### 桶二根因实锤 + 修复：`Client` 清理路径把数字退出码跟字符串 `"0"` 比较（同日续，第二个独立 bug）
+
+"下一轮入口"当场继续查，很快锁定。交叉验证：把"仍失败的 12 个文件"跟"用没用 `dev.client()`"对照——**100% 精确重合**：用了 `dev.client()`（无头浏览器 API）的文件全部还在失败列表，只用 `dev.fetch()` 的全部已经转绿。这个信号强到直接指向 `Client` 类自己的清理逻辑，不是平台问题（此时 dev server 和 HMR socket 早已确认工作正常）。
+
+定位到 `test/bake/bake-harness.ts:933`（`Client#[Symbol.asyncDispose]()`）：
+
+```ts
+await this.#proc.exited;
+if (this.exitCode !== null && this.exitCode !== "0") {   // "0" 是字符串！
+```
+
+而几行之上的 `onExit` 回调把真实数字退出码原样存进 `this.exitCode`（只有 signalCode/未知两条分支才会赋字符串，且永远不会是 `"0"`）：
+
+```ts
+onExit: (subprocess, exitCode, signalCode, error) => {
+  if (exitCode !== null) {
+    this.exitCode = exitCode;        // 数字
+  } else if (signalCode !== null) {
+    this.exitCode = `${signalCode}`; // 字符串，但绝不会是 "0"
+  } else {
+    this.exitCode = "unknown";
+  }
+```
+
+`0 !== "0"` 在 JS 严格不等里恒为 `true`——意味着 `Client` 子进程**任何一次干净、预期内的退出**（`dispose()` 自己发的 `{type:"exit"}` 消息 → 子进程 `process.exit(0)` 这条正常收尾路径）都会被误判成崩溃，抛出 `Client exited with code 0`。跟 OHOS 毫无关系——`upstream/main` 逐字节确认同款 bug。修法一个字符：`"0"` → `0`。
+
+**真机验证**：合并前后各跑一次 `test/bake/dev/*` 全量套件（`--include=bake/dev`，21 相关文件 + 2 条 lockfile 校验）：
+
+| | r66 基线（两个 bug 都在）| 只修 feature_flag（#17）| feature_flag + exitCode 都修（#17+#18）|
+|---|---|---|---|
+| 文件级 | 0/19 相关文件 | 9/21 | **23/23** |
+| 子用例级 | n/a（文件从未真正跑起来）| 69 pass / 81 fail | **150 pass / 0 fail** |
+
+PR [social4hyq/ohos-bun#18](https://github.com/social4hyq/ohos-bun/pull/18) 已合并（跟 #17 一样撞上既有 baseline 噪音检查失败，判断依据同前）。**这个 fix 是纯 TS 测试基建代码，不影响编译产物，不需要走 tap `bun.rb` bump/bottle 重建**——`bun test` 直接从仓库源码树读取测试文件，无论指向哪个 bun 二进制都立即生效，本地这轮验证用的正是刚发布的 r67 bottle。
+
+**`test/bake/dev/*` 这条线到此彻底收口**：从 r66 基线的"19 个文件卡 60s 超时、完全不知道怎么回事"，到定位两个完全独立、互不相关的真实 bug（一个 Rust 侧模块名遮蔽、一个 TS 侧类型比较），各自单独验证，各自单独发布，最终 23/23 文件、150/150 子用例全绿。不需要再有下一轮。
