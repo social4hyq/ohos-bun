@@ -130,14 +130,22 @@ pub fn bake() -> bool {
     let flag = feature_flag::BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE.get();
     let result = env::IS_CANARY || env::IS_DEBUG || flag;
     if std::env::var("CLAUDE_PROBE_BAKE").is_ok() {
+        // Bypass the env_var cache entirely: raw libc::getenv via bun_core's
+        // own getenv_z, same call bun's cached accessor uses internally.
+        let raw_getenv_z = crate::getenv_z(crate::zstr!("BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE"));
         eprintln!(
-            "[claude-probe] bake(): IS_CANARY={} IS_DEBUG={} flag.get()={} raw_env={:?} -> {}",
+            "[claude-probe] bake(): IS_CANARY={} IS_DEBUG={} flag.get()={} raw_env(std::env::var)={:?} raw_getenv_z={:?} -> {}",
             env::IS_CANARY,
             env::IS_DEBUG,
             flag,
             std::env::var("BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE"),
+            raw_getenv_z.map(|b| String::from_utf8_lossy(b).to_string()),
             result
         );
+        // Call flag.get() a second time to see if the cache is now warm and
+        // stable, or if repeated calls within the same process disagree.
+        let flag2 = feature_flag::BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE.get();
+        eprintln!("[claude-probe] bake(): flag.get() called again = {}", flag2);
     }
     result
 }
