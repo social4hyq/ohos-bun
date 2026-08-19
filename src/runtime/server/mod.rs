@@ -2204,6 +2204,13 @@ impl<const SSL: bool, const DEBUG: bool> NewServer<SSL, DEBUG> {
         // points into the heap-allocated config rather than the caller's
         // (since-moved) stack slot. On Err, the `Box<Self>` drop frees the
         // half-built server.
+        let claude_probe = std::env::var("CLAUDE_PROBE_BAKE").is_ok();
+        if claude_probe {
+            eprintln!(
+                "[claude-probe] NewServer::new: config.bake.is_some()={}",
+                unsafe { (*server).config.bake.is_some() }
+            );
+        }
         // SAFETY: `server` is the freshly-boxed `*mut Self`; uniquely owned here.
         if let Some(bake_options) = unsafe { &mut (*server).config.bake } {
             // SAFETY: `server` is the freshly-boxed `*mut Self`; uniquely owned here.
@@ -2227,11 +2234,17 @@ impl<const SSL: bool, const DEBUG: bool> NewServer<SSL, DEBUG> {
             }) {
                 Ok(d) => d,
                 Err(e) => {
+                    if claude_probe {
+                        eprintln!("[claude-probe] NewServer::new: DevServer::init FAILED: {:?}", e);
+                    }
                     // SAFETY: paired with heap::alloc above.
                     drop(unsafe { bun_core::heap::take(server) });
                     return Err(e);
                 }
             };
+            if claude_probe {
+                eprintln!("[claude-probe] NewServer::new: DevServer::init OK, dev_server = Some");
+            }
             // SAFETY: `server` is uniquely owned here.
             unsafe { (*server).dev_server = Some(dev) };
         }
@@ -2622,6 +2635,13 @@ impl<const SSL: bool, const DEBUG: bool> NewServer<SSL, DEBUG> {
         let h3_star_covered = star_methods_covered_by_user;
 
         // --- 8. Handle DevServer routes & track "/*" coverage ---
+        let claude_probe = std::env::var("CLAUDE_PROBE_BAKE").is_ok();
+        if claude_probe {
+            eprintln!(
+                "[claude-probe] NewServer::set_routes: dev_server.is_some()={}",
+                dev_server.is_some()
+            );
+        }
         let mut has_dev_server_for_star_path = false;
         if let Some(dev) = dev_server {
             // dev.setRoutes might register its own "/*" HTTP handler
@@ -2631,6 +2651,12 @@ impl<const SSL: bool, const DEBUG: bool> NewServer<SSL, DEBUG> {
             has_dev_server_for_star_path = bun_core::handle_oom(
                 unsafe { &mut *dev }.set_routes::<SSL, DEBUG>(unsafe { &mut *self_ptr }),
             );
+            if claude_probe {
+                eprintln!(
+                    "[claude-probe] NewServer::set_routes: DevServer::set_routes returned has_dev_server_for_star_path={}",
+                    has_dev_server_for_star_path
+                );
+            }
             if has_dev_server_for_star_path {
                 // Assume dev server "/*" covers all methods if it exists
                 star_methods_covered_by_user = http_method::Set::all();

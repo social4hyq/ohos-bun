@@ -1286,10 +1286,24 @@ impl ServerConfig {
             return Err(JsError::Thrown);
         }
 
+        let claude_probe = std::env::var("CLAUDE_PROBE_BAKE").is_ok();
+        if claude_probe {
+            eprintln!(
+                "[claude-probe] ServerConfig: allow_bake_config={}",
+                opts.allow_bake_config
+            );
+        }
         if opts.allow_bake_config {
             'brk: {
-                if let Some(bake_args_js) = arg.get_truthy(global, "app")? {
+                let app_field = arg.get_truthy(global, "app")?;
+                if claude_probe {
+                    eprintln!("[claude-probe] ServerConfig: app_field.is_some()={}", app_field.is_some());
+                }
+                if let Some(bake_args_js) = app_field {
                     if !bun_core::FeatureFlags::bake() {
+                        if claude_probe {
+                            eprintln!("[claude-probe] ServerConfig: FeatureFlags::bake() false, breaking out, app field IGNORED");
+                        }
                         break 'brk;
                     }
                     if args.bake.is_some() {
@@ -1306,6 +1320,9 @@ impl ServerConfig {
                     }
 
                     args.bake = Some(crate::bake::UserOptions::from_js(bake_args_js, global)?);
+                    if claude_probe {
+                        eprintln!("[claude-probe] ServerConfig: args.bake set to Some, framework config accepted");
+                    }
                 }
             }
         }

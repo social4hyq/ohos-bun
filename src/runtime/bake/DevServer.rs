@@ -1287,6 +1287,10 @@ impl DevServer {
         &mut self,
         server: &mut crate::server::NewServer<SSL, DEBUG>,
     ) -> crate::Result<bool> {
+        let claude_probe = std::env::var("CLAUDE_PROBE_BAKE").is_ok();
+        if claude_probe {
+            eprintln!("[claude-probe] DevServer::set_routes: ENTERED");
+        }
         // TODO: all paths here must be prefixed with publicPath if set.
         self.server = Some(AnyServer::from(server));
         let app = server.app.unwrap();
@@ -1339,13 +1343,29 @@ impl DevServer {
             0,
             hmr_socket_behavior::<SSL>(),
         );
+        if claude_probe {
+            eprintln!("[claude-probe] DevServer::set_routes: /_bun/hmr .ws() registration call completed");
+        }
 
         // Only attach a catch-all handler if the framework has filesystem
         // router types. Otherwise, this can just be Bun.serve's default handler.
-        if !self.framework.file_system_router_types.is_empty() {
+        let fsrt_empty = self.framework.file_system_router_types.is_empty();
+        if claude_probe {
+            eprintln!(
+                "[claude-probe] DevServer::set_routes: file_system_router_types.is_empty()={}",
+                fsrt_empty
+            );
+        }
+        if !fsrt_empty {
             route!(any, b"/*", DevHandlerId::Request);
+            if claude_probe {
+                eprintln!("[claude-probe] DevServer::set_routes: registered any /* -> DevHandlerId::Request, returning true");
+            }
             Ok(true)
         } else {
+            if claude_probe {
+                eprintln!("[claude-probe] DevServer::set_routes: NOT registering /*, returning false");
+            }
             Ok(false)
         }
     }

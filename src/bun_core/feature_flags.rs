@@ -127,7 +127,19 @@ pub fn is_libdeflate_enabled() -> bool {
 /// in favor of HTML loaders and configuring framework options in bunfig.toml
 pub fn bake() -> bool {
     // In canary or if an environment variable is specified.
-    env::IS_CANARY || env::IS_DEBUG || feature_flag::BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE.get()
+    let flag = feature_flag::BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE.get();
+    let result = env::IS_CANARY || env::IS_DEBUG || flag;
+    if std::env::var("CLAUDE_PROBE_BAKE").is_ok() {
+        eprintln!(
+            "[claude-probe] bake(): IS_CANARY={} IS_DEBUG={} flag.get()={} raw_env={:?} -> {}",
+            env::IS_CANARY,
+            env::IS_DEBUG,
+            flag,
+            std::env::var("BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE"),
+            result
+        );
+    }
+    result
 }
 
 /// Additional debugging features for bake.DevServer, such as the incremental visualizer.
