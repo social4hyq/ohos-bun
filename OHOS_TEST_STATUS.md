@@ -4076,4 +4076,8 @@ pub mod feature_flag {
 
 **诊断分支**（`debug/bake-feature-flag-probe`，ohos-bun；tap 的 `diag-bun-probe` 已指到它）保留不合并，仅留档备查。
 
-**#17 合并后的后续**：`minimalFramework` 系的 devTest（`bundle`/`esm`/`import-meta-inline`/`plugins`/`vfile` 等，本轮"卡在 60s HMR 超时"那批）理论上会从"框架路由完全没挂上"变成"真正跑到 `DevServer::init()`"，但下一步大概率会撞上缺 `react-refresh`/`react-server-dom-bun` 等 canary 专属依赖（`bake-harness.ts` 的 `installReactWithCache` 已有相关逻辑但未跟这个 fix 组合验证过）——**修完这个 bug 不等于这批测试立刻全绿**，需要下一轮 `brew upgrade` 后重新全量跑一次 `bake/dev/*` 才能确认实际效果，不要假设已经解决。
+**#17 合并后的后续，已发布 + 真机验证**：tap `bun.rb` r66→67（[social4hyq/homebrew-core#376](https://github.com/social4hyq/homebrew-core/pull/376)，已合并，同样撞上写回提交零 check-runs 的已知假阻塞，`gh pr merge --admin` 处理）。真机 `brew upgrade bun`（1.4.0_66→_67），`bun --revision` 显示 `1.4.0+1fe4a5c2d`，精确匹配合并提交。
+
+手工验证（`BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE=1` + `minimalFramework` 同构配置）：**`/_bun/hmr` 的 WebSocket 握手从 404（`connectSocket()` 卡死不 resolve 也不 reject）变成了 `OPEN`**——这正是 19 个 `bake/dev/*` 文件卡在 60s 外层超时的根本机制，现在已经修复。手写的 fixture 里框架文件系统路由 `/` 仍 404（大概率是我这个验证脚本的 `nextjs-pages` 路由约定没跟 `bake-harness.ts` 真实产出的目录结构对齐，不是同一个 bug——WS 握手成功已经证明 `DevServer::init()`/`set_routes()` 现在真正执行到了，跟 fix 前"整条链路被 `bake()` 恒 false 短路掉、什么都不执行"是本质区别）。
+
+**尚未做**：`test/bake/dev/*` 完整套件的全量重跑（`bun install` 补 `react`/`react-refresh`/`react-server-dom-bun` 等 canary 专属依赖后再跑），确认这 19 个文件里到底有多少真正转绿、多少换了个新形态的失败（比如缺依赖导致的 `ModuleNotFound`）。下一轮直接从这里接着做，不要重新诊断根因。
