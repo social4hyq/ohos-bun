@@ -129,14 +129,18 @@ pub fn is_libdeflate_enabled() -> bool {
         return false;
     }
 
-    !feature_flag::BUN_FEATURE_FLAG_NO_LIBDEFLATE.get()
+    // env_var::feature_flag::Accessor::get() returns Option<bool> (unlike the
+    // stub this used to accidentally resolve to, which returned bare bool) --
+    // always Some given this flag's `{default: false}`, but the type still
+    // needs unwrapping.
+    !feature_flag::BUN_FEATURE_FLAG_NO_LIBDEFLATE.get().unwrap_or(false)
 }
 
 /// Enable the "app" option in Bun.serve. This option will likely be removed
 /// in favor of HTML loaders and configuring framework options in bunfig.toml
 pub fn bake() -> bool {
     // In canary or if an environment variable is specified.
-    let flag = feature_flag::BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE.get();
+    let flag = feature_flag::BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE.get().unwrap_or(false);
     let result = env::IS_CANARY || env::IS_DEBUG || flag;
     if std::env::var("CLAUDE_PROBE_BAKE").is_ok() {
         // Bypass the env_var cache entirely: raw libc::getenv via bun_core's
@@ -154,7 +158,7 @@ pub fn bake() -> bool {
         // Call flag.get() a second time to see if the cache is now warm and
         // stable, or if repeated calls within the same process disagree.
         let flag2 = feature_flag::BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE.get();
-        eprintln!("[claude-probe] bake(): flag.get() called again = {}", flag2);
+        eprintln!("[claude-probe] bake(): flag.get() called again = {:?}", flag2);
     }
     result
 }
