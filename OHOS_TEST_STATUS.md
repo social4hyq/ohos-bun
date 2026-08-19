@@ -3917,3 +3917,163 @@ bun 是 strip 过的（只剩 680 条 `.dynsym`），符号化靠：`/system/lib
 tap PR #357：CI 全绿（bottle write-back commit 触发的第二轮 run 卡在 `action_required`，手动 approve 后重活 job 正确跳过），`mergeable=MERGEABLE / CLEAN`。
 
 **同族遗留（未修，非本 bug 必需）**：`PosixBufferedReader::finish()` 在 `CLOSE_HANDLE` 未置位时会**提前 return 且不设 `IS_DONE`**（早退条件是"handle 还没 Closed"，而非持有型 reader 的 handle 本来就一直不 Closed）。本次修复让 poll 在 reader 析构时就注销，所以那条路已经打不到；但如果哪天出现"非持有型 reader 在 `on_reader_done` 后仍存活"的消费者（父对象引用计数没归零），EOF 事件会被反复投递、`is_done()` 却一直是 false，表现为空转而不是崩溃。真要收口，把早退条件改成 `CLOSE_HANDLE && (…)` 即可，但那会改动所有 reader 的行为，需要单独验证，没跟这次的修复混在一起。
+
+## r66 全量基线（2026-08-19，`--parallel` 20 核口径 + 8 进程并发复跑去重，bottle 1.4.0_66 / `cc3ea814b`）
+
+**背景**：`ohos-compat-shim` 按"web polyfill 纪律"做的第二轮审视（v0.4.2→v0.5.0）合并上车：三个遗留 bug 修复（`shim_guarded_syscall` SIGSYS 竞态、`close_range` fork 不安全的 `/proc/self/fd` fallback、`symlinkat` 相对 target 解析）+ `epoll_pipe` 自适应退避 + `poll`/`ppoll` 惰性扫描（含补上"无限等待此前完全未保护"的缺口）。详见 [[project_ohos_compat_shim_polyfill_discipline_2026_08_19]]。
+
+**执行链**：`--parallel`（20 核，`availableParallelism()` 全量非留一核）全量 5848 文件 5729 pass / 119 fail → 119 个失败按 8 进程并发复跑（每进程内单文件串行；为求速度对纯串行做的折中，隔离度弱于纯串行但强于原始 20 核）→ 清理掉 8 进程各自 `bun install` 竞争 `node_modules/.bin` 符号链接产生的 16 条 `package.json`/`test/package.json` `EEXIST` 假失败（复跑方法论自身噪音，非 bun/shim 缺陷）→ **58 转绿（并发假象，49%）**、**61 仍失败**。产物 `logs/baseline-2026-08-19/{parallel.log,parallel.json,failed-files.txt,refail-chunk-*.log,refail-chunk-*.json,refail.json,still-failing.txt,SUMMARY.txt}`。
+
+**去重后真实通过率：5787/5848 = 98.96%**（对比 r59 的 99.31%，下降主要是 `bake/dev/*` 从 10 个扩到 19 个——见下方分类，非本轮回归，是既有簇的样本覆盖更完整）。
+
+61 个真失败分布：
+
+| 类别 | 文件数 | 定性 |
+|---|---|---|
+| `bake/dev/*` dev-server 套件（含 `dev-and-prod.test.ts`） | 19 | **既有问题，与本轮 shim 改动无关**（8 进程复跑下表现与 20 核并发一致，非并发敏感）。r59 台账记录 10/19 为"新面孔待查"，本轮深挖后发现**上一版"全部同一签名：60000ms 超时"是过度概括**，实际是至少 3 个不同问题混在一起被同一个外层超时掩盖，详见下方"bake/dev 深挖"小节 |
+| `expectations.txt` 里已按 OPENHARMONY 隔离、本轮跑 `--ignore-expectations` 故意摘掉重验的 | 4 | `test-child-process-execsync.js`（exec 时序/信号差异）、`resolve-dns.test.ts`（沙盒外网 DNS 不可达）、`node-dns.test.js`（同上）、`spawn-cgroup.test.ts`（cgroup no-op，r59 已定性入档）——隔离依然成立，非新问题 |
+| 与 r59（本轮改动前）基线完全重合的既有失败 | 7 | `run-crash-handler.test.ts`、`websocket-server.test.ts`、`fs.test.ts`、`node-net.test.ts`、`test-cwd-enoent-improved-message.js`、`test-net-autoselectfamily.js`、`serve-file-slice-read-error.test.ts`——后者本轮顺手定位根因：stderr 里 `TRACEME: Permission denied` / `SETOPTIONS: No such process` 证实测试自身靠 `ptrace` 注入 EIO 故障，撞的是本机沙箱 seccomp 拦 ptrace 的既有限制（与 `ohos-trace-shim` 那条同源），结构性不可测 |
+| 新面孔，已排查但未查透 | 1 | `spawn-streaming-stdin.test.ts`——50 子进程流式写 stdin 后断言最大 FD 号不变，**稳定复现多 1 个 FD**（`Expected: N, Received: N+1`，20 核并发/8 进程复跑/本地单跑三次结果一致，非并发抖动）。排除法：`OHOS_COMPAT_SHIM_DISABLE=epoll_pipe`（本轮改动最大的一块）关闭后**问题原样复现**，可排除是这轮新加的退避表漏收 fd；`OHOS_COMPAT_SHIM_DISABLE=close_range` 直接让 bun 因 SIGSYS 秒挂（exit 159），印证该拦截点是本沙盒里 bun 能跑起来的硬依赖，没法沿这条路继续二分。手头未保留 r65/shim-v0.4.2 的旧 Cellar 副本，没能做真正的版本前后 A/B。形状更像某资源在进程首次 spawn 时懒初始化、常驻不释放（"起点基线"比"终点基线"少算 1 个），而非每次迭代真泄漏一个 fd，但未实锤，留待下一轮 |
+| 未分类新面孔，本轮未逐个查因 | 30 | 见下方清单 |
+
+**未分类新面孔清单（30，供下一轮直接比对/挑起点）**：
+
+```
+test/cli/install/bun-install-registry.test.ts
+test/cli/install/bun-install.test.ts
+test/cli/install/bun-pm-why.test.ts
+test/cli/install/bun-security-scanner-matrix-with-node-modules.test.ts
+test/cli/install/bun-upgrade.test.ts
+test/cli/install/bunx.test.ts
+test/integration/datadog-pprof/datadog-pprof.test.ts
+test/integration/expo-app/expo.test.ts
+test/integration/next-pages/test/dev-server-ssr-100.test.ts
+test/integration/next-pages/test/dev-server.test.ts
+test/integration/next-pages/test/next-build.test.ts
+test/integration/sharp/sharp.test.ts
+test/integration/vite-build/vite-build.test.ts
+test/internal/build-rust-toolchain-probe.test.ts
+test/js/bun/shell/commands/ls.test.ts
+test/js/bun/shell/shell-load.test.ts
+test/js/bun/test/parallel/test-integration-rspack.ts
+test/js/node/child_process/child_process.test.ts
+test/js/node/cluster/test-docs-http-server.ts
+test/js/node/tty.test.ts
+test/js/third_party/@napi-rs/canvas/napi-rs-canvas.test.ts
+test/js/third_party/body-parser/express-memory-leak.test.ts
+test/js/third_party/next-auth/next-auth.test.ts
+test/js/third_party/prisma/prisma.test.ts
+test/js/third_party/resvg/bbox.test.js
+test/js/web/fetch/fetch-leak.test.ts
+test/js/web/workers/message-port-context-destroy-leak.test.ts
+test/regression/issue/22712.test.ts
+test/regression/issue/24364.test.ts
+test/regression/issue/26286.test.ts
+```
+
+注：`datadog-pprof.test.ts`、`sharp.test.ts`、`next-auth.test.ts`、`prisma.test.ts`、`resvg/bbox.test.js`、`vite-build.test.ts`、`expo.test.ts`、`next-build.test.ts`/`dev-server*.test.ts`（next-pages）大概率是 r59 台账已知的"缺 OHOS 预编译原生包/需要外网 npm registry/CDN"这类环境类老问题的同族新样本，不代表新缺口；但本轮未逐个验证，先原样列出不做归类，避免臆断。
+
+**结论**：49% 并发假象比例延续 r54→r57→r59 的下降趋势（77%→58%→49%），继续印证"高并发下的偶发失败占比随基础设施/shim 成熟度收窄"这条粗略经验，仍是小样本、不作为方法论调权依据。61 个真失败里 30 个（**下一轮优先级最高**）目前完全没有归因，5 个已排查确认与本轮 shim 改动无关，1 个（`spawn-streaming-stdin.test.ts`）排查过程排除了 epoll_pipe 嫌疑但未查透，19 个 `bake/dev/*` 是本轮唯一成规模但已确认非新增的既有系统性问题。
+
+### `bake/dev/*` 深挖（2026-08-19 同日）：不是一个 bug，是至少 3 个不同问题被同一层外层超时盖住
+
+r59 台账原话"全部同一签名：60000ms 超时"是只查了 `vfile.test.ts` 一个文件就下的过度概括。用 `parallel.json` 的 `stdoutPreview` 关键字分桶（`timed out after 60000ms` / `Client exited` / 其他）后发现至少三类：
+
+| 桶 | 文件（部分/全部） | 定性 |
+|---|---|---|
+| 真·卡死 60s | `vfile`、`esm`、`bundle`、`import-meta-inline`、`plugins`，形态上 `request-cookies`/`server-sourcemap`/`ssg-pages-router`/`react-response` 同属此类 | 见下方根因 |
+| `Client exited with code 0`（数秒内失败，不是卡死）| `css`、`sourcemap`、`stress`、`dev-and-prod`、`react-spa` | 见下方，另一个独立问题 |
+| 与 OHOS/平台完全无关 | `production.test.ts` | 见下方 |
+
+**桶一根因（已通过直接复现确认，非推测）**：临时在 `test/bake/bake-harness.ts` 加了调试打点（未提交，已 `git checkout` 撤销）+ 用 `CLAUDE_NONINTERACTIVE_DEBUG`/`--timeout` 单独跑 `bundle.test.ts`、`esm.test.ts` 复现，确认卡点精确停在 `port found` 之后、`socket connected` 之前——即 `Dev.connectSocket()`（`bake-harness.ts:235`）：
+
+```js
+connectSocket() {
+  const connected = Promise.withResolvers<void>();
+  this.socket = new WebSocket(this.baseUrl + "/_bun/hmr");
+  this.socket.onmessage = event => { ... connected.resolve() ... };
+  return connected.promise;   // 没有 onerror/onclose，握手失败就永远 pending
+}
+```
+
+同时用 `curl` 直接探测卡住的 dev server（`bundle.test.ts` 用的 `framework: minimalFramework`，纯服务端路由无 HTML 入口）：`curl` 对 `/` 和 `/_bun/hmr` 都秒回干净的 `404`——**服务端完全没卡，是能正常响应的**，问题 100% 在客户端：`WebSocket` 握手没拿到 101 Switching Protocols（大概率就是那个 404），但 `connectSocket()` 没接 `onerror`/`onclose`，于是 promise 永远不 resolve 也不 reject，只能靠外层测试超时（60s）硬杀。这 6 个我确认过用 `minimalFramework`（`bundle`/`esm`/`import-meta-inline`/`plugins`/`react-spa`/`vfile`，虽然 `react-spa` 这次落进了"桶二"，多 test case 的文件里 `stdoutPreview` 只截到最后一段，桶分类对多 case 文件不完全准）。**更深一层"为什么 `minimalFramework` app 的 `/_bun/hmr` 会 404 而不是升级成功"是产品层面的问题（是 OHOS 特有还是所有平台都这样、是不是设计如此），本轮没有继续查**——这是留给下一轮的真正入口，比"60s 超时"这个症状本身有意义得多。测试基建本身也有个可以顺手修的洞：`connectSocket()` 缺 reject 路径，不管这个深层问题是否是 OHOS bug，都值得给 bake-harness 补一个 `onerror`/`onclose` 快速失败，不然任何"HMR 握手失败"类问题都会被 60s 超时伪装成看不出形状的"卡死"。
+
+**桶二**（`Client exited with code 0`）：确认是完全不同的代码路径——`dev.client()` 起的 happy-dom-in-Node 无头浏览器子进程提前退出，跟 `dev.fetch()`/WS 握手无关；用 `hot.test.ts`（HTML 入口，非 `minimalFramework`）复现时 `connectSocket()` 秒连、`Bundled page`/HMR socket 都正常，最后死在同一个 `Client exited with code 0`，说明这是独立于桶一的另一个问题，本轮未继续查子进程为什么会 exit code 0。
+
+**桶三**（`production.test.ts`）：跟 OHOS/沙盒完全无关——`bun build --app` 是 canary-only 的 experimental flag，release channel 的 bottle 直接报 `error: To use the experimental "--app" option, upgrade to the canary build of bun via "bun upgrade --canary"`，任何平台的 release 构建跑这个测试都会这样挂。
+
+**下一轮建议入口（按信噪比排序）**：① 查 `minimalFramework` app 为何 `/_bun/hmr` 不返回 101（服务端路由/HMR 挂载逻辑，OHOS 专属 or 通用）——一旦查清，`bundle`/`esm`/`import-meta-inline`/`plugins`/`vfile` 等一整簇大概率一次性解决；② 给 `connectSocket()` 补 `onerror`/`onclose` reject（测试基建健壮性，独立于①的产品问题，做了以后未来同类故障不会再伪装成"卡死"）；③ `Client` 子进程 `exit code 0` 的根因，影响 `css`/`sourcemap`/`stress`/`dev-and-prod`/`react-spa`。`production.test.ts` 不需要跟进，非 OHOS 问题。
+
+### ①的根因追查（2026-08-19 同日续）：`Bun.serve()` 拿到 `app.framework` + 非空 `routes` 组合时，框架自己的路由/HMR 完全没挂上
+
+用 `bundle.test.ts` 实际落盘的 `bundle1/` 目录（`bun.app.ts`、`routes/index.ts` 均确认文件内容和路径都对，不是 fixture 写坏）手工复现，绕开完整 harness，逐步定位：
+
+1. `bake-harness.ts` 生成的 `harness_start.ts` 模板里有这一行（上游原生代码，`git log -S` 定位到 PR #17738，非 OHOS patch）：
+   ```js
+   const routes = appConfig.static ?? (appConfig.routes ??= {});
+   routes['/_dev_server_test_set'] = async (req, server) => (extractedServer = server, new Response(""));
+   export default { ...appConfig, port: 0 };
+   ```
+   这是测试框架用来"偷"到运行中 `Server` 实例做优雅退出的钩子，所有 devTest 都会经过这行。
+2. **关键分支差异**：`.static` 型（HTML/`emptyHtmlFile` 类，如 `hot.test.ts`/`css.test.ts`）的 `appConfig.static` 非空，`??` 短路，右边 `(appConfig.routes ??= {})` 根本不会执行——最终配置**没有 `.routes` 字段**。`minimalFramework` 型（纯服务端路由，如 `bundle`/`esm`/`vfile` 等）的 `appConfig.static` 是 `undefined`，`??` 落到右边，凭空造出 `appConfig.routes = {}` 再塞进测试钩子——最终配置**同时有 `.app.framework` 和 `.routes`**。这正是"哪些文件卡死、哪些不卡"的精确分野。
+3. **直接实锤**：手工构造 `{ app: { framework: <bundle.test.ts 同款配置> }, routes: { "/_ping_probe": ()=>new Response("pong") }, port: 0 }`，`bun run` 起服务后 curl 三个端点：
+   - `GET /_ping_probe`（我手写的显式 route）→ `200 pong`，正常。
+   - `GET /`（框架文件系统路由该匹配到的 `routes/index.ts`）→ `404`。
+   - WS upgrade `/_bun/hmr`（`DevServer.rs:1334` 里无条件注册的内部路由）→ `404`（不是 403/101，是路由压根没命中）。
+
+   即**只要 `routes` 非空，框架自己的文件系统路由和内部 `/_bun/hmr` WS 端点就完全没挂上**，只有用户手写的那几个显式 route 能响应；`Bun.serve()` 打印"Started development server"（说明 dev-server 启动流程本身没报错/没崩），但 `DevServer.rs::set_routes()` 里注册 `/_bun/hmr`/`/*` 那部分显然没有生效或被短路掉了。
+4. `git log -S "export const minimalFramework"` 定位到 `minimalFramework` 引入于 PR #17641（"hmr7"），跟 `_dev_server_test_set` 钩子（#17738）几乎同期加入、长期共存——如果这是通用 bug，理论上早该在上游 CI 被广泛使用中的这个组合撞出来。目前**倾向于判断这是 OHOS 构建/port 特有的分歧**（`DevServer.rs::set_routes()` 在 `app`+`routes` 同时存在时的行为跟上游期望不一致），但没有非 OHOS 环境可交叉验证，未 100% 排除"上游本来就这样，只是没人凑巧用这个组合触发过"的可能性。
+
+**卡在这一步的原因（已解决，见下）**：往下查只能进 Rust 侧判定逻辑，需要加调试打印后重编——本项目硬约束「构建走 formula 而非项目脚本」不支持本地临时调试构建。解法：**加探针 + 走 GitHub CI 构建验证**，不碰本机安装。
+
+### 用 CI 探针实锤最终根因（2026-08-19 同日再续）：`bake()` 的环境变量覆盖开关本身是坏的，跟 OHOS 无关
+
+在 `feature_flags.rs::bake()`、`ServerConfig.rs` 的 `app` 字段解析、`mod.rs` 的 `DevServer::init` 调用点、`DevServer.rs::set_routes()` 的 `.ws()` 注册点，四处都加了 `CLAUDE_PROBE_BAKE` 环境变量门控的 `eprintln!`（不设该变量时零行为影响），推到新分支 `social4hyq/ohos-bun#debug/bake-feature-flag-probe`（commit `73d879c`）。tap 侧把 `bun-probe.rb`（`diag-bun-probe` 分支）指过去，`test do` 里加了 3 段探针（`bun build --app` 不开/开 flag 各一次 + 完整 `Bun.serve({app, routes})` 链路一次），`gh workflow run bottle-build.yml --ref diag-bun-probe -f formula=bun-probe -f upload=false` 触发，17m47s 编完（run [32230344416](https://github.com/social4hyq/homebrew-core/actions/runs/32230344416)）。CI job log 里的探针输出：
+
+```
+=== CLAUDE PROBE 1: bun build --app, no flag ===
+[claude-probe] bake(): IS_CANARY=false IS_DEBUG=false flag.get()=false raw_env=Err(NotPresent) -> false
+
+=== CLAUDE PROBE 2: bun build --app, BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE=1 ===
+[claude-probe] bake(): IS_CANARY=false IS_DEBUG=false flag.get()=false raw_env=Ok("1") -> false
+
+=== CLAUDE PROBE 3: Bun.serve({app, routes}), flag on, traces DevServer chain ===
+[claude-probe] bake(): IS_CANARY=false IS_DEBUG=false flag.get()=false raw_env=Ok("1") -> false
+[claude-probe] ServerConfig: allow_bake_config=false
+[claude-probe] NewServer::new: config.bake.is_some()=false
+[claude-probe] NewServer::set_routes: dev_server.is_some()=false
+```
+
+**这条 `flag.get()=false raw_env=Ok("1")` 是关键**：`raw_env`（`std::env::var()` 读到的）明确看到环境变量值是 `"1"`，但 `feature_flag::BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE.get()`（走 `env_var.rs` 自己的 `AtomicU8` 缓存 + `libc::getenv()`，跟 `raw_env` 走的不是同一条读取路径）却读出 `false`——环境变量本身摆在那儿，覆盖机制自己没生效。`string_is_truthy()` 的逻辑本身没问题（`"1"` 不在 `["", "0", "false", "no", "off"]` 黑名单里，该判真），所以是 `feature_flag` 这套缓存/读取机制本身有 bug，不是我们传参传错了。
+
+顺手还确认了 `allow_bake_config=false` **不是**独立的第二道关卡——`BunObject.rs:1461` 的 `Bun.serve()` 入口直接把它写成 `allow_bake_config: bun_core::FeatureFlags::bake()`，跟 `bake()` 是同一个值，只是在 `ServerConfig.rs` 里被检查了两次（外层 `if opts.allow_bake_config` + 内层 `if !bun_core::FeatureFlags::bake()`）。
+
+**完整因果链，每一环都有 CI 实证**：`bake()` 因为 `feature_flag` 缓存 bug 恒为 `false`（release build 且 env var 覆盖不生效）→ `allow_bake_config` 跟着为 `false` → `app` 字段整个被跳过解析 → `args.bake` 保持 `None` → `config.bake.is_some()=false` → `DevServer::init()` 根本不会被调用 → `dev_server` 保持 `None` → `NewServer::set_routes()` 的 DevServer 分支直接跳过 → `/_bun/hmr` 的 `.ws()` 注册和框架的 `/*` 文件系统路由兜底都不会执行 → 精确对应此前手工 curl 实测到的"显式 route 能响应、框架路由和 `/_bun/hmr` 全 404"。
+
+**结论**：`bake-harness.ts` 的 `minimalFramework`（纯服务端路由）devTest 套件在**任何** OHOS release-channel bun 构建上都必然如此——不是环境配置问题，不是这轮 shim 改动引入的，是 bun 自己 `feature_flag` 覆盖机制的一个 bug，且暂无法判断是否 OHOS 专属（没有非 OHOS 环境交叉验证；但 `getenv_z()`/`string_is_truthy()`/缓存代码本身看不出任何平台特化分支，形态上更像是通用 bug，只是大概率因为上游从没在纯 release 构建上跑过这批 devTest——他们的 bake CI 大概率始终是 canary/debug 构建，`IS_CANARY||IS_DEBUG` 直接短路，从没依赖过这个 env var 覆盖路径，所以没人踩过）。
+
+### 根因实锤：`feature_flags.rs` 导入了错误的同名模块（纯 Rust 命名遮蔽 bug，与 OHOS 无关）
+
+第二轮探针（绕开缓存直接读 `bun_core::getenv_z()`，跟 `std::env::var()` 走两条不同路径交叉验证；同进程内二次调用 `.get()` 排除竞态）确认：`raw_getenv_z=Some("1")`——OHOS 底层 `libc::getenv()` 完全正常，问题不在读取层。往 `lib.rs` 查，找到：
+
+```rust
+// src/bun_core/lib.rs
+/// `bun.feature_flag.*` runtime env-var getters. The canonical typed
+/// accessors live in `env_var::feature_flag`; this stub provides the
+/// `.get()` accessor surface for flags not yet wired there.
+pub mod feature_flag {
+    macro_rules! flag { ($($name:ident),* $(,)?) => { $(
+        #[allow(non_camel_case_types)] pub struct $name;
+        impl $name { #[inline] pub fn get(&self) -> bool { false } }
+    )* } }
+    flag!(BUN_FEATURE_FLAG_NO_LIBDEFLATE, BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE);
+}
+```
+
+这是个占位桩模块（文档自己写明"真实实现在 `env_var::feature_flag`"），而 `feature_flags.rs` 顶部 `use crate::feature_flag;` 解析到的正是这个桩子，不是 `env_var.rs` 里已经接好环境变量读取+缓存的真实实现——两个模块碰巧同名，纯粹的命名遮蔽。`BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE` 和 `BUN_FEATURE_FLAG_NO_LIBDEFLATE` 的环境变量覆盖开关因此在**任何平台的 release 构建上都从未生效过**，跟 OHOS 毫无关系（`getenv_z()`/`string_is_truthy()`/缓存代码本身没有任何平台特化分支）；没人踩过是因为想用这类实验特性的人一般直接用 canary 构建，`IS_CANARY` 直接短路掉了这条坏掉的路径。修法一行 `use` + 两处补 `.unwrap_or(false)`（真实 accessor 返回 `Option<bool>`，桩子返回裸 `bool`，换过去后类型对不上，第三轮 CI 编译失败又暴露出这个）。三轮 CI 探针把因果链每一环都实锤了，最后一轮 `bake()` 正确返回 `true`，整条链路一路打穿到 `DevServer::init()`（因缺 `react-refresh`/`react-server-dom-bun` fixture 依赖失败，但这恰恰证明之前从未执行到这里）。
+
+**决定：不提上游，直接修在本 fork**（用户明确要求）。原先开的上游 PR `oven-sh/bun#39663` 已关闭（附说明"改走 fork 内部修复"）；干净 fix（同一份 diff，无诊断 eprintln）cherry-pick 到新分支 `fix-bake-feature-flag-stub-shadow`（基于 `ohos-aarch64` HEAD `cc3ea814b`），提 PR [social4hyq/ohos-bun#17](https://github.com/social4hyq/ohos-bun/pull/17)，CI 检查结果与 #16 逐项比对完全一致（同 5 fail/3 pass 既有 baseline 噪音，无新增失败）——**已合并**（merge commit `d84837db0c`，`ohos-aarch64` HEAD 现为此提交）。功能正确性已经在诊断分支的 CI 探针里验证过（同一份代码改动，`bottle-build.yml` run [32244363393](https://github.com/social4hyq/homebrew-core/actions/runs/32244363393) 确认 `bake()` 正确返回 `true` 且完整链路被打通），本次 PR 未重复走探针验证。合并后已清理：远端+本地的 `fix-bake-feature-flag-stub-shadow`（已合并）、`upstream-pr/feature-flag-stub-shadow`（放弃上游路线，废弃）；`debug/bake-feature-flag-probe` 按原计划保留不删，仅留档。
+
+**诊断分支**（`debug/bake-feature-flag-probe`，ohos-bun；tap 的 `diag-bun-probe` 已指到它）保留不合并，仅留档备查。
+
+**#17 合并后的后续**：`minimalFramework` 系的 devTest（`bundle`/`esm`/`import-meta-inline`/`plugins`/`vfile` 等，本轮"卡在 60s HMR 超时"那批）理论上会从"框架路由完全没挂上"变成"真正跑到 `DevServer::init()`"，但下一步大概率会撞上缺 `react-refresh`/`react-server-dom-bun` 等 canary 专属依赖（`bake-harness.ts` 的 `installReactWithCache` 已有相关逻辑但未跟这个 fix 组合验证过）——**修完这个 bug 不等于这批测试立刻全绿**，需要下一轮 `brew upgrade` 后重新全量跑一次 `bake/dev/*` 才能确认实际效果，不要假设已经解决。
