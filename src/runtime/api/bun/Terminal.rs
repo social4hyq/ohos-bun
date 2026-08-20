@@ -559,11 +559,6 @@ impl Terminal {
             }
         }
 
-        // Start reading data
-        // SAFETY: the reader cell is live for the terminal's lifetime; `read`
-        // is the raw re-entrancy-safe entry (its dispatch runs user JS).
-        unsafe { IOReader::read(terminal.reader.as_ptr()) };
-
         // Get or create the JS wrapper
         let this_value = existing_js_value.unwrap_or_else(|| js::to_js(parent_ptr, global_object));
 
