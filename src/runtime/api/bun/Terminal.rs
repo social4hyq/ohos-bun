@@ -36,6 +36,37 @@ use bun_sys::windows;
 
 bun_output::declare_scope!(Terminal, hidden);
 
+/// Diagnostic-only instrumentation for the real-device Terminal+spawn race
+/// found after the duplicate-read() fix (feature_flag/26286 investigation,
+/// 2026-08-20). `scoped_log!` is release-stripped (gated on env::IS_DEBUG),
+/// so this is a plain env-var-gated eprintln! instead, matching the T03b
+/// playbook. Inert unless CLAUDE_DEBUG_TERM is set. Not for merge.
+mod claude_debug {
+    use std::sync::OnceLock;
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    pub fn on() -> bool {
+        *ENABLED.get_or_init(|| std::env::var("CLAUDE_DEBUG_TERM").is_ok())
+    }
+    pub fn now_ms() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    }
+}
+macro_rules! cdbg {
+    ($ptr:expr, $($arg:tt)*) => {
+        if claude_debug::on() {
+            eprintln!(
+                "[claude-term] T@{:x} @{} {}",
+                $ptr as usize,
+                claude_debug::now_ms(),
+                format_args!($($arg)*),
+            );
+        }
+    };
+}
+
 // Generated bindings — `jsc.Codegen.JSTerminal`. The `.classes.ts` codegen
 // emits `crate::generated_classes::js_Terminal` with `from_js`/`to_js` and the
 // cached-value accessors; re-export here so callers continue to spell `js::*`.
@@ -561,6 +592,7 @@ impl Terminal {
 
         // Get or create the JS wrapper
         let this_value = existing_js_value.unwrap_or_else(|| js::to_js(parent_ptr, global_object));
+        cdbg!(parent_ptr, "init: js wrapper created/reused");
 
         // Store the this_value (JSValue wrapper) - start with strong ref since we're actively reading.
         // The JS-side ref is the one taken by RefCount.init() above; released in finalize().
@@ -571,6 +603,9 @@ impl Terminal {
         // Store callbacks via generated gc setters (prevents GC of callbacks while terminal is alive)
         // Note: callbacks were already validated in parseFromJS() and may be wrapped in AsyncContextFrame
         // by withAsyncContextIfNeeded(), so we don't re-check isCallable() here
+        let had_data_cb = options.data_callback.is_some();
+        let had_exit_cb = options.exit_callback.is_some();
+        let had_drain_cb = options.drain_callback.is_some();
         if let Some(cb) = options.data_callback {
             js::gc::set(js::GcValue::Data, this_value, global_object, cb);
         }
@@ -580,6 +615,13 @@ impl Terminal {
         if let Some(cb) = options.drain_callback {
             js::gc::set(js::GcValue::Drain, this_value, global_object, cb);
         }
+        cdbg!(
+            parent_ptr,
+            "init: callbacks registered (data={} exit={} drain={}), about to call read()",
+            had_data_cb,
+            had_exit_cb,
+            had_drain_cb
+        );
 
         // Start reading data LAST — after the JS wrapper exists and the
         // callbacks are registered.
@@ -602,7 +644,13 @@ impl Terminal {
         // instrumentation showed the final terminal entering close_internal
         // with READER_DONE already true and zero dispatches for the whole
         // run. See OHOS_TEST_TODO.md T03.
+        cdbg!(
+            parent_ptr,
+            "init: calling read() now, reader_ptr={:x}",
+            terminal.reader.as_ptr() as usize
+        );
         unsafe { IOReader::read(terminal.reader.as_ptr()) };
+        cdbg!(parent_ptr, "init: read() call returned");
 
         // Replay an exit notification that fired during startup, before the
         // wrapper and callbacks above existed. `writer.start()`,
@@ -610,9 +658,11 @@ impl Terminal {
         // synchronously; that path is one-shot, so without this replay the
         // user's `exit` callback would never fire at all.
         if let Some(code) = terminal.deferred_exit.take() {
+            cdbg!(parent_ptr, "init: replaying deferred_exit={}", code);
             terminal.this_value.with_mut(|v| v.downgrade());
             terminal.call_exit_callback(code, None);
         }
+        cdbg!(parent_ptr, "init: init_terminal returning");
 
         Ok(CreateResult {
             // SAFETY: `parent_ptr` is the heap-allocated allocation above with
@@ -1892,12 +1942,14 @@ impl Terminal {
     // IOReader callbacks
     fn on_reader_done(&self) {
         bun_output::scoped_log!(Terminal, "onReaderDone");
+        cdbg!(self as *const Self, "on_reader_done");
         // exit_code 0 = clean EOF on PTY stream (not subprocess exit code)
         self.on_reader_finished(0);
     }
 
     fn on_reader_error(&self, err: &sys::Error) {
         bun_output::scoped_log!(Terminal, "onReaderError: {:?}", err);
+        cdbg!(self as *const Self, "on_reader_error: {:?}", err);
         // exit_code 1 = I/O error on PTY stream (not subprocess exit code)
         self.on_reader_finished(1);
     }
@@ -1906,6 +1958,7 @@ impl Terminal {
     /// before the exit callback so re-entry (`terminal.close()` from the
     /// callback) sees the flag and no-ops, then release the reader's +1.
     fn on_reader_finished(&self, exit_code: i32) {
+        cdbg!(self as *const Self, "on_reader_finished: ENTER exit_code={} READER_DONE_already={}", exit_code, self.flags.get().contains(Flags::READER_DONE));
         if self.flags.get().contains(Flags::READER_DONE) {
             return;
         }
@@ -1987,8 +2040,16 @@ impl Terminal {
     fn on_read_chunk(&self, chunk: &[u8], has_more: ReadState) -> bool {
         let _ = has_more;
         bun_output::scoped_log!(Terminal, "onReadChunk: {} bytes", chunk.len());
+        cdbg!(
+            self as *const Self,
+            "on_read_chunk: ENTER {} bytes, finalized={} connected={}",
+            chunk.len(),
+            self.flags.get().contains(Flags::FINALIZED),
+            self.flags.get().contains(Flags::CONNECTED)
+        );
 
         if self.flags.get().contains(Flags::FINALIZED) {
+            cdbg!(self as *const Self, "on_read_chunk: DROP (finalized)");
             return true;
         }
 
@@ -2000,11 +2061,14 @@ impl Terminal {
         }
 
         let Some(this_jsvalue) = self.this_value.get().try_get() else {
+            cdbg!(self as *const Self, "on_read_chunk: DROP (this_value.try_get() empty)");
             return true;
         };
         let Some(callback) = js::gc::get(js::GcValue::Data, this_jsvalue) else {
+            cdbg!(self as *const Self, "on_read_chunk: DROP (no data callback via gc::get)");
             return true;
         };
+        cdbg!(self as *const Self, "on_read_chunk: dispatching to JS data callback");
 
         let global_this = self.global();
         // Use try_reserve so a transient OOM on a large chunk doesn't abort

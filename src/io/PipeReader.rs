@@ -4,6 +4,44 @@ use core::ptr::NonNull;
 
 use bun_sys::{self as sys, Fd};
 
+/// Diagnostic-only, matching src/runtime/api/bun/Terminal.rs's claude_debug
+/// module (can't share the module across crates cheaply, so duplicated).
+/// Inert unless CLAUDE_DEBUG_TERM is set. Not for merge.
+mod claude_debug {
+    use std::sync::OnceLock;
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    pub fn on() -> bool {
+        *ENABLED.get_or_init(|| std::env::var("CLAUDE_DEBUG_TERM").is_ok())
+    }
+    pub fn now_ms() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    }
+}
+macro_rules! cdbg {
+    ($ptr:expr, $($arg:tt)*) => {
+        if claude_debug::on() {
+            eprintln!(
+                "[claude-pr] R@{:x} @{} {}",
+                $ptr as usize,
+                claude_debug::now_ms(),
+                format_args!($($arg)*),
+            );
+        }
+    };
+}
+/// `FileType` doesn't derive Debug; this is diagnostic-only, not for merge.
+fn claude_debug_file_type_str(ft: FileType) -> &'static str {
+    match ft {
+        FileType::File => "File",
+        FileType::Pipe => "Pipe",
+        FileType::NonblockingPipe => "NonblockingPipe",
+        FileType::Socket => "Socket",
+    }
+}
+
 use crate::{EventLoopHandle, FilePollFlag, FilePollKind, FilePollRef, Owner, PollTag};
 // `bun.Async.Loop` — on POSIX the uws `us_loop_t`, on Windows the embedded
 // `uv_loop_t` (`bun_io::Loop` is the cfg-aliased nominal that picks the
@@ -468,7 +506,9 @@ impl PosixBufferedReader {
     pub(crate) unsafe fn register_poll(this: *mut Self) -> bool {
         // SAFETY: caller contract; `try_register_poll`'s receiver borrow ends
         // when it returns — before the dispatch below.
-        match unsafe { (*this).try_register_poll() } {
+        let result = unsafe { (*this).try_register_poll() };
+        cdbg!(this, "register_poll: try_register_poll -> {:?}", result);
+        match result {
             Ok(()) => true,
             Err(err) => {
                 // SAFETY: caller contract; (Copy) vtable copied out, no borrow
@@ -584,14 +624,18 @@ impl PosixBufferedReader {
     pub unsafe fn read(this: *mut Self) {
         // SAFETY: caller contract — `this` is live; borrows end at each `;`.
         let Some((fd, file_type, vtable)) = (unsafe { (*this).begin_read() }) else {
+            cdbg!(this, "read: begin_read() returned None (paused?)");
             return;
         };
+        cdbg!(this, "read: ENTER fd={} file_type={}", fd, claude_debug_file_type_str(file_type));
         // The read loop dispatches `on_read_chunk` and touches `*this`
         // afterwards, so the parent (which embeds this reader) must outlive it.
         let _parent = vtable.ref_parent();
         let mut received_hup = false;
         if file_type == FileType::Pipe {
-            match bun_core::is_readable(fd) {
+            let readable = bun_core::is_readable(fd);
+            cdbg!(this, "read: is_readable(fd={}) -> {:?}", fd, readable);
+            match readable {
                 bun_core::Pollable::Ready => {}
                 bun_core::Pollable::Hup => received_hup = true,
                 bun_core::Pollable::NotReady => {
@@ -600,6 +644,8 @@ impl PosixBufferedReader {
                     return;
                 }
             }
+        } else {
+            cdbg!(this, "read: file_type != Pipe ({}), skipping is_readable pre-check, going straight to read_loop", claude_debug_file_type_str(file_type));
         }
         // SAFETY: caller contract.
         unsafe { Self::read_loop(this, file_type, fd, received_hup) };
@@ -609,8 +655,10 @@ impl PosixBufferedReader {
     /// `this` is the live reader registered as the poll's user data; see
     /// [`Self::read`] for why the entry is raw.
     pub unsafe fn on_poll(this: *mut PosixBufferedReader, size_hint: isize, received_hup: bool) {
+        cdbg!(this, "on_poll: ENTER size_hint={} received_hup={}", size_hint, received_hup);
         // SAFETY: caller contract — `this` is live; borrows end at each `;`.
         let Some((fd, file_type, vtable)) = (unsafe { (*this).begin_read() }) else {
+            cdbg!(this, "on_poll: begin_read() returned None (paused?)");
             return;
         };
         bun_sys::syslog!("onPoll({}) = {}", fd, size_hint);
