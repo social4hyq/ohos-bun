@@ -4198,4 +4198,18 @@ PR [social4hyq/ohos-bun#18](https://github.com/social4hyq/ohos-bun/pull/18) 已�
 
 **卡在这里的原因**：往下查的下一步是拿到实际 `epoll_ctl` 调用参数（fd、op、events 掩码）逐次核对，判断是不是"同一 fd 号被前一次未清理的注册占着、新注册被内核判定为冗余而静默丢弃"这类经典 fd 复用/epoll 陈旧状态类缺陷——但本机沙箱拦 `ptrace`（多次记录在案），没有 root strace 通路，`ohos-trace-shim`/`qemu-aarch64 -strace` 这两条既有替代路径都只能截获走 libc 符号的调用，bun 自己直接发起的原始 syscall（很多性能关键路径不走 libc 包装，直接 `syscall()` 编号调用，这也是本轮排查 `PipeReader.rs` 时反复见到的写法）截不到。要继续，需要在 bun 自己的 Rust 代码里再插一层——直接在 `try_register_poll()`/uws 那个 C 库调用点上打印实际拿到的 fd/事件掩码/返回值，而不是只信任 Rust 这一层"我调用了、它说 Ok"的表面判断——这是下一轮的入口，比这轮"黑盒才知道是真机独有"进了一大步。
 
-**收尾**：诊断分支 `debug/terminal-real-device-race`（ohos-bun）保留不合并，纯留档；tap 的诊断 formula `bun-probe.rb`（`diag-bun-probe` 分支）同样不合并；真机上装的 `bun-probe` keg 是独立于生产 `bun` 的旁路安装，不影响任何生产环境，留着供下一轮继续用（或事后 `brew uninstall bun-probe` 清理）。
+### 插桩再下探一层：原始 `epoll_ctl` 系统调用参数与返回码全部正确，问题在内核（同日续二）
+
+再补一层插桩，直接扎进 `src/io/posix_event_loop.rs::register_with_fd_impl`——`register_poll()` 内部实际发起 `epoll_ctl(2)` 的那一行代码本身，打印 `watcher_fd`（epoll 实例本身的 fd）、`op`（ADD/MOD 判定依据 `is_registered()`/`NeedsRearm`/`WasEverRegistered` 三个标志位）、目标 `fd`、请求的 event mask、以及**系统调用的原始返回值和 errno**（不经过任何上层封装判断，`ctl < 0 ? sys::last_errno() : None`）。
+
+**同样的编译关卡**：私有 `mod claude_debug` 里的 helper 又双写成了 `pub fn`，`-D unreachable-pub` 又报了一次错——这次直接照抄上一轮修复经验改成 `pub(crate)`，一次过编译，没有重复踩坑。
+
+**部署方法沿用上一轮验证过的路子**：CI 编译（`bun-probe.rb` 指向新 commit）→ `gh run download` 拿 `bottle-out` 制品 → 本地手工在 `bun-probe.rb` 补一个匹配 CI 真实产出 sha256 的 `bottle do` 块 → 把 tarball 放进 `brew ruby -e '...cached_download'` 算出的精确缓存路径 → `HOMEBREW_NO_AUTO_UPDATE=1 brew install social4hyq/core/bun-probe` 直接落地成独立 keg。全程复用，没有新坑。
+
+**容器基线轨迹**（成功参照）：`fd=1318`(writer)/`fd=1317`(reader) 先后 `epoll_ctl ADD` 均返回 `0`；`read()` 撞 `WouldBlock` 后对 `fd=1317` 发起 `epoll_ctl MOD`（`is_registered=true` 正确识别为重新武装而非首次注册）同样返回 `0`；11ms 后 `on_poll: ENTER` 如期而至，整个流程 14ms 内跑完两个子用例。
+
+**真机决定性证据**：把这份带新插桩的 bottle 部署上真机，跑同一个测试——轨迹跟容器版本**逐字节相同，直到最后一步**：`fd=1498`(writer) ADD 返回 `0`、`fd=1497`(reader) ADD 返回 `0`、`read()` 撞 `WouldBlock` 后 `fd=1497` MOD 返回 `0`、`raw_errno=None`、`init_terminal returning`——**所有 Rust 侧逻辑判断（`is_registered()` 的 ADD/MOD 选择、调用参数、event mask）都完全正确，系统调用本身报告成功**。之后 5000ms 超时期间，进程**再没有发起过任何一次 `register_with_fd_impl` 调用**（没有第三次重新武装的痕迹，说明根本没有任何后续事件驱动过任何 register_poll 路径）——`on_poll` 永远不触发。
+
+**结论（收口）**：这不是 bun 自己代码的 bug——从回调注册顺序、`read()` 调用时机、`WouldBlock` 处理、`is_registered()` 的 ADD/MOD 判断，到最底层 `epoll_ctl` 系统调用的参数和返回码，每一层都核对无误。是**内核接受了这次 `epoll_ctl` 注册、返回成功，但从此再也不为这个 fd 投递任何事件**——一个真实的内核 epoll 实现缺陷，跟 `ohos-compat-shim` 的 `epoll_pipe` 拦截器要处理的那类缺陷同源同气质，只是这次是 bun 自己通过 uws 事件循环库直接发起系统调用，不经过 shim 拦截的 libc 符号层，现有 shim 覆盖不到。**这是黑盒+插桩排查在本机条件下能够达到的极限**——再往下需要 root strace/内核态调试来看内核为什么吞了这个已注册的事件，而本机应用沙箱拦 `ptrace`（多轮记录在案），没有可行的下一步排查手段，只能等 OHOS 官方修复内核，或者由 bun/uws 自己加一层跟 `epoll_pipe` 同款思路的用户态轮询兜底（这台设备上目前唯一已知的可行绕过方式）。
+
+**收尾**：两个诊断分支（`debug/terminal-real-device-race` 的 ohos-bun 侧，`diag-bun-probe` 的 tap 侧）均保留不合并，纯留档；真机上装的 `bun-probe` keg 独立于生产 `bun`，不影响任何生产环境，留着供以后需要复现时直接用（或事后 `brew uninstall bun-probe` 清理）。这条排查线到此彻底收口，不建议再投入本机资源继续深挖同一个内核缺陷——已经拿到了能拿到的最深证据。
