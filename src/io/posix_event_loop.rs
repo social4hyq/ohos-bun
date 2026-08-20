@@ -1315,7 +1315,8 @@ mod epoll_rearm_watchdog {
     }
 
     /// Dead-instance fallback switch (validated on device before promoting
-    /// to always-on; see the FIONREAD block in `run()`).
+    /// to always-on; see the poll-probe block in `run()`). The env var keeps
+    /// the historical FIONREAD name from the first device round.
     fn fionread_enabled() -> bool {
         static ENABLED: OnceLock<bool> = OnceLock::new();
         *ENABLED.get_or_init(|| std::env::var_os("CLAUDE_REARM_FIONREAD").is_some())
@@ -1517,14 +1518,23 @@ mod epoll_rearm_watchdog {
                 // deliveries), so a poke cannot help. Route a synthetic
                 // delivery through the notify pipe instead -- the loop thread
                 // replays a real EPOLLIN through the normal dispatch path.
+                // Probe with poll(2), NOT FIONREAD: on this kernel FIONREAD
+                // reports 0 for PTY masters even with data buffered (probe
+                // 2026-08-20: 36/36 zero-while-readable), while poll(POLLIN)
+                // is 36/36 reliable and consumes nothing.
                 if fionread_enabled() {
-                    let mut avail: libc::c_int = 0;
-                    // SAFETY: ioctl FIONREAD is a read-only query on a valid fd.
-                    let rc = unsafe { libc::ioctl(fd, libc::FIONREAD, &raw mut avail) };
-                    if rc == 0 && avail > 0 {
+                    let mut pfd = libc::pollfd {
+                        fd,
+                        events: libc::POLLIN,
+                        revents: 0,
+                    };
+                    // SAFETY: pfd is a valid single-element pollfd; timeout 0.
+                    let rc = unsafe { libc::poll(&raw mut pfd, 1, 0) };
+                    if rc == 1 && pfd.revents & libc::POLLIN != 0 {
                         if debug() {
                             eprintln!(
-                                "[rearm-wd] fionread hit fd={fd} bytes={avail} -> synthetic delivery"
+                                "[rearm-wd] poll hit fd={fd} revents={:#x} -> synthetic delivery",
+                                pfd.revents
                             );
                         }
                         queue_delivery(fd, userdata);
