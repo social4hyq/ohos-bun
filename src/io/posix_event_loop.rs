@@ -1327,7 +1327,6 @@ mod epoll_rearm_watchdog {
     /// deliveries -- proven on device 2026-08-20).
     struct PendingDelivery {
         fd: i32,
-        events: u32,
         userdata: u64,
     }
 
@@ -1392,15 +1391,11 @@ mod epoll_rearm_watchdog {
     /// Watchdog-thread side: record a delivery and wake the loop by writing
     /// one byte to the notify pipe (epoll delivers the read-end, the loop
     /// dispatches the magic userdata, `drain_pending_deliveries` runs).
-    fn queue_delivery(fd: i32, events: u32, userdata: u64) {
+    fn queue_delivery(fd: i32, userdata: u64) {
         if let Some(&(_, w)) = NOTIFY_PIPE.get() {
             if w >= 0 {
                 if let Ok(mut p) = PENDING.lock() {
-                    p.push(PendingDelivery {
-                        fd,
-                        events,
-                        userdata,
-                    });
+                    p.push(PendingDelivery { fd, userdata });
                 }
                 // SAFETY: one byte into a nonblocking pipe; EAGAIN (full)
                 // is fine -- bytes already queued will wake the loop.
@@ -1532,7 +1527,7 @@ mod epoll_rearm_watchdog {
                                 "[rearm-wd] fionread hit fd={fd} bytes={avail} -> synthetic delivery"
                             );
                         }
-                        queue_delivery(fd, events, userdata);
+                        queue_delivery(fd, userdata);
                         continue;
                     }
                 }
