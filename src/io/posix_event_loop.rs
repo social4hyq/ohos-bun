@@ -1277,6 +1277,7 @@ pub type FlagsSet = enumset::EnumSet<Flags>;
 /// touched, and the redundant `CTL_MOD` is a harmless no-op either way.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 mod epoll_rearm_watchdog {
+    use super::{FilePoll, Flags};
     use std::collections::HashMap;
     use std::sync::{Mutex, Once, OnceLock};
     use std::time::{Duration, Instant};
@@ -1307,6 +1308,150 @@ mod epoll_rearm_watchdog {
         *DISABLED.get_or_init(|| std::env::var_os("BUN_DISABLE_EPOLL_REARM_WATCHDOG").is_some())
     }
 
+    /// Diagnostic trace switch (real-device kernel-defect rounds).
+    fn debug() -> bool {
+        static DEBUG: OnceLock<bool> = OnceLock::new();
+        *DEBUG.get_or_init(|| std::env::var_os("CLAUDE_DEBUG_REARM").is_some())
+    }
+
+    /// Dead-instance fallback switch (validated on device before promoting
+    /// to always-on; see the FIONREAD block in `run()`).
+    fn fionread_enabled() -> bool {
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        *ENABLED.get_or_init(|| std::env::var_os("CLAUDE_REARM_FIONREAD").is_some())
+    }
+
+    /// One synthetic delivery: the (fd, events, userdata) captured when
+    /// FIONREAD found buffered data the kernel will never signal for that
+    /// fd (dead-instance state: ADD=EEXIST, MOD=SUCCESS, DEL=EEXIST, zero
+    /// deliveries -- proven on device 2026-08-20).
+    struct PendingDelivery {
+        fd: i32,
+        events: u32,
+        userdata: u64,
+    }
+
+    /// Pending synthetic deliveries + the pipe that crosses threads safely.
+    /// The pipe's read-end is epoll-ADDed with `&PENDING`'s address as its
+    /// event userdata -- a process-unique "magic" value that
+    /// `Bun__internal_dispatch_ready_poll` recognizes at its top and routes
+    /// to `drain_pending_deliveries` on the loop thread. Same shape as
+    /// HTTPThread's worker->loop pipe, self-contained: no new PollTag, no
+    /// dispatch arm. Ordinary pipes' epoll delivery is reliable on this
+    /// kernel (bun's own stdio pipes and HTTPThread depend on it); only the
+    /// PTY-master-under-many-Terminals interleaving corrupts registrations.
+    static PENDING: Mutex<Vec<PendingDelivery>> = Mutex::new(Vec::new());
+    static NOTIFY_PIPE: OnceLock<(i32, i32)> = OnceLock::new();
+
+    /// The magic epoll userdata marking the notify pipe's read-end.
+    /// `&PENDING` is a process-unique static address; FilePoll pointers come
+    /// from the Store hive/heap, so this can never alias a real poll.
+    pub(crate) fn notify_magic() -> u64 {
+        std::ptr::from_ref(&PENDING) as usize as u64
+    }
+
+    /// Install the notify pipe once (loop thread, from `track()`): an
+    /// O_NONBLOCK pipe whose read-end joins the epfd with the magic
+    /// userdata. Inert unless `CLAUDE_REARM_FIONREAD` is set. Failure (or a
+    /// second call) leaves `(-1, -1)` / EEXIST respectively -- the fallback
+    /// simply stays dormant, never affecting normal operation.
+    fn ensure_notify_pipe(watcher_fd: i32) {
+        if !fionread_enabled() {
+            return;
+        }
+        NOTIFY_PIPE.get_or_init(|| {
+            use bun_sys::{self as sys, linux, linux::EPOLL};
+            let mut fds = [0i32; 2];
+            // SAFETY: pipe2 writes into a valid [i32; 2].
+            let rc = unsafe {
+                libc::syscall(libc::SYS_pipe2, fds.as_mut_ptr(), libc::O_NONBLOCK | libc::O_CLOEXEC)
+            };
+            if rc != 0 {
+                return (-1, -1);
+            }
+            let (r, w) = (fds[0], fds[1]);
+            let mut event = linux::epoll_event {
+                events: EPOLL::IN,
+                u64: notify_magic(),
+            };
+            // SAFETY: `r` is a fresh valid fd; ADD. EEXIST (pipe already
+            // registered from an earlier track) is fine -- same pipe.
+            let ctl = unsafe { linux::epoll_ctl(watcher_fd, EPOLL::CTL_ADD, r, &raw mut event) };
+            if sys::get_errno(ctl) != sys::E::SUCCESS {
+                // SAFETY: both fds are ours and open; close on the error path.
+                unsafe {
+                    libc::close(r);
+                    libc::close(w);
+                }
+                return (-1, -1);
+            }
+            (r, w)
+        });
+    }
+
+    /// Watchdog-thread side: record a delivery and wake the loop by writing
+    /// one byte to the notify pipe (epoll delivers the read-end, the loop
+    /// dispatches the magic userdata, `drain_pending_deliveries` runs).
+    fn queue_delivery(fd: i32, events: u32, userdata: u64) {
+        if let Some(&(_, w)) = NOTIFY_PIPE.get() {
+            if w >= 0 {
+                if let Ok(mut p) = PENDING.lock() {
+                    p.push(PendingDelivery {
+                        fd,
+                        events,
+                        userdata,
+                    });
+                }
+                // SAFETY: one byte into a nonblocking pipe; EAGAIN (full)
+                // is fine -- bytes already queued will wake the loop.
+                let byte = [1u8; 1];
+                let _ = unsafe { libc::write(w, byte.as_ptr().cast(), 1) };
+            }
+        }
+    }
+
+    /// Loop-thread side (from `Bun__internal_dispatch_ready_poll`'s magic
+    /// branch): drain the pipe so it stops firing, then synthesize one
+    /// EPOLLIN event per pending entry through the normal dispatch path.
+    pub(crate) fn drain_pending_deliveries() {
+        if let Some(&(r, _)) = NOTIFY_PIPE.get() {
+            if r >= 0 {
+                let mut buf = [0u8; 64];
+                loop {
+                    // SAFETY: `r` is a valid nonblocking fd; `buf` is valid.
+                    let n = unsafe { libc::read(r, buf.as_mut_ptr().cast(), buf.len()) };
+                    if n <= 0 {
+                        break;
+                    }
+                }
+            }
+        }
+        let pending: Vec<PendingDelivery> = match PENDING.lock() {
+            Ok(mut p) => std::mem::take(&mut *p),
+            Err(e) => e.into_inner(),
+        };
+        for pd in pending {
+            // SAFETY: userdata was captured at registration time. Stale
+            // entries (FilePoll recycled/closed between capture and now) are
+            // rejected by the fd + IgnoreUpdates checks, mirroring
+            // `Store::put`'s IgnoreUpdates discipline.
+            unsafe {
+                let fp = pd.userdata as *mut FilePoll;
+                if (*fp).fd.native() != pd.fd {
+                    continue; // stale: slot recycled for a different fd
+                }
+                if (*fp).flags.contains(Flags::IgnoreUpdates) {
+                    continue; // pending free
+                }
+                let ev = bun_sys::linux::epoll_event {
+                    events: bun_sys::linux::EPOLL::IN,
+                    u64: pd.userdata,
+                };
+                (*fp).on_epoll_event(&ev);
+            }
+        }
+    }
+
     /// Called from `register_with_fd_impl` after a successful ADD/MOD for a
     /// `Flags::EpollRearmWatch`-tagged fd. Any call resets the fd to the base
     /// interval -- this fires on every natural WouldBlock-driven MOD for an
@@ -1315,6 +1460,9 @@ mod epoll_rearm_watchdog {
         if disabled() {
             return;
         }
+        // Loop thread: install the notify pipe before the watchdog thread
+        // can ever observe a FIONREAD hit (OnceLock makes this idempotent).
+        ensure_notify_pipe(watcher_fd);
         {
             let mut t = table().lock().unwrap_or_else(|e| e.into_inner());
             t.insert(
@@ -1368,6 +1516,26 @@ mod epoll_rearm_watchdog {
                 due
             };
             for (watcher_fd, fd, events, userdata) in due {
+                // Dead-instance probe: if data is already buffered, this
+                // kernel will never deliver an event for the fd (proven on
+                // device: ADD=EEXIST, MOD=SUCCESS, DEL=EEXIST, zero
+                // deliveries), so a poke cannot help. Route a synthetic
+                // delivery through the notify pipe instead -- the loop thread
+                // replays a real EPOLLIN through the normal dispatch path.
+                if fionread_enabled() {
+                    let mut avail: libc::c_int = 0;
+                    // SAFETY: ioctl FIONREAD is a read-only query on a valid fd.
+                    let rc = unsafe { libc::ioctl(fd, libc::FIONREAD, &raw mut avail) };
+                    if rc == 0 && avail > 0 {
+                        if debug() {
+                            eprintln!(
+                                "[rearm-wd] fionread hit fd={fd} bytes={avail} -> synthetic delivery"
+                            );
+                        }
+                        queue_delivery(fd, events, userdata);
+                        continue;
+                    }
+                }
                 let mut event = linux::epoll_event {
                     events,
                     u64: userdata,
@@ -1644,6 +1812,16 @@ unsafe extern "C" fn Bun__internal_dispatch_ready_poll(
     loop_: *mut Loop,
     tagged_pointer: *mut c_void,
 ) {
+    // Watchdog FIONREAD notify pipe: its registration uses the PENDING
+    // static's address as userdata -- never a FilePoll. Route to the
+    // loop-thread drain instead of poll dispatch (one compare; inert unless
+    // the FIONREAD fallback is enabled).
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    if tagged_pointer as usize == epoll_rearm_watchdog::notify_magic() as usize {
+        epoll_rearm_watchdog::drain_pending_deliveries();
+        return;
+    }
+
     let tag = Pollable::from(tagged_pointer);
 
     if tag.tag() != Pollable::FILE_POLL_TAG {
