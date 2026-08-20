@@ -1365,7 +1365,7 @@ mod epoll_rearm_watchdog {
     }
 
     fn run() {
-        use bun_sys::linux::{self, EPOLL};
+        use bun_sys::{self as sys, linux::{self, EPOLL}};
         loop {
             std::thread::sleep(TICK);
             let now = Instant::now();
