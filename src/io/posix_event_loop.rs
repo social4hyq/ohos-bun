@@ -1323,6 +1323,16 @@ mod epoll_rearm_watchdog {
         *ADD_RETRY.get_or_init(|| std::env::var_os("CLAUDE_REARM_ADD_RETRY").is_some())
     }
 
+    /// Experimental (round 2, after ENOENT was disproved on-device): if a
+    /// healthy MOD still leaves the kernel never delivering, the fd's epoll
+    /// entry may be in a state only a full re-registration path reaches --
+    /// CTL_DEL followed by CTL_ADD forces the kernel through the complete
+    /// insert path (readiness check included) instead of MOD's update path.
+    fn del_add() -> bool {
+        static DEL_ADD: OnceLock<bool> = OnceLock::new();
+        *DEL_ADD.get_or_init(|| std::env::var_os("CLAUDE_REARM_DELADD").is_some())
+    }
+
     /// Called from `register_with_fd_impl` after a successful ADD/MOD for a
     /// `Flags::EpollRearmWatch`-tagged fd. Any call resets the fd to the base
     /// interval -- this fires on every natural WouldBlock-driven MOD for an
@@ -1349,6 +1359,9 @@ mod epoll_rearm_watchdog {
         }
         static STARTED: Once = Once::new();
         STARTED.call_once(|| {
+            if debug() {
+                eprintln!("[rearm-wd] watchdog thread starting");
+            }
             let _ = std::thread::Builder::new()
                 .name("bun-epoll-rearm-wd".into())
                 .spawn(run);
@@ -1391,24 +1404,44 @@ mod epoll_rearm_watchdog {
                     events,
                     u64: userdata,
                 };
+                if del_add() {
+                    // SAFETY: full re-registration from a second thread; each
+                    // epoll_ctl is documented safe concurrently with
+                    // epoll_wait/pwait on the same epfd from another thread.
+                    let del =
+                        unsafe { linux::epoll_ctl(watcher_fd, EPOLL::CTL_DEL, fd, &raw mut event) };
+                    let add =
+                        unsafe { linux::epoll_ctl(watcher_fd, EPOLL::CTL_ADD, fd, &raw mut event) };
+                    if debug() {
+                        eprintln!(
+                            "[rearm-wd] poke DEL+ADD fd={fd} watcher={watcher_fd} del={:?} add={:?}",
+                            sys::get_errno(del),
+                            sys::get_errno(add)
+                        );
+                    }
+                    continue;
+                }
                 // SAFETY: redundant CTL_MOD from a second thread; epoll_ctl is
                 // documented safe to call concurrently with epoll_wait/pwait
                 // on the same epfd from another thread.
                 let ctl =
                     unsafe { linux::epoll_ctl(watcher_fd, EPOLL::CTL_MOD, fd, &raw mut event) };
                 let errno = sys::get_errno(ctl);
+                if debug() {
+                    // Trace EVERY poke (success included) -- the first device
+                    // round only logged failures and stayed silent, which was
+                    // ambiguous between "thread never ran" and "all pokes
+                    // succeed while the kernel still never delivers".
+                    eprintln!("[rearm-wd] poke MOD fd={fd} watcher={watcher_fd} errno={errno:?}");
+                }
                 if errno != sys::E::SUCCESS {
-                    if debug() {
-                        eprintln!(
-                            "[rearm-wd] poke MOD fd={fd} watcher={watcher_fd} errno={errno:?}"
-                        );
-                    }
                     // Hypothesis under test (2026-08-20 real-device round): a
                     // "dead instance" Terminal is one whose original CTL_ADD
                     // was silently dropped by the kernel -- the fd was never
                     // in the epoll set, so every CTL_MOD pokes at nothing and
                     // returns ENOENT (previously discarded as inert). Re-ADD
-                    // is the only recovery for that state.
+                    // is the only recovery for that state. (Round 1 result:
+                    // zero failures observed -- retained for completeness.)
                     if add_retry() && errno == sys::E::ENOENT {
                         let add = unsafe {
                             linux::epoll_ctl(watcher_fd, EPOLL::CTL_ADD, fd, &raw mut event)
