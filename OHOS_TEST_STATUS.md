@@ -4172,8 +4172,14 @@ PR [social4hyq/ohos-bun#18](https://github.com/social4hyq/ohos-bun/pull/18) 已�
 
 **真机复测发现：修复本身成立，但没有完全解决 `26286.test.ts` 在真机上的问题——这是本节最重要的更正**。CI 容器里 2/2 pass，真机上 `bun test test/regression/issue/26286.test.ts` **稳定复现 2/2 fail**（超时放宽到 30s 依然不通过，不是"再等等就好"）。排查：
 
-1. `terminal.test.ts` 里跟 `26286.test.ts` 结构几乎一致的用例（`existing terminal works with subprocess`，同样"先建 Terminal 再 `Bun.spawn(cmd, {terminal})`"）——整文件跑（95 pass/3 fail）时这条**通过**，但用 `-t` 单独拎出来跑（3 次）**每次都超时失败**。这条用例在 `describe.concurrent("Bun.spawn with terminal option", ...)` 块里。
-2. 这精确指向一个和这次"重复 read()"完全独立的更深层问题：**孤立的单个 PTY 在真机上，数据到达后不会被及时投递/唤醒；有其它并发 I/O 活动伴随时才会被顺带唤醒**——不是"偶发"意义上的 flaky（单独跑是 3/3 稳定失败，不是时好时坏），是"孤立场景确定性挂、并发场景侥幸过"这个更精确的模式。
-3. 排除法：`OHOS_COMPAT_SHIM_DISABLE=epoll_pipe` 关掉不影响结果（`Bun.Terminal` 的 PTY 读取是 bun 自己的 Rust `IOReader`/epoll 代码路径，压根不经过 shim 的 `epoll_pipe` 拦截器，这个排除是意料之中，确认问题在 bun 自身代码而非 shim 层）；`OHOS_COMPAT_SHIM_DISABLE=<全部>` 直接 core dump（`close_range` 是本沙盒里 bun 能跑起来的硬依赖，已知记录）。
+1. `terminal.test.ts` 里跟 `26286.test.ts` 结构几乎一致的用例（`existing terminal works with subprocess`，同样"先建 Terminal 再 `Bun.spawn(cmd, {terminal})`"）——整文件跑时这条**多数情况下通过**，但用 `-t` 单独拎出来跑（连续 3 次，含一次放宽到 30s）**每次都超时失败**，从不例外。这条用例在 `describe.concurrent("Bun.spawn with terminal option", ...)` 块里。第一版记录把这个对比总结成"孤立挂、并发过"的干净二分——**继续深挖后证明这个总结过于干净，是误判**，见下。
 
-**结论**：这次的"重复 `read()`"修复是真实、必要、已验证生效的 fix——它解决的是一个确定性的、"回调注册前数据到达必丢"的 bug，CI 容器结果证明了这一点，不需要撤销或质疑。但它**不足以**让 `26286.test.ts` 在真机上转绿——真机上还叠着至少一个新的、独立的、未诊断的深层问题（孤立 PTY 事件在低负载下投递不及时/不投递）。这是本轮遗留下来最值得优先跟进的新线索，气质上很像本 session 反复打交道的 epoll/内核唤醒类问题（`epoll_pipe`/`close_range` 那条线），但这次是 bun 自身内部代码，需要单独开一轮深挖，本轮不再继续（时间/精力已经投入很多，且已经从"完全不知道怎么回事"推进到"精确定位到孤立 vs 并发这个分野"，是个扎实的交接点）。
+2. **排除内核 epoll 缺陷**：写了个不经过 bun/Rust 代码、纯 C 的探针（`openpty()` + `epoll_wait()`，模拟"隔离 PTY" vs "PTY 混着 4 个其他 pipe 一起被 epoll 监视"两种场景各跑 10 次）。真机上两种场景 **0/10 超时，事件投递都在 0-1ms 内完成**——内核 epoll 层面对孤立 PTY 的事件投递完全可靠，没有任何缺陷。这排除了"孤立 PTY 内核事件丢失"这个假设本身。
+
+3. **排除"任何并发活动都能救场"**：在最小复现脚本里加一个纯 JS 层的 `setInterval(10ms)`（不产生任何真实 I/O，只是让事件循环有活干），连跑 3 次，**3/3 依然超时**——不是"有并发活动就行"，之前的"并发能救场"猜测这一半也站不住。
+
+4. **推翻"孤立必挂、并发必过"的二分**：多跑几次 `terminal.test.ts` 整文件（不做任何改动，纯粹重复跑），失败的具体用例集合**每次都不一样**——95 pass/3 fail、94 pass/4 fail、92 pass/6 fail，"existing terminal works with subprocess"这条只在其中 2/3 次侥幸通过，另一次也在失败名单里。也就是说它并不特殊，只是"整个 Terminal + spawn 数据链路上有一撮子用例会摇摆"这个大集合里普通的一个成员——单独反复跑之所以看起来"稳定 100% 失败"，很可能只是这个特定子用例本身摇摆概率偏高、样本量（3 次）太小,不是真的有"孤立 vs 并发"这条干净的因果线。
+
+5. **排除 shim 层**：`OHOS_COMPAT_SHIM_DISABLE=epoll_pipe` 关掉结果不变（`Bun.Terminal` 走 bun 自己的 Rust `IOReader`/epoll 代码路径，压根不经过 shim 的 `epoll_pipe` 拦截器）；`OHOS_COMPAT_SHIM_DISABLE=<全部>` 直接 core dump（`close_range` 是本沙盒里 bun 能跑起来的硬依赖，已知记录）。
+
+**结论（更正版）**：这次的"重复 `read()`"修复是真实、必要、已验证生效的 fix，不需要撤销或质疑。但真机上 `Bun.Terminal` + `Bun.spawn(cmd, {terminal})` 这整条数据链路（覆盖 `26286.test.ts` 和 `terminal.test.ts` 里一整撮子用例）存在一个**真正的、时序相关的 race**（不是简单的"孤立 vs 并发"）——纯内核 epoll 层面验证完全可靠，问题在 bun 自己的 Rust 代码里，但具体是 `IOReader` 的 poll 注册时机、Terminal 初始化和子进程 spawn 的先后顺序，还是别的什么，本轮黑盒测试已经无法进一步收窄。这个量级的问题需要跟 T03b 当初那轮同款打法——在 `Terminal.rs`/`IOReader` 关键路径插桩打日志、地址标记生命周期、真机跑多轮找规律——而不是继续黑盒试探，本轮到此为止，留给下一轮按 T03b 的方法论专门开一次深挖。
