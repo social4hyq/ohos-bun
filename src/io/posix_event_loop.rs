@@ -1307,6 +1307,22 @@ mod epoll_rearm_watchdog {
         *DISABLED.get_or_init(|| std::env::var_os("BUN_DISABLE_EPOLL_REARM_WATCHDOG").is_some())
     }
 
+    /// Diagnostic probe (real-device kernel-defect investigation, 2026-08-20):
+    /// stderr trace of every poke syscall result.
+    fn debug() -> bool {
+        static DEBUG: OnceLock<bool> = OnceLock::new();
+        *DEBUG.get_or_init(|| std::env::var_os("CLAUDE_DEBUG_REARM").is_some())
+    }
+
+    /// Experimental: when a poke's CTL_MOD comes back ENOENT (hypothesis: the
+    /// kernel silently dropped the original CTL_ADD, so the fd was never in
+    /// the epoll set and MOD cannot find it), re-issue the registration as
+    /// CTL_ADD instead. Validated on-device before promoting to unconditional.
+    fn add_retry() -> bool {
+        static ADD_RETRY: OnceLock<bool> = OnceLock::new();
+        *ADD_RETRY.get_or_init(|| std::env::var_os("CLAUDE_REARM_ADD_RETRY").is_some())
+    }
+
     /// Called from `register_with_fd_impl` after a successful ADD/MOD for a
     /// `Flags::EpollRearmWatch`-tagged fd. Any call resets the fd to the base
     /// interval -- this fires on every natural WouldBlock-driven MOD for an
@@ -1314,6 +1330,9 @@ mod epoll_rearm_watchdog {
     pub(crate) fn track(watcher_fd: i32, fd: i32, events: u32, userdata: u64) {
         if disabled() {
             return;
+        }
+        if debug() {
+            eprintln!("[rearm-wd] track fd={fd} watcher={watcher_fd} events={events:#x} userdata={userdata:#x}");
         }
         {
             let mut t = table().lock().unwrap_or_else(|e| e.into_inner());
@@ -1374,11 +1393,34 @@ mod epoll_rearm_watchdog {
                 };
                 // SAFETY: redundant CTL_MOD from a second thread; epoll_ctl is
                 // documented safe to call concurrently with epoll_wait/pwait
-                // on the same epfd from another thread. A failure here (most
-                // likely ENOENT: unregistered/closed between our snapshot and
-                // this call) is inert -- nothing to recover, the fd is gone.
-                let _ =
+                // on the same epfd from another thread.
+                let ctl =
                     unsafe { linux::epoll_ctl(watcher_fd, EPOLL::CTL_MOD, fd, &raw mut event) };
+                let errno = sys::get_errno(ctl);
+                if errno != sys::E::SUCCESS {
+                    if debug() {
+                        eprintln!(
+                            "[rearm-wd] poke MOD fd={fd} watcher={watcher_fd} errno={errno:?}"
+                        );
+                    }
+                    // Hypothesis under test (2026-08-20 real-device round): a
+                    // "dead instance" Terminal is one whose original CTL_ADD
+                    // was silently dropped by the kernel -- the fd was never
+                    // in the epoll set, so every CTL_MOD pokes at nothing and
+                    // returns ENOENT (previously discarded as inert). Re-ADD
+                    // is the only recovery for that state.
+                    if add_retry() && errno == sys::E::ENOENT {
+                        let add = unsafe {
+                            linux::epoll_ctl(watcher_fd, EPOLL::CTL_ADD, fd, &raw mut event)
+                        };
+                        if debug() {
+                            eprintln!(
+                                "[rearm-wd] ADD-retry fd={fd} watcher={watcher_fd} errno={:?}",
+                                sys::get_errno(add)
+                            );
+                        }
+                    }
+                }
             }
         }
     }
