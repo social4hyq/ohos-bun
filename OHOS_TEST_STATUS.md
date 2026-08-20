@@ -4213,3 +4213,28 @@ PR [social4hyq/ohos-bun#18](https://github.com/social4hyq/ohos-bun/pull/18) 已�
 **结论（收口）**：这不是 bun 自己代码的 bug——从回调注册顺序、`read()` 调用时机、`WouldBlock` 处理、`is_registered()` 的 ADD/MOD 判断，到最底层 `epoll_ctl` 系统调用的参数和返回码，每一层都核对无误。是**内核接受了这次 `epoll_ctl` 注册、返回成功，但从此再也不为这个 fd 投递任何事件**——一个真实的内核 epoll 实现缺陷，跟 `ohos-compat-shim` 的 `epoll_pipe` 拦截器要处理的那类缺陷同源同气质，只是这次是 bun 自己通过 uws 事件循环库直接发起系统调用，不经过 shim 拦截的 libc 符号层，现有 shim 覆盖不到。**这是黑盒+插桩排查在本机条件下能够达到的极限**——再往下需要 root strace/内核态调试来看内核为什么吞了这个已注册的事件，而本机应用沙箱拦 `ptrace`（多轮记录在案），没有可行的下一步排查手段，只能等 OHOS 官方修复内核，或者由 bun/uws 自己加一层跟 `epoll_pipe` 同款思路的用户态轮询兜底（这台设备上目前唯一已知的可行绕过方式）。
 
 **收尾**：两个诊断分支（`debug/terminal-real-device-race` 的 ohos-bun 侧，`diag-bun-probe` 的 tap 侧）均保留不合并，纯留档；真机上装的 `bun-probe` keg 独立于生产 `bun`，不影响任何生产环境，留着供以后需要复现时直接用（或事后 `brew uninstall bun-probe` 清理）。这条排查线到此彻底收口，不建议再投入本机资源继续深挖同一个内核缺陷——已经拿到了能拿到的最深证据。
+
+### 用户态轮询兜底实验：redundant `epoll_ctl(MOD)` 确认能解开内核缺陷（同日续三）
+
+上一节结论提到唯一已知可行绕过是"跟 `epoll_pipe` 同款思路的用户态轮询兜底"，这轮直接验证这条路径是否真的有效，而不是停在推测。
+
+**实验设计**：在 `posix_event_loop.rs::register_with_fd_impl` 里加一个 `CLAUDE_REARM_WATCHDOG` 门控的实验模块（`claude_rearm_watchdog`）。每次一个 `Flags::Readable` 注册成功后，把 `(watcher_fd, target_fd, events, event.u64)` 存进一组全局原子变量（**必须把原始注册用的 `event.u64`——也就是内核里存的 `FilePoll` 指针——原样带上**，因为 `CTL_MOD` 是整条替换内核存的 event data，传错/传 0 会在内核真的恢复投递的那一刻造成野指针分发）。后台起一个线程，每 500ms 用这组参数发起一次冗余的 `epoll_ctl(CTL_MOD)`——纯 OS 层系统调用，不碰任何 Rust 侧 `FilePoll` 状态，`epoll_ctl` 官方文档保证可以跟另一线程的 `epoll_wait`/`pwait` 并发调用。这版实验只留最近一次 Readable 注册（全局单槽、后写覆盖前写），刻意做成最小可行验证，不是生产设计。
+
+**部署**：沿用同一套 CI 编译 + 制品搬运真机的流程（`bun-probe.rb` r70→71，指向新 commit `5ac432a423`），容器内 `test do` 探针确认编译通过、watchdog 线程能启动不崩溃（容器本身不复现这个 bug，只做编译健全性验证）。
+
+**真机 A/B 交替结果（同一个 build，只切换环境变量，`26286.test.ts`）**：
+
+| 轮次 | watchdog | 结果 |
+|---|---|---|
+| 1 | ON | 2 pass / 0 fail |
+| 2 | OFF | 0 pass / 2 fail |
+| 3 | ON | 2 pass / 0 fail |
+| 4 | OFF | 0 pass / 2 fail |
+| 5 | ON | 2 pass / 0 fail |
+| 6 | OFF | 0 pass / 2 fail |
+
+3 组交替配对，**每一组都是开则全过、关则全挂，零例外**——这是目前这条调查线里最干净的因果信号，直接证实"内核接受注册却不投递事件"这个状态可以被一次冗余的 `epoll_ctl(MOD)` 解开。
+
+**更大范围的 `terminal.test.ts`（98 个子用例，多 fd 并发）没有同等改善**：ON/OFF 交替 4 轮，pass 数在 93-95 之间摇摆，两种模式下都有，且"can receive binary data in callback"这条在 ON/OFF 下都稳定失败——这不意外，当前实验版本只有一个全局槽位，98 个子用例并发跑的场景下大量 Terminal 实例的 fd 会持续把彼此从这个槽位里挤出去，多数 fd 根本轮不上被兜底。这不是"机制无效"，是"这版最小实验的覆盖面不够"。
+
+**结论**：内核缺陷本身**可以在用户态被绕过**，机制已经拿到干净的真机证据。要把这个变成能覆盖 `terminal.test.ts` 全部并发场景、能合并的真正修复，需要把单槽实验换成 `ohos-compat-shim` 的 `epoll_pipe` 那套设计——每个已注册 fd 一条记录的表、只在真正判定"卡住"（一段时间没有任何投递）时才补一次 `CTL_MOD`、成功唤醒后立刻回落——而不是无差别每 500ms 全局戳一次。这是一个新的实现任务（在 bun 自己的 `posix_event_loop.rs`/`PipeReader.rs` 里做，不是改 `ohos-compat-shim`，因为这条路径从不经过 shim 的 libc 符号拦截层），范围和工作量需要用户确认后再动手，本节只记录"验证机制有效"这一步的完整证据。
