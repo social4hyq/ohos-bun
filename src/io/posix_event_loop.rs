@@ -1428,7 +1428,7 @@ mod epoll_rearm_watchdog {
         }
         let pending: Vec<PendingDelivery> = match PENDING.lock() {
             Ok(mut p) => std::mem::take(&mut *p),
-            Err(e) => e.into_inner(),
+            Err(e) => std::mem::take(&mut *e.into_inner()),
         };
         for pd in pending {
             // SAFETY: userdata was captured at registration time. Stale
