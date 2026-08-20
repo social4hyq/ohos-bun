@@ -4298,3 +4298,32 @@ beforeAll 的 `bun install` exit 1 且 stderr 被 `&> /dev/null` 吞掉——手
 - 开放项清单变化：`tty.test.ts` 移除（过）、`ls.test.ts` 移除（修复）、`child_process.test.ts` 归类（有意适配）、`next-build.test.ts` 归档（既有大类）——**4 项收口，剩 `spawn-streaming-stdin`（fd 多 1，可走 CDN 旧 bottle A/B）与 `cluster/test-docs-http-server`（20-way IPC）两项真开放**。
 - terminal flaky 升级为有明确假设的可验证问题：**watchdog 补踢记 errno + MOD 失败 ADD 重试**，一轮插桩可定。
 - 诊断脚本留在 `logs/triage-2026-08-20/echo-probe*.ts`（非测试文件，不进 CI 统计）。
+
+## ADD 重试假设插桩验证（2026-08-20 深夜，bun-probe r75/r76，`d36834e472`/`7f0e17079c`）
+
+承接上一节「死实例态」的机制假设，走完整 CI 编译+制品搬运流程两轮（`debug/rearm-add-retry` 分支 + tap `diag-bun-probe` r74→76，构建 run 32388237388/32421821515）。r74 首编译失败一次（`sys` 别名不进子模块作用域，E0433×4，本地导入修复）。
+
+### 三个假设两真一假，死实例态定案
+
+| 假设 | 验证手段 | 结果 |
+|---|---|---|
+| H1：内核静默丢 ADD → MOD 返 ENOENT → ADD 重试可救 | r75 poke 失败打日志 + `CLAUDE_REARM_ADD_RETRY` | **证伪**：3×12 连发 5 个死实例，poke MOD **零失败** |
+| H4：`localFlags \|= ECHO` tcsetattr 竞态（数据压根没回显） | 独立探针回读 `terminal.localFlags` | **证伪**：5 个死实例回读全部 `ECHO=ON`（flags=0x8a3b） |
+| 插桩盲区：成功 poke 不打日志，「线程没跑」与「poke 全成功」不可分 | r76 每个 poke 全打 + 线程启动日志 | **排除**：`watchdog thread starting` 在打；**64/64 poke `errno=SUCCESS`** |
+
+### DEL+ADD 实验（r76，`CLAUDE_REARM_DELADD`）与第三个内核怪癖
+
+CTL_DEL+CTL_ADD 强制完整重注册路径——**无疗效**（3 run 共 9 个死实例，量级不变），且轨迹暴露新怪癖：**54/54 `del=EEXIST add=EEXIST`**。ADD=EEXIST 证明内核视角 fd **确实在 epoll 表里**；DEL 返回 EEXIST（对 DEL 无标准语义）说明**删除路径碰不到这个注册项**。
+
+### 死实例态最终形状（本轮定案）
+
+**fd 在 epoll 表里（ADD=EEXIST、MOD=SUCCESS），但就绪投递路径永不触达它，CTL_DEL 也移除不了它（EEXIST）**——内核侧注册项进入损坏态：存在于注册结构（所以 ADD/MOD 都认它），不在就绪列表（所以事件永不来），删除路径不匹配（所以 DEL 报错）。与 PipeWriter.rs 已知注释（DEL 成功后事件照来）同族，是 HongMeng 内核 epoll CTL 路径的第 3 个已实证怪癖。**用户态通过 epoll_ctl（ADD/MOD/DEL 任何组合）无法救活或清除死实例**——watchdog 的 MOD 兜底对「晚到态」有效（26286 已修）、对「死实例态」结构性无效。
+
+### 下一步方向（未动手）
+
+epoll_ctl 路线到头后剩下的用户态通路是**绕过事件、直查数据**：watchdog 线程对 poke 多次仍零事件的 fd 用 `ioctl(FIONREAD)` 查 PTY 缓冲字节数，>0 即「数据在等、事件丢了」，此时跨线程唤醒 event loop（uws async wake）强制该 reader 走一次 `read()`——把 `ohos-compat-shim` poll/ppoll 的 FIFO 缓存兜底哲学搬进 bun 内部 watchdog。实现+验证是一个新的独立轮次。
+
+### 留档
+
+- 诊断分支 `debug/rearm-add-retry`（ohos-bun）与 `diag-bun-probe` r76（tap）保留不合并；真机 `bun-probe` r76 keg 保留供复现
+- 探针与轨迹：`logs/triage-2026-08-20/{echo-probe-flags.ts,echo-probe-seq.ts,add-retry-baseline.out,add-retry-r76-baseline.out,add-retry-r76-deladd.out}`
