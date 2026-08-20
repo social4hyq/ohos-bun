@@ -4128,3 +4128,44 @@ onExit: (subprocess, exitCode, signalCode, error) => {
 PR [social4hyq/ohos-bun#18](https://github.com/social4hyq/ohos-bun/pull/18) 已合并（跟 #17 一样撞上既有 baseline 噪音检查失败，判断依据同前）。**这个 fix 是纯 TS 测试基建代码，不影响编译产物，不需要走 tap `bun.rb` bump/bottle 重建**——`bun test` 直接从仓库源码树读取测试文件，无论指向哪个 bun 二进制都立即生效，本地这轮验证用的正是刚发布的 r67 bottle。
 
 **`test/bake/dev/*` 这条线到此彻底收口**：从 r66 基线的"19 个文件卡 60s 超时、完全不知道怎么回事"，到定位两个完全独立、互不相关的真实 bug（一个 Rust 侧模块名遮蔽、一个 TS 侧类型比较），各自单独验证，各自单独发布，最终 23/23 文件、150/150 子用例全绿。不需要再有下一轮。
+
+## r66 遗留"30 个未分类新面孔"排查（2026-08-20）
+
+串行隔离重跑（`--include` 逗号分隔精确匹配，避开 zsh 不对未加引号变量做 word-split 的坑——第一次用 `$FILES`（bash 语法习惯）传参传成了单个多行字符串，0 个文件匹配上；改用 `paste -sd, ... | --include="$INCLUDES"` 才对上 30/30）。
+
+**4 个直接转绿**（20 核并发下的假阳性，串行隔离一次过）：`integration/expo-app/expo.test.ts`、`integration/vite-build/vite-build.test.ts`、`js/third_party/body-parser/express-memory-leak.test.ts`、`js/web/fetch/fetch-leak.test.ts`。
+
+**其余 26 个逐个查过失败签名后，绝大多数并非新问题——直接匹配上更早轮次（r31-r61 之间）已经建档、部分甚至已判定"等上游"的既有分类**：
+
+| 类别 | 文件 | 定性 |
+|---|---|---|
+| T09（第三方包缺 OHOS 预编译原生二进制，class E） | `sharp.test.ts`、`js/third_party/@napi-rs/canvas/napi-rs-canvas.test.ts`、`js/third_party/prisma/prisma.test.ts`（顶部 `import { createCanvas } from "@napi-rs/canvas"` 做渲染负载模拟，报错栈跟 canvas 测试一模一样，确认是同一根因、非两个 bug）、`js/third_party/resvg/bbox.test.js`、`js/bun/test/parallel/test-integration-rspack.ts`（`rspack.linux-arm64-ohos.node` 不存在）、`regression/issue/24364.test.ts`（`bun add typescript` 解析到 tsgo 原生的 7.x，无 `@typescript/typescript-openharmony-arm64`，历史台账已判定性 Skip）| 已知，不重查 |
+| T14（网络/包管理器超时预算，class D 为主） | `cli/install/bun-install-registry.test.ts`（240 pass/3 fail）、`cli/install/bun-install.test.ts`（222 pass/1 fail）、`cli/install/bun-pm-why.test.ts`（直接验证：某子用例卡 300000ms 超时，日志显示确实在真实网络装包，"Saved bun.lock (88 packages) [301.21s]"——单纯太慢不是挂）、`cli/install/bunx.test.ts`（33 pass/1 fail）、`cli/install/bun-upgrade.test.ts`（"Bun v9.9.7 is out, but not for this platform (linux-aarch64) yet"——OHOS 压根不是官方发布渠道支持的平台，结构性）、`cli/install/bun-security-scanner-matrix-with-node-modules.test.ts`（矩阵跑一堆子进程极慢，本轮串行单跑仍在超时边缘）| 已知类别，具体子用例未逐条查 |
+| T35（MessagePort/Worker 生命周期泄漏 ~1.4-1.8MB/cycle，**已确认上游缺陷非 OHOS**，等上游） | `js/web/workers/message-port-context-destroy-leak.test.ts` | 本来就在 `expectations.txt` 里隔离，这轮 `--ignore-expectations` 故意摘出来重验，摘出来还是原样失败——隔离依然成立 |
+| 沙盒外网 DNS 不可达（老面孔） | `regression/issue/22712.test.ts`（AAAA 查 google.com，ENOTFOUND）| 已知类别 |
+| next.js 生态复合限制 | `integration/next-pages/test/dev-server-ssr-100.test.ts`（"turbo.createProject is not supported by the wasm bindings"——Turbopack 原生二进制缺 OHOS 构建，退化到 WASM 绑定又不支持这个 API）、`integration/next-pages/test/dev-server.test.ts`（puppeteer 下载 Chromium 失败）、`js/third_party/next-auth/next-auth.test.ts`（`@next/swc` 缺 OHOS 原生构建 + Next.js dev watcher 向上扫描到 `/`、`/data` 等系统目录撞 OHOS 沙盒拒绝跨应用根访问，两个已知限制叠加）| 已知类别的新样本 |
+| 需要 rustup（已知） | `internal/build-rust-toolchain-probe.test.ts` | 已知 |
+| datadog-pprof 已有替代但测试硬编码原包名（已知，不改测试） | `integration/datadog-pprof/datadog-pprof.test.ts` | 已知，`@ohos-ports/datadog-pprof` 已验证可用但测试源码不能改 |
+
+**排除法之后剩下 6 个真正需要继续查的，没有在既有台账里精确对上**：
+
+1. **`regression/issue/26286.test.ts`**——**本轮直接查透并修复**，见下方专节。这是这 30 个里唯一一个当场定位到具体代码级根因、开了修复 PR 的。
+2. **`js/node/cluster/test-docs-http-server.ts`**——20 个 cluster worker 全部 fork/listen/exit 干净（日志 20 条 `started` + 20 条 `died`），但只有 18 个成功把 `"hello"` IPC 消息送到主进程手里（`18 !== 20`）。像是 20-way fork 下 cluster 共享句柄握手偶发丢失，跟本 session 反复打交道的 fork/IPC 开销问题（`close_range`/`epoll_pipe` 那条线）气质相似，但没有验证过具体机制。**需要专门开一轮**，本轮未继续深挖。
+3. **`js/bun/shell/commands/ls.test.ts`**（"recursive > node_modules"）——失败点不是 ls 输出格式差异（原以为会是这个），是 `beforeAll` 里 `bun install`（经 bun shell `$` 执行）直接 exit 1，stdout/stderr 全被 `&> /dev/null` 吞了，没留诊断信息。**需要单独复现拿到真实 stderr 才能继续查**，本轮未深挖。
+4. **`js/node/tty.test.ts`**（"a second ReadStream's setRawMode does not disturb process.stdin"，90s 超时）——没来得及跟 T03 PTY 簇（本轮开头刚查完两个根因）交叉核对是否是同一根因的新表现形式，还是独立问题。
+5. **`integration/next-pages/test/next-build.test.ts`**（`Expected: 0, Received: 1`）——没细看，大概率是跟 `dev-server-ssr-100` 同一个 Turbopack 原生二进制缺口的下游表现，但没验证。
+6. **`js/node/child_process/child_process.test.ts`**（63 pass/1 fail）——单个子用例失败，没来得及看具体是哪条断言。
+
+### `regression/issue/26286.test.ts` 根因实锤 + 修复：一次真实的上游合并回归
+
+`Bun.Terminal({data(...) {...}})` 的 `data` 回调在两个子用例里都卡满 90s 从不触发（`AsyncLocalStorage` 相关的两个测试）。这是 issue [#26286](https://github.com/oven-sh/bun/issues/26286) 的回归测试文件，本身在本轮之前的任何台账记录里都没出现过（全新文件）。
+
+**关键线索**：台账里已经有一整轮"T03"调查（07-28，见上文对应章节）专门查过 `Bun.Terminal` 的 PTY 问题，定位并修复了两个独立根因：T03a（`738701916`，OHOS PTY master 拒绝 `TCSADRAIN`/`TCSAFLUSH`，回退 `TCSANOW`）、T03b（`4c3bee75bc`，`exit` 通知在 `init_terminal` 期间触发就被 `this_value` 还是空的时候丢弃，加 `deferred_exit` 重放机制）。两个修复都已确认在当前 `ohos-aarch64` HEAD 的祖先链里（`git merge-base --is-ancestor` 验证），`terminal.test.ts` 早就回归到 94/2（剩 2 个跟审计开销相关的摇摆，非本问题）。**但 T03b 的 `deferred_exit` 只重放 `exit` 通知，没有等价机制覆盖 `data` 回调**——这是最初的怀疑方向。
+
+顺着这条线查 `src/runtime/api/bun/Terminal.rs` 的 `init_terminal`，发现了比"没有等价重放机制"更精确的东西：**`IOReader::read(terminal.reader.as_ptr())` 在函数里被调用了两次**——一次在 JS wrapper/`data`/`exit`/`drain` 回调注册**之前**（第 565 行），一次在注册**之后**（第 605 行）。这正是 T03a/T03b 那轮**专门删掉过**的"过早调用"模式——`git blame` 精确定位：这行"过早调用"来自 `bb6a9d9d36`（`oven-sh/bun` 上游 commit，Jarred Sumner，2026-08-03，"Make re-entrant runtime objects &self-only; delete AnyTask (#36571)"），经由后续的一次"Merge upstream oven-sh/bun main"合并进了 `ohos-aarch64`。
+
+**完整因果链**：`b8035437`（T03a 那轮，07-28）把这次过早调用删掉了，改成只在回调注册完之后调用一次——这是纯 OHOS 分支上的修复，从未上游化。上游那边的 `#36571` 是在**更早的、还没有这个删除**的代码基础上做的重构，触碰了同一个函数区域。因为我们的删除从没提交回上游，git 的自动合并在这个区域看到"upstream 改了，我们这边（相对更早基线）没有冲突改动"，于是干净地把 upstream 的版本（带着那行本该被删掉的过早调用）合了进来——**在我们自己已经修复过的地方，静默叠回了同一个 bug**，只是这次因为 `data` 回调没有 `deferred_exit` 那样的重放机制保护，表现成了新症状。
+
+`git show b8035437 -- Terminal.rs` 逐行核对，确认修复方式就是把这行重新删掉，恢复成 T03a/T03b 敲定的"回调注册完之后才 `read()`"这一份形态（当前文件里 `read()` 只剩一次调用，在第 600 行左右，回调注册之后）。
+
+**修复**：删掉重新引入的那次过早调用，5 行 diff（含注释）。分支 `fix-terminal-duplicate-early-read` 已推送，commit `adfb098064`。CI 探针（`bun-probe.rb` 指过去，`bottle-build.yml` 真实编译）验证中——跑 `terminal.test.ts`/`terminal-spawn.test.ts`（确认不回归 T03 那轮的护栏）+ `regression/issue/26286.test.ts`（确认真的修好），验证通过后再走正式 PR + tap bump 流程。
