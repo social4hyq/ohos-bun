@@ -5,6 +5,35 @@ use core::fmt;
 #[cfg(unix)]
 use core::ptr;
 
+/// Diagnostic-only, matching src/io/PipeReader.rs's claude_debug module
+/// (can't share the module across files cheaply here either, so duplicated).
+/// Inert unless CLAUDE_DEBUG_TERM is set. Not for merge.
+mod claude_debug {
+    use std::sync::OnceLock;
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    pub(crate) fn on() -> bool {
+        *ENABLED.get_or_init(|| std::env::var("CLAUDE_DEBUG_TERM").is_ok())
+    }
+    pub(crate) fn now_ms() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    }
+}
+macro_rules! cdbg {
+    ($ptr:expr, $($arg:tt)*) => {
+        if claude_debug::on() {
+            eprintln!(
+                "[claude-pel] P@{:x} @{} {}",
+                $ptr as usize,
+                claude_debug::now_ms(),
+                format_args!($($arg)*),
+            );
+        }
+    };
+}
+
 #[cfg(not(windows))]
 use bun_sys::{self as sys, Fd};
 use bun_uws_sys::Loop as UwsLoop;
@@ -662,11 +691,31 @@ impl FilePoll {
             } else {
                 EPOLL::CTL_ADD
             };
+            cdbg!(
+                std::ptr::from_mut(self),
+                "register_with_fd_impl: about to epoll_ctl(watcher_fd={}, op={} [{}], fd={}, events=0x{:x}, is_registered={}, NeedsRearm={}, WasEverRegistered={})",
+                watcher_fd,
+                op,
+                if op == EPOLL::CTL_MOD { "MOD" } else { "ADD" },
+                fd.native(),
+                flags,
+                self.is_registered(),
+                self.flags.contains(Flags::NeedsRearm),
+                self.flags.contains(Flags::WasEverRegistered)
+            );
 
             // SAFETY: FFI syscall; `event` is a stack-local valid for the call.
             let ctl = unsafe { linux::epoll_ctl(watcher_fd, op, fd.native(), &raw mut event) };
+            let raw_errno = if ctl < 0 { Some(sys::last_errno()) } else { None };
+            cdbg!(
+                std::ptr::from_mut(self),
+                "register_with_fd_impl: epoll_ctl returned {} raw_errno={:?}",
+                ctl,
+                raw_errno
+            );
             self.flags.insert(Flags::WasEverRegistered);
             if let Some(errno) = errno_sys(ctl, sys::Tag::epoll_ctl) {
+                cdbg!(std::ptr::from_mut(self), "register_with_fd_impl: DEACTIVATING due to error");
                 self.deactivate(loop_);
                 return errno;
             }
