@@ -4149,7 +4149,7 @@ PR [social4hyq/ohos-bun#18](https://github.com/social4hyq/ohos-bun/pull/18) 已�
 
 **排除法之后剩下 6 个真正需要继续查的，没有在既有台账里精确对上**：
 
-1. **`regression/issue/26286.test.ts`**——**本轮直接查透并修复**，见下方专节。这是这 30 个里唯一一个当场定位到具体代码级根因、开了修复 PR 的。
+1. **`regression/issue/26286.test.ts`**——**本轮定位并修复了一个真实、确定性的代码级 bug（已发布），但真机复测发现还有第二个独立的深层问题未解决**，文件仍未转绿。见下方专节，含真机复测的完整更正过程。
 2. **`js/node/cluster/test-docs-http-server.ts`**——20 个 cluster worker 全部 fork/listen/exit 干净（日志 20 条 `started` + 20 条 `died`），但只有 18 个成功把 `"hello"` IPC 消息送到主进程手里（`18 !== 20`）。像是 20-way fork 下 cluster 共享句柄握手偶发丢失，跟本 session 反复打交道的 fork/IPC 开销问题（`close_range`/`epoll_pipe` 那条线）气质相似，但没有验证过具体机制。**需要专门开一轮**，本轮未继续深挖。
 3. **`js/bun/shell/commands/ls.test.ts`**（"recursive > node_modules"）——失败点不是 ls 输出格式差异（原以为会是这个），是 `beforeAll` 里 `bun install`（经 bun shell `$` 执行）直接 exit 1，stdout/stderr 全被 `&> /dev/null` 吞了，没留诊断信息。**需要单独复现拿到真实 stderr 才能继续查**，本轮未深挖。
 4. **`js/node/tty.test.ts`**（"a second ReadStream's setRawMode does not disturb process.stdin"，90s 超时）——没来得及跟 T03 PTY 簇（本轮开头刚查完两个根因）交叉核对是否是同一根因的新表现形式，还是独立问题。
@@ -4168,4 +4168,12 @@ PR [social4hyq/ohos-bun#18](https://github.com/social4hyq/ohos-bun/pull/18) 已�
 
 `git show b8035437 -- Terminal.rs` 逐行核对，确认修复方式就是把这行重新删掉，恢复成 T03a/T03b 敲定的"回调注册完之后才 `read()`"这一份形态（当前文件里 `read()` 只剩一次调用，在第 600 行左右，回调注册之后）。
 
-**修复**：删掉重新引入的那次过早调用，5 行 diff（含注释）。分支 `fix-terminal-duplicate-early-read` 已推送，commit `adfb098064`。CI 探针（`bun-probe.rb` 指过去，`bottle-build.yml` 真实编译）验证中——跑 `terminal.test.ts`/`terminal-spawn.test.ts`（确认不回归 T03 那轮的护栏）+ `regression/issue/26286.test.ts`（确认真的修好），验证通过后再走正式 PR + tap bump 流程。
+**修复**：删掉重新引入的那次过早调用，5 行 diff（含注释）。CI 探针（`bun-probe.rb`，`bottle-build.yml` 真实编译）确认：`26286.test.ts` 2 pass/0 fail（14ms+12ms，之前两条各卡满 90000ms）、`terminal-spawn.test.ts` 16 pass/1 skip/0 fail 无回归、`terminal.test.ts` 97 pass/1 fail（唯一失败是跟这次改动无关的新用例）。已走完整发布流程：`ohos-bun#19` 合并 → tap `bun.rb` r67→68（[homebrew-core#379](https://github.com/social4hyq/homebrew-core/pull/379)，同样撞上写回提交零 check-runs 假阻塞，`--admin` 合并）→ 真机 `brew upgrade bun`（1.4.0_67→_68，`bun --revision` 精确匹配）。
+
+**真机复测发现：修复本身成立，但没有完全解决 `26286.test.ts` 在真机上的问题——这是本节最重要的更正**。CI 容器里 2/2 pass，真机上 `bun test test/regression/issue/26286.test.ts` **稳定复现 2/2 fail**（超时放宽到 30s 依然不通过，不是"再等等就好"）。排查：
+
+1. `terminal.test.ts` 里跟 `26286.test.ts` 结构几乎一致的用例（`existing terminal works with subprocess`，同样"先建 Terminal 再 `Bun.spawn(cmd, {terminal})`"）——整文件跑（95 pass/3 fail）时这条**通过**，但用 `-t` 单独拎出来跑（3 次）**每次都超时失败**。这条用例在 `describe.concurrent("Bun.spawn with terminal option", ...)` 块里。
+2. 这精确指向一个和这次"重复 read()"完全独立的更深层问题：**孤立的单个 PTY 在真机上，数据到达后不会被及时投递/唤醒；有其它并发 I/O 活动伴随时才会被顺带唤醒**——不是"偶发"意义上的 flaky（单独跑是 3/3 稳定失败，不是时好时坏），是"孤立场景确定性挂、并发场景侥幸过"这个更精确的模式。
+3. 排除法：`OHOS_COMPAT_SHIM_DISABLE=epoll_pipe` 关掉不影响结果（`Bun.Terminal` 的 PTY 读取是 bun 自己的 Rust `IOReader`/epoll 代码路径，压根不经过 shim 的 `epoll_pipe` 拦截器，这个排除是意料之中，确认问题在 bun 自身代码而非 shim 层）；`OHOS_COMPAT_SHIM_DISABLE=<全部>` 直接 core dump（`close_range` 是本沙盒里 bun 能跑起来的硬依赖，已知记录）。
+
+**结论**：这次的"重复 `read()`"修复是真实、必要、已验证生效的 fix——它解决的是一个确定性的、"回调注册前数据到达必丢"的 bug，CI 容器结果证明了这一点，不需要撤销或质疑。但它**不足以**让 `26286.test.ts` 在真机上转绿——真机上还叠着至少一个新的、独立的、未诊断的深层问题（孤立 PTY 事件在低负载下投递不及时/不投递）。这是本轮遗留下来最值得优先跟进的新线索，气质上很像本 session 反复打交道的 epoll/内核唤醒类问题（`epoll_pipe`/`close_range` 那条线），但这次是 bun 自身内部代码，需要单独开一轮深挖，本轮不再继续（时间/精力已经投入很多，且已经从"完全不知道怎么回事"推进到"精确定位到孤立 vs 并发这个分野"，是个扎实的交接点）。
