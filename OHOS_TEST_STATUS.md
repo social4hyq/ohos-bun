@@ -4182,4 +4182,20 @@ PR [social4hyq/ohos-bun#18](https://github.com/social4hyq/ohos-bun/pull/18) 已�
 
 5. **排除 shim 层**：`OHOS_COMPAT_SHIM_DISABLE=epoll_pipe` 关掉结果不变（`Bun.Terminal` 走 bun 自己的 Rust `IOReader`/epoll 代码路径，压根不经过 shim 的 `epoll_pipe` 拦截器）；`OHOS_COMPAT_SHIM_DISABLE=<全部>` 直接 core dump（`close_range` 是本沙盒里 bun 能跑起来的硬依赖，已知记录）。
 
-**结论（更正版）**：这次的"重复 `read()`"修复是真实、必要、已验证生效的 fix，不需要撤销或质疑。但真机上 `Bun.Terminal` + `Bun.spawn(cmd, {terminal})` 这整条数据链路（覆盖 `26286.test.ts` 和 `terminal.test.ts` 里一整撮子用例）存在一个**真正的、时序相关的 race**（不是简单的"孤立 vs 并发"）——纯内核 epoll 层面验证完全可靠，问题在 bun 自己的 Rust 代码里，但具体是 `IOReader` 的 poll 注册时机、Terminal 初始化和子进程 spawn 的先后顺序，还是别的什么，本轮黑盒测试已经无法进一步收窄。这个量级的问题需要跟 T03b 当初那轮同款打法——在 `Terminal.rs`/`IOReader` 关键路径插桩打日志、地址标记生命周期、真机跑多轮找规律——而不是继续黑盒试探，本轮到此为止，留给下一轮按 T03b 的方法论专门开一次深挖。
+**结论（更正版）**：这次的"重复 `read()`"修复是真实、必要、已验证生效的 fix，不需要撤销或质疑。但真机上 `Bun.Terminal` + `Bun.spawn(cmd, {terminal})` 这整条数据链路（覆盖 `26286.test.ts` 和 `terminal.test.ts` 里一整撮子用例）存在一个**真正的、时序相关的 race**（不是简单的"孤立 vs 并发"）——纯内核 epoll 层面验证完全可靠，问题在 bun 自己的 Rust 代码里，但具体是 `IOReader` 的 poll 注册时机、Terminal 初始化和子进程 spawn 的先后顺序，还是别的什么，本轮黑盒测试已经无法进一步收窄。这个量级的问题需要跟 T03b 当初那轮同款打法——在 `Terminal.rs`/`IOReader` 关键路径插桩打日志、地址标记生命周期、真机跑多轮找规律——而不是继续黑盒试探。
+
+### 插桩定位：`register_poll()` 报告成功，但 `on_poll` 真机上永不触发（同日续，接上面的黑盒结论）
+
+跟 T03b 当年同一打法：在 `Terminal.rs`（`init_terminal`/`on_read_chunk`/`on_reader_finished` 等）和 `src/io/PipeReader.rs`（`read()`/`register_poll()`/`on_poll()`）关键路径加了 `CLAUDE_DEBUG_TERM` 环境变量门控的 `eprintln!` 插桩（`scoped_log!` 宏在 release 构建里被 `env::IS_DEBUG` 编译期删掉了，用不了，跟 T03b 一样只能走自定义插桩）。顺手确认了一个此前没查过的细节：Terminal 的 PTY reader 因为设了 `POSIX_FLAGS::NONBLOCKING`，`get_file_type()` 返回 `NonblockingPipe` 而非 `Pipe`——导致 `read()` 里那段 `is_readable()` 预检查（只对 `FileType::Pipe` 生效）被整段跳过，每次都直接摸进 `read_loop()`；但 `read_loop` 撞见 `WouldBlock` 时依然会调 `register_poll()`，功能上等价，不是丢事件的根因。
+
+**关键构建关卡**：这批插桩因为在私有 `mod claude_debug` 里把辅助函数写成了 `pub fn`（不是 `pub(crate) fn`），撞上 `-D unreachable-pub` 硬性 lint，第一次编译直接报错——"外部够不着的 pub 项"。改成 `pub(crate)` 后重新触发 CI 编译通过。
+
+**验证方法**：这轮探针没法只在 CI 容器里跑（容器天然不复现这个 bug），改成把 CI 编译产物的 bottle 制品下载下来，手工在真机本地 `HOMEBREW_CACHE` 摆好、伪造一个匹配的 `bottle do` 声明（sha256 用 CI 产出的真实值），`brew install social4hyq/core/bun-probe` 直接落地成一个跟生产 `bun` 完全独立、并存的 `bun-probe` keg——不碰生产 bun，纯本地真机调试用。这条路径（"CI 编译+人工搬运制品到真机，绕开 CI 容器不复现的限制"）值得记下来，以后碰到"只在真机复现、CI 容器编译但测不出"的问题可以直接复用。
+
+**决定性证据**：容器里的干净轨迹（`register_poll` 成功后 12ms 内 `on_poll: ENTER` 必达，15ms 内两个用例全部 pass）vs 真机上的轨迹——`register_poll: try_register_poll -> Ok(())` 照常打印（注册这一步**报告成功**），但**`on_poll` 这一行在 5000ms 超时前从未出现过一次**，两个子用例、独立跑三次（含两次单独复现），**100% 复现，无一例外**。而且诡异的是三次独立进程运行**精确落在同一个 fd 号（1497）**——不是同一进程内的 fd 复用（每次都是全新进程），暗示这台设备上给到这条代码路径的 fd 分配本身是确定性的（跟固定的启动期 I/O 模式有关），但没能继续查清这跟"注册成功却不触发"之间有没有因果关系。
+
+**结论**：这不是"孤立 PTY 事件投递不及时"（前一节已用纯 C 探针证伪），也不是 bun 自己代码逻辑上的丢弃（回调注册、`read()` 调用顺序、`WouldBlock` 处理全部确认正确）——是 bun 通过 uws 事件循环包装器发起的 `epoll_ctl` 注册这一步，在这台设备上，对这类 fd（PTY master，`NonblockingPipe` 类型）出现了"注册返回成功、但内核从此再也不投递这个 fd 的事件"这个具体缺陷。跟 `ohos-compat-shim` 的 `epoll_pipe` 拦截器要工作区处理的缺陷是**同一个气质、极可能是同一根因**——只是那个拦截器的触发条件当初是照着 stdio 邻接管道的场景写的，没覆盖到 bun 自己内部走独立事件循环封装、注册在共享/长期存活 epoll 实例上的 PTY fd 这条路径（而且这是 bun 自身 Rust 代码通过其内部 event loop 库直接发起的 `epoll_ctl`，不一定会经过 shim 的 LD_PRELOAD libc 符号拦截层）。
+
+**卡在这里的原因**：往下查的下一步是拿到实际 `epoll_ctl` 调用参数（fd、op、events 掩码）逐次核对，判断是不是"同一 fd 号被前一次未清理的注册占着、新注册被内核判定为冗余而静默丢弃"这类经典 fd 复用/epoll 陈旧状态类缺陷——但本机沙箱拦 `ptrace`（多次记录在案），没有 root strace 通路，`ohos-trace-shim`/`qemu-aarch64 -strace` 这两条既有替代路径都只能截获走 libc 符号的调用，bun 自己直接发起的原始 syscall（很多性能关键路径不走 libc 包装，直接 `syscall()` 编号调用，这也是本轮排查 `PipeReader.rs` 时反复见到的写法）截不到。要继续，需要在 bun 自己的 Rust 代码里再插一层——直接在 `try_register_poll()`/uws 那个 C 库调用点上打印实际拿到的 fd/事件掩码/返回值，而不是只信任 Rust 这一层"我调用了、它说 Ok"的表面判断——这是下一轮的入口，比这轮"黑盒才知道是真机独有"进了一大步。
+
+**收尾**：诊断分支 `debug/terminal-real-device-race`（ohos-bun）保留不合并，纯留档；tap 的诊断 formula `bun-probe.rb`（`diag-bun-probe` 分支）同样不合并；真机上装的 `bun-probe` keg 是独立于生产 `bun` 的旁路安装，不影响任何生产环境，留着供下一轮继续用（或事后 `brew uninstall bun-probe` 清理）。
