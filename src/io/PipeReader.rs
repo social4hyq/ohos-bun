@@ -10,10 +10,10 @@ use bun_sys::{self as sys, Fd};
 mod claude_debug {
     use std::sync::OnceLock;
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    pub fn on() -> bool {
+    pub(crate) fn on() -> bool {
         *ENABLED.get_or_init(|| std::env::var("CLAUDE_DEBUG_TERM").is_ok())
     }
-    pub fn now_ms() -> u128 {
+    pub(crate) fn now_ms() -> u128 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis())
