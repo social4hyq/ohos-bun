@@ -4238,3 +4238,20 @@ PR [social4hyq/ohos-bun#18](https://github.com/social4hyq/ohos-bun/pull/18) 已�
 **更大范围的 `terminal.test.ts`（98 个子用例，多 fd 并发）没有同等改善**：ON/OFF 交替 4 轮，pass 数在 93-95 之间摇摆，两种模式下都有，且"can receive binary data in callback"这条在 ON/OFF 下都稳定失败——这不意外，当前实验版本只有一个全局槽位，98 个子用例并发跑的场景下大量 Terminal 实例的 fd 会持续把彼此从这个槽位里挤出去，多数 fd 根本轮不上被兜底。这不是"机制无效"，是"这版最小实验的覆盖面不够"。
 
 **结论**：内核缺陷本身**可以在用户态被绕过**，机制已经拿到干净的真机证据。要把这个变成能覆盖 `terminal.test.ts` 全部并发场景、能合并的真正修复，需要把单槽实验换成 `ohos-compat-shim` 的 `epoll_pipe` 那套设计——每个已注册 fd 一条记录的表、只在真正判定"卡住"（一段时间没有任何投递）时才补一次 `CTL_MOD`、成功唤醒后立刻回落——而不是无差别每 500ms 全局戳一次。这是一个新的实现任务（在 bun 自己的 `posix_event_loop.rs`/`PipeReader.rs` 里做，不是改 `ohos-compat-shim`，因为这条路径从不经过 shim 的 libc 符号拦截层），范围和工作量需要用户确认后再动手，本节只记录"验证机制有效"这一步的完整证据。
+
+### 生产级修复：`epoll_rearm_watchdog`（同日续四，用户已确认动手）
+
+单槽实验证实机制有效后，用户明确要求做成能合并的真正修复。设计：
+
+- **每 fd 一条记录**（`HashMap<i32, Entry>`，`Mutex` 保护），记录 `watcher_fd`/`events`/`userdata`（内核存的 `FilePoll` 指针，`CTL_MOD` 会整条替换掉，必须原样回填，传错会在内核真的恢复投递那一刻喂野指针）、`last_activity`、当前 `interval`。
+- **自适应退避**：任何一次自然注册活动（新 `ADD` 或 `WouldBlock` 驱动的正常 `MOD`）把该 fd 的 `interval` 重置回 `BASE_POKE_INTERVAL`（250ms）；每次 watchdog 自己发起的补 `CTL_MOD` 且期间没有自然活动，则把 `interval` 翻倍，封顶 `MAX_POKE_INTERVAL`（1000ms，跟 `ohos-compat-shim` 的 `epoll_pipe` 用同一对常量，同源同设计）。一个健康、持续被读的 fd 会不断自然重注册，`interval` 永远回落不到需要 watchdog 出手的地步；只有真正沉默（卡住，或合理空闲）的 fd 才会被摸到，冗余 `CTL_MOD` 对健康 fd 是无害空操作。
+- **窄范围 opt-in，不是全运行时通吃**：新增 `Flags::EpollRearmWatch`（`posix_event_loop.rs`）+ `PosixFlags::EPOLL_REARM_WATCH`（`PipeReader.rs`），只有显式打了标记的 `FilePoll` 才会被 `register_with_fd_impl` 纳入 watchdog 表。当前只有 `Terminal.rs` 的 PTY-master reader 在 `reader.start()` 成功后打这个标记（挨着已有的 "PTY behaves like a pipe" 那段 `PosixFlags::NONBLOCKING | PosixFlags::POLLABLE` 设置）——缺陷目前只在这条路径上有实锤证据，没理由让运行时里所有 socket/pipe 的 Readable 注册都背上这个表维护成本和线程唤醒开销。
+- **生命周期干净**：`unregister_with_fd_impl` 入口无条件调用 `untrack(fd)`（未跟踪的 fd 移除是廉价空操作），覆盖包括 `needs_rearm` 跳过 `CTL_DEL` 的分支在内的所有反注册路径，保证 fd 号被内核回收复用后 watchdog 表里不会留着一条指向野指针的陈旧记录还在戳。
+- **后台线程懒启动**：`track()` 首次被调用时才通过 `Once` 拉起唯一的全局 watchdog 线程（100ms tick），从不创建 `Bun.Terminal` 的进程完全不会启动这个线程，零成本。`BUN_DISABLE_EPOLL_REARM_WATCHDOG` 提供逃生舱。
+
+**真机验证（`bun-probe` r72，生产实现，非环境变量门控——Terminal 路径默认开启）**：
+
+- `26286.test.ts`：连续 5 次单独跑，**5/5 全过**（此前单槽实验 A/B 3 组已确认因果，这轮是生产实现的独立复核）。
+- `terminal.test.ts`（98 子用例全文件跑 5 次）：94-95 pass 之间摇摆，跟改动前的基线（93-95 pass）**没有看出明显差异**——单独把其中一条反复失败的用例（`Bun.spawn with terminal option > creates subprocess with terminal attached`）用 `-t` 过滤器单独跑 3 次外加一次全量 debug 插桩单独跑：**4/4 全过**，插桩轨迹显示这条用例根本没有触发内核缺陷特征（`on_read_chunk` 21 字节正常到达，`on_reader_error errno=5` 是子进程退出后 PTY slave 关闭导致的正常 EIO，`556ms` 内干净收尾）——说明**这条用例在全量文件里的摇摆是 98 个子用例并发抢资源导致的另一路独立 flaky，跟本轮修的内核 epoll 缺陷无关**，不在这次修复的覆盖范围内，也不该被这次修复覆盖到（真正被这个缺陷卡住的用例，无论孤立跑还是并发跑都会**确定性**卡满超时，不会像这条一样孤立跑 4/4 全过）。
+
+**结论**：`epoll_rearm_watchdog` 对它设计要解决的问题——`26286.test.ts` 代表的那类"内核 `epoll_ctl` 注册成功但从此不投递事件"确定性故障——效果干净、可重复、生产级实现验证通过。`terminal.test.ts` 全文件跑的残余 flaky（3-5/98）是一个独立、未分类的并发资源竞争问题，这次不在范围内，需要单独立项排查。诊断分支（`debug/terminal-real-device-race`）保留纯留档；`ohos-aarch64` 上会另起一个干净分支，只搬运生产 diff（`Flags::EpollRearmWatch`/`epoll_rearm_watchdog` 模块/`PosixFlags::EPOLL_REARM_WATCH`/`Terminal.rs` 的 opt-in 调用），不带任何 `claude_debug`/`cdbg!` 诊断插桩，走 PR 合并 + tap 发版流程。
