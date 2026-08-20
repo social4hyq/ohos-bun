@@ -34,6 +34,85 @@ macro_rules! cdbg {
     };
 }
 
+/// Exploratory rearm-watchdog experiment (26286 kernel-epoll-starvation
+/// follow-up, 2026-08-20): does a redundant EPOLL_CTL_MOD from a second
+/// thread, issued periodically after a Readable registration, unstick a
+/// registered-but-never-delivered fd? Gated on CLAUDE_REARM_WATCHDOG so it
+/// is fully inert otherwise. Captures only the most recent Readable
+/// registration (last-writer-wins is fine for a single-fd probe like
+/// 26286.test.ts). epoll_ctl is documented thread-safe against a concurrent
+/// epoll_wait/pwait on the same epfd, so this does not touch any Rust-level
+/// FilePoll state -- pure redundant OS-level syscall. Not for merge.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+mod claude_rearm_watchdog {
+    use std::sync::Once;
+    use std::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
+
+    static WATCHER_FD: AtomicI32 = AtomicI32::new(-1);
+    static TARGET_FD: AtomicI32 = AtomicI32::new(-1);
+    static EVENTS: AtomicU32 = AtomicU32::new(0);
+    // Must round-trip the exact `u64` userdata (the FilePoll pointer) the
+    // real registration used -- CTL_MOD REPLACES the kernel's stored event
+    // data, so a wrong/zero value here would corrupt dispatch the next time
+    // the kernel *does* deliver (use-after-null on the receiving end).
+    static USERDATA: AtomicU64 = AtomicU64::new(0);
+    static STARTED: Once = Once::new();
+
+    pub(crate) fn on() -> bool {
+        std::env::var("CLAUDE_REARM_WATCHDOG").is_ok()
+    }
+
+    pub(crate) fn note_readable_registration(
+        watcher_fd: i32,
+        target_fd: i32,
+        events: u32,
+        userdata: u64,
+    ) {
+        if !on() {
+            return;
+        }
+        WATCHER_FD.store(watcher_fd, Ordering::SeqCst);
+        TARGET_FD.store(target_fd, Ordering::SeqCst);
+        EVENTS.store(events, Ordering::SeqCst);
+        USERDATA.store(userdata, Ordering::SeqCst);
+        STARTED.call_once(|| {
+            std::thread::spawn(run_watchdog);
+        });
+    }
+
+    fn run_watchdog() {
+        use bun_sys::linux::{self, EPOLL};
+        eprintln!("[claude-rearm] watchdog thread started");
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            let watcher_fd = WATCHER_FD.load(Ordering::SeqCst);
+            let fd = TARGET_FD.load(Ordering::SeqCst);
+            let events = EVENTS.load(Ordering::SeqCst);
+            let userdata = USERDATA.load(Ordering::SeqCst);
+            if watcher_fd < 0 || fd < 0 {
+                continue;
+            }
+            let mut event = linux::epoll_event {
+                events,
+                u64: userdata,
+            };
+            // SAFETY: redundant CTL_MOD from a second thread; epoll_ctl is
+            // documented safe to call concurrently with epoll_wait/pwait on
+            // the same epfd from another thread.
+            let ctl =
+                unsafe { linux::epoll_ctl(watcher_fd, EPOLL::CTL_MOD, fd, &raw mut event) };
+            let errno = if ctl < 0 {
+                Some(bun_sys::last_errno())
+            } else {
+                None
+            };
+            eprintln!(
+                "[claude-rearm] poke CTL_MOD(watcher_fd={watcher_fd}, fd={fd}, events=0x{events:x}) -> ctl={ctl} errno={errno:?}"
+            );
+        }
+    }
+}
+
 #[cfg(not(windows))]
 use bun_sys::{self as sys, Fd};
 use bun_uws_sys::Loop as UwsLoop;
@@ -718,6 +797,14 @@ impl FilePoll {
                 cdbg!(std::ptr::from_mut(self), "register_with_fd_impl: DEACTIVATING due to error");
                 self.deactivate(loop_);
                 return errno;
+            }
+            if flag == Flags::Readable {
+                claude_rearm_watchdog::note_readable_registration(
+                    watcher_fd,
+                    fd.native(),
+                    flags,
+                    event.u64,
+                );
             }
         }
         #[cfg(target_os = "macos")]
