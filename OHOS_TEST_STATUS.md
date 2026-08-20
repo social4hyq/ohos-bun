@@ -4257,3 +4257,44 @@ PR [social4hyq/ohos-bun#18](https://github.com/social4hyq/ohos-bun/pull/18) 已�
 **结论**：`epoll_rearm_watchdog` 对它设计要解决的问题——`26286.test.ts` 代表的那类"内核 `epoll_ctl` 注册成功但从此不投递事件"确定性故障——效果干净、可重复、生产级实现验证通过。`terminal.test.ts` 全文件跑的残余 flaky（3-5/98）是一个独立、未分类的并发资源竞争问题，这次不在范围内，需要单独立项排查。诊断分支（`debug/terminal-real-device-race`）保留纯留档；`ohos-aarch64` 上会另起一个干净分支，只搬运生产 diff（`Flags::EpollRearmWatch`/`epoll_rearm_watchdog` 模块/`PosixFlags::EPOLL_REARM_WATCH`/`Terminal.rs` 的 opt-in 调用），不带任何 `claude_debug`/`cdbg!` 诊断插桩，走 PR 合并 + tap 发版流程。
 
 **已发布并真机核验（同日收尾）**：干净分支 `fix-epoll-rearm-watchdog-terminal` 编译通过（CI `bun-probe` 独立复核，5/5 clean）→ `social4hyq/ohos-bun#20` 合并进 `ohos-aarch64`（`897f1ec6fc`）→ tap `bun.rb` r68→r69（[homebrew-core#382](https://github.com/social4hyq/homebrew-core/pull/382)，同样撞上写回提交零 check-runs 假阻塞，`--admin` 合并）→ 真机 `brew upgrade bun`（`bun --revision` 精确匹配 `897f1ec6f`）→ 生产 `bun` 上 `26286.test.ts` 连续 3 次 **3/3 全过**。这条内核 epoll 缺陷调查线到此完整收尾：黑盒排查 → Rust 层插桩 → 原始系统调用插桩 → 单槽实验验证机制 → 生产实现 → 真机发布验证，全链路留档在本节及以上各节。
+
+## r69 triage 快筛轮（2026-08-20 晚，`897f1ec6f`）：tty 转绿、terminal flaky 深挖到「同进程多 Terminal 独立概率死」、ls 修复
+
+上一节收尾后对 r66 遗留开放项做的一轮快筛（4 项 + 1 个深挖），产物 `logs/triage-2026-08-20/`。
+
+### 1. `tty.test.ts`：r69 下 5/5 全过（r66 下是 90s 超时稳定失败）
+
+r66→r69 之间某个修复顺带修好了它（候选：r68 删 Terminal.rs 过早 `read()`；watchdog 未覆盖此路径所以不是它），或它本来就是摇摆项、r66 撞上了失败侧。连续 5 次隔离单跑 7 pass/0 fail（2.31s 级），当前版本下**从失败清单移除**；不回溯归因到具体 commit（信息价值低）。
+
+### 2. `terminal.test.ts`：摇摆仍在（93/5、92/2/…），但性质判明——同内核缺陷家族的「短窗口」+「死实例」两种表现，昨天的「独立并发竞争」结论**修正**
+
+r69 下 5 轮整文件跑：`multiple writes` 与 `drain GC` **5/5 稳定挂**，`echoed output`/`binary data` 3/5，`exit on close`/`spawn attached` 1/5。失败形状全是**数据丢失**（`received.length=0`、只到 `"first"`、`"lost"` vs `"drain"`），断言窗口仅 ~100ms——比 watchdog 的 250ms 基础兜底还短。
+
+**echo 采样探针**（复刻 multiple-writes 场景，多点采样，`echo-probe*.ts`）：
+
+| 实验 | 结果 |
+|---|---|
+| 同进程 20 轮连续（每轮 1 Terminal，5s 生命周期） | **二态分布**：13/20「t200 只有 first、t600 三条全到」= **晚到**（200-600ms，吻合 watchdog 250ms 兜底踢一脚后投递）；7/20「t5000 仍全空」= **死实例**（watchdog 多轮补踢无效） |
+| 死实例跟进（空轮里补写 fourth） | fourth 后 1s/3s 仍空——**新事件也不来，fd 彻底死** |
+| 每进程 1 Terminal（独立进程 ×15） | **15/15 全部正常，零死实例**，且 t300 全到齐 → 死形态是**同进程内多 Terminal 实例相互干扰**触发，不是单实例概率失败 |
+| 同进程 12 连发 ×3 run | 死实例**独立概率出现（~22%），不级联**（死完下一个照样活）；前 4 个实例 3 run 内从未死过（样本小，未定论） |
+
+**含义**：terminal.test.ts 的摇摆不是与内核缺陷无关的独立问题（修正昨天结论），而是同一缺陷家族的两种表现——①晚到态：watchdog 能救但赶不上 100ms 断言窗口（数据最终到齐，测试已判负）；②死实例态：CTL_MOD 补踢完全无效。②的机制假设（未验证）：内核把该 fd 的 `epoll_ctl(ADD)` 静默丢弃（根本没入表）→ watchdog 的 `CTL_MOD` 返回 ENOENT 被 `let _ =` 忽略 → 需要 **MOD 失败时 ADD 重试** 才能救。验证需要插桩一轮（CI 编译 + bun-probe 搬运，同 26286 流程），这是下一轮的入口。
+
+### 3. `ls.test.ts`：已修复（29/0，commit `cab10ce77f`）
+
+beforeAll 的 `bun install` exit 1 且 stderr 被 `&> /dev/null` 吞掉——手工复现拿到真实报错：`esbuild@0.17` postinstall 的 `install.js` 抛 `Unsupported platform: openharmony arm64 LE`。查上游：**`@esbuild/openharmony-arm64` 官方包自 0.25.6（2025-07）已存在**，测试钉的 `^0.17.15` 早于适配。版本钉升到 `^0.25.6` 后 install 干净通过、整文件 29 pass/0 fail（工作原则 4 的标准动作：上游已适配就升版本）。
+
+### 4. `child_process.test.ts`：63/1，唯一失败归因=**内嵌 shim 的有意适配**，非 bug
+
+失败断言 `spawn(env={TEST:"test"})` 期望子 env 严格等于 `{TEST:"test"}`，收到多一个 `TMPDIR=/data/storage/el2/base/cache`。逐层排除（spawn 源码无注入、bunExe 非 wrapper）后用 `env -i <bun> -e 'JSON.stringify(process.env)'` 实锤：**bun 进程自身在干净 env 下就会长出该 TMPDIR**，注入者是内嵌 `ohos_compat_shim.c` 的 `ohos_shim_init_tmpdir` 构造函数（`scripts/build/shims/ohos_compat_shim.c:88`，`/tmp` 只读沙盒适配，getenv 为空才 setenv 默认值；commit `0338f88130`）。spawn 语义本身正确，是子 bun 进程的 shim 自我补全与上游严格断言的冲突——**平台有意适配类**，处置建议 expectations OPENHARMONY 隔离（同 `test-cwd-enoent` 类先例），未动手。
+
+### 5. `next-pages/next-build.test.ts`：失败签名 = `ENOENT reading "bun:internal-for-testing"`
+
+就是 2026-07-13 已建档的「`bun:internal-for-testing` release 构建不可用」大类（当时 `integration/next-pages` 整目录归因过），非 Turbopack（快筛前的猜测不成立）。归档，已知大类确认样本 +1。
+
+### 本轮净效果与下一步
+
+- 开放项清单变化：`tty.test.ts` 移除（过）、`ls.test.ts` 移除（修复）、`child_process.test.ts` 归类（有意适配）、`next-build.test.ts` 归档（既有大类）——**4 项收口，剩 `spawn-streaming-stdin`（fd 多 1，可走 CDN 旧 bottle A/B）与 `cluster/test-docs-http-server`（20-way IPC）两项真开放**。
+- terminal flaky 升级为有明确假设的可验证问题：**watchdog 补踢记 errno + MOD 失败 ADD 重试**，一轮插桩可定。
+- 诊断脚本留在 `logs/triage-2026-08-20/echo-probe*.ts`（非测试文件，不进 CI 统计）。
