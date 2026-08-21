@@ -282,6 +282,9 @@ pub mod fs {
                 Some(d) => DirnameStore::instance().append_slice(d)?,
                 None => {
                     let mut buf = bun_paths::PathBuffer::default();
+                    // Let getcwd failures (e.g. ENOENT on deleted cwd) propagate so
+                    // callers emit a clean error instead of running JS from an
+                    // indeterminate environment (BUG-01).
                     DirnameStore::instance().append_slice(bun_core::getcwd(&mut buf)?.as_bytes())?
                 }
             };
@@ -1063,10 +1066,10 @@ pub mod fs {
                 // RLIM_INFINITY; raising soft anywhere near INT_MAX breaks child processes
                 // that read the limit into an int.
                 let target = {
-                    // musl has extremely low defaults, so ensure at least 163840 there.
-                    #[cfg(target_env = "musl")]
+                    // musl/OHOS have extremely low defaults, so ensure at least 163840 there.
+                    #[cfg(any(target_env = "musl", target_env = "ohos"))]
                     let max = lim.max.max(163_840);
-                    #[cfg(not(target_env = "musl"))]
+                    #[cfg(not(any(target_env = "musl", target_env = "ohos")))]
                     let max = lim.max;
                     max.min(1 << 20)
                 };
@@ -1078,6 +1081,22 @@ pub mod fs {
                     raised.max = lim.max.max(target);
                     if bun_sys::posix::setrlimit(resource, raised).is_ok() {
                         lim.cur = raised.cur;
+                    } else {
+                        // Unprivileged processes cannot raise rlim_max (EPERM),
+                        // so when target exceeds the current hard limit the
+                        // attempt above fails outright and leaves the soft
+                        // limit at whatever low value the parent set -- e.g.
+                        // `ulimit -Sn 256 && exec bun` observed on OHOS, where
+                        // bun then runs the whole session with a 256-fd budget.
+                        // Fall back to Node's semantics: raise soft as far as
+                        // the hard limit allows.
+                        let mut clamped = lim;
+                        clamped.cur = lim.max.min(target);
+                        if clamped.cur > lim.cur
+                            && bun_sys::posix::setrlimit(resource, clamped).is_ok()
+                        {
+                            lim.cur = clamped.cur;
+                        }
                     }
                 }
                 Ok(usize::try_from(lim.cur).expect("int cast"))
@@ -1153,7 +1172,20 @@ pub mod fs {
         ) -> crate::CrateResult<&'static mut EntriesOption> {
             if bun_core::FeatureFlags::ENABLE_ENTRY_CACHE {
                 let mut get_or_put_result = self.entries.get_or_put(dir)?;
-                if err == crate::Error::Sys(bun_errno::SystemErrno::ENOENT) {
+                // See the matching comment in fs.rs's read_directory_error: on
+                // OHOS, sandboxed ancestor directories can return EACCES/EPERM
+                // where other platforms would see ENOENT or succeed; treat
+                // those as "not found" there only, so a real permission error
+                // elsewhere isn't silently cached as missing.
+                let is_not_found = err == crate::Error::Sys(bun_errno::SystemErrno::ENOENT)
+                    || (cfg!(target_env = "ohos")
+                        && matches!(
+                            err,
+                            crate::Error::Sys(
+                                bun_errno::SystemErrno::EACCES | bun_errno::SystemErrno::EPERM
+                            )
+                        ));
+                if is_not_found {
                     self.entries.mark_not_found(get_or_put_result);
                     return Ok(temp_entries_option_write(EntriesOption::Err(
                         dir_entry::Err {
@@ -1705,7 +1737,39 @@ pub mod fs {
             {
                 return b"/data/local/tmp";
             }
-            #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "android")))]
+            #[cfg(all(not(target_os = "android"), target_env = "ohos"))]
+            {
+                // OHOS /tmp is read-only erofs. Check writability at runtime
+                // and fall back to /data/local/tmp → $HOME/tmp → /tmp (last resort).
+                static FALLBACK: std::sync::OnceLock<&'static [u8]> = std::sync::OnceLock::new();
+                return *FALLBACK.get_or_init(|| {
+                    let candidates: &[&[u8]] = &[b"/tmp", b"/data/local/tmp"];
+                    for &candidate in candidates {
+                        let cstr = match std::ffi::CString::new(candidate) {
+                            Ok(c) => c,
+                            Err(_) => continue,
+                        };
+                        // SAFETY: candidate is a valid C string for libc::access
+                        if unsafe { libc::access(cstr.as_ptr(), libc::W_OK) } == 0 {
+                            // Return the static literal directly (no allocation needed)
+                            if candidate == b"/tmp" { return b"/tmp"; }
+                            if candidate == b"/data/local/tmp" { return b"/data/local/tmp"; }
+                            return Box::leak(candidate.to_vec().into_boxed_slice());
+                        }
+                    }
+                    // Fallback: try $HOME/tmp
+                    if let Some(home) = env_var::HOME.get_not_empty() {
+                        let mut v = Vec::with_capacity(home.len() + 5);
+                        v.extend_from_slice(home);
+                        v.push(b'/');
+                        v.extend_from_slice(b"tmp");
+                        return Box::leak(v.into_boxed_slice());
+                    }
+                    // Last resort: /tmp even if readonly
+                    b"/tmp"
+                });
+            }
+            #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "android", target_env = "ohos")))]
             {
                 b"/tmp"
             }

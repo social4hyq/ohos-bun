@@ -1613,6 +1613,9 @@ impl<'a> PackageInstall<'a> {
                                 destination_dir.fd(),
                                 entry.path,
                             ) {
+                                // Map raw errno to the error names the caller's
+                                // `NotSameFileSystem` / `ENXIO` checks (and the
+                                // copyfile fallback in `install()`) expect.
                                 if err.get_errno() == sys::E::EEXIST {
                                     let _ = sys::unlinkat(destination_dir, entry.path);
                                     sys::linkat(

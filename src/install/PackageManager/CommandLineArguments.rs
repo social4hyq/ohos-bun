@@ -1561,7 +1561,7 @@ Full documentation is available at <magenta>https://bun.com/docs/pm/cli/prune<r>
                 {
                     // Only error for truly unrecognized values (not "any" or "none")
                     Output::err_generic(
-                        "Invalid operating system: '{}'. Valid values are: *, any, aix, darwin, freebsd, linux, openbsd, sunos, win32, android. Use !name to negate.",
+                        "Invalid operating system: '{}'. Valid values are: *, any, aix, darwin, freebsd, linux, openbsd, sunos, win32, android, openharmony. Use !name to negate.",
                         (bstr::BStr::new(os_str),),
                     );
                     Global::crash();

@@ -458,6 +458,20 @@ impl JSBundleCompletionTask {
             let entry = &mut output_files[entry_point_index];
             entry.dest_path.clone_from(&full_outfile_path);
             entry.is_executable = true;
+
+            // OHOS: strip stale .codesign and re-sign in-process (JS API path).
+            // Mirrors the CLI codepath in src/runtime/cli/build_command.rs.
+            #[cfg(target_env = "ohos")]
+            {
+                use std::os::unix::ffi::OsStrExt;
+                let outfile_os = std::ffi::OsStr::from_bytes(&full_outfile_path[..]);
+                let _ = std::fs::File::open(outfile_os).and_then(|f| f.sync_all());
+                let _ = ohos_sign::sign_selfsign_inplace_with_strip(std::path::Path::new(outfile_os));
+                let _ = std::process::Command::new("chmod")
+                    .arg("755")
+                    .arg(outfile_os)
+                    .output();
+            }
         }
 
         // Write external sourcemap files next to the compiled executable and
