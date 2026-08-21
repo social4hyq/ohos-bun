@@ -1916,7 +1916,9 @@ impl Terminal {
             // SAFETY: reader is live; `BufferedReader::on_poll` takes the raw
             // pointer and drives the read loop.
             let reader_ptr = unsafe { t.reader.get_mut() } as *mut _;
-            bun_io::BufferedReader::on_poll(reader_ptr, size_hint, hup);
+            // SAFETY: `reader_ptr` is the live reader; raw-pointer contract as
+            // in `dispatch.rs` BUFFERED_READER arm.
+            unsafe { bun_io::BufferedReader::on_poll(reader_ptr, size_hint, hup) };
         }
 
         t.deref_();

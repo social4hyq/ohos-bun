@@ -671,7 +671,7 @@ pub struct PosixStreamingWriter<Parent: PosixStreamingWriterParent> {
     /// It shares the reader's single master-fd poll and toggles EPOLLOUT on it
     /// via `set_writable_interest` (a CTL_MOD), never registering or closing a
     /// poll/fd of its own.
-    pub(crate) shared_poll: bool,
+    pub shared_poll: bool,
     /// Last reported `WriteStatus == Pending` (i.e. write(2) returned EAGAIN).
     backed_up: core::cell::Cell<bool>,
 }

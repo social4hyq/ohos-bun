@@ -165,7 +165,7 @@ pub struct PosixBufferedReader {
     // `PollTag::BufferedReader`/self — the Terminal's shared master-fd poll owns
     // both directions, so the single registration is owned by the Terminal and
     // routes events through `Terminal::on_poll` (see dispatch.rs).
-    pub(crate) poll_owner_override: Option<Owner>,
+    pub poll_owner_override: Option<Owner>,
 }
 
 bitflags::bitflags! {
