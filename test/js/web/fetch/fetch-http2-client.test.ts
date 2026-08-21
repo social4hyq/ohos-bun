@@ -385,6 +385,66 @@ describe.concurrent("fetch() over HTTP/2 (BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP2_CL
     );
   });
 
+  test("concurrent ReadableStream uploads route each chunk to its own stream", async () => {
+    // Exercises the async_http_id -> stream index on the client session: each
+    // JS-side body chunk wakes the HTTP thread which must resolve the target
+    // stream without crossing the other 23 in-flight uploads.
+    let sessions = 0;
+    const server = makeH2Server();
+    server.on("session", () => sessions++);
+    server.on("stream", stream => {
+      const chunks: Buffer[] = [];
+      stream.on("data", c => chunks.push(c));
+      stream.on("end", () => {
+        stream.respond({ ":status": 200 });
+        stream.end(Buffer.concat(chunks));
+      });
+    });
+    server.listen(0);
+    await once(server, "listening");
+    const { port } = server.address() as import("node:net").AddressInfo;
+    try {
+      await using proc = await spawnFetch(`
+        const url = "https://localhost:${port}/";
+        const opts = { tls: { rejectUnauthorized: false } };
+        const N = 24, M = 24;
+        // Warmup so the h2 session exists and SETTINGS have been exchanged
+        // before the concurrent burst; otherwise requests can fan out to
+        // additional connections while the first is still handshaking.
+        await fetch(url, { ...opts, method: "POST", body: "warmup" }).then(r => r.text());
+        const results = await Promise.all(
+          Array.from({ length: N }, (_, i) => {
+            let k = 0;
+            const body = new ReadableStream({
+              pull(ctrl) {
+                if (k < M) {
+                  ctrl.enqueue(new TextEncoder().encode(i + ":" + k + ","));
+                  k++;
+                } else ctrl.close();
+              },
+            });
+            return fetch(url, { ...opts, method: "POST", body, duplex: "half" }).then(r => r.text());
+          }),
+        );
+        const bad = results
+          .map((got, i) => {
+            const want = Array.from({ length: M }, (_, k) => i + ":" + k + ",").join("");
+            return got === want ? null : i + " got=" + JSON.stringify(got);
+          })
+          .filter(Boolean);
+        if (bad.length) throw new Error("mismatch: " + bad.join(" | "));
+        console.log("ok", results.length);
+      `);
+      const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+      expect(stderr).toBe("");
+      expect(stdout.trim()).toBe("ok 24");
+      expect(exitCode).toBe(0);
+      expect(sessions).toBe(1);
+    } finally {
+      server.close();
+    }
+  });
+
   test("POST with ReadableStream body larger than initial send window", async () => {
     await withH2Server(
       (req, res) => {
@@ -752,6 +812,53 @@ describe.concurrent("fetch() over HTTP/2 (BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP2_CL
       const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
       expect(stderr).toBe("");
       expect(stdout.trim()).toBe(`["a=b","c=d","e=f"]`);
+      expect(exitCode).toBe(0);
+    } finally {
+      server.close();
+    }
+  });
+
+  test("a 204, a 205 and the response to a HEAD request have a null body", async () => {
+    const server = makeH2Server();
+    server.on("stream", (stream, headers) => {
+      stream.on("error", () => {});
+      if (headers[":method"] === "HEAD") {
+        stream.respond({ ":status": 200, "content-length": "5" }, { endStream: true });
+      } else if (headers[":path"] === "/204") {
+        stream.respond({ ":status": 204 }, { endStream: true });
+      } else {
+        // RFC 9110 section 15.3.6 forbids content on a 205. A server that sends
+        // some anyway must not get it into the body.
+        stream.respond({ ":status": 205 });
+        stream.end("hello");
+      }
+    });
+    server.listen(0);
+    await once(server, "listening");
+    const { port } = server.address() as import("node:net").AddressInfo;
+    try {
+      await using proc = await spawnFetch(`
+        const results = [];
+        for (const [path, init] of [["/204", {}], ["/205", {}], ["/head", { method: "HEAD" }]]) {
+          const r = await fetch("https://localhost:${port}" + path, { ...init, tls: { rejectUnauthorized: false } });
+          results.push({
+            status: r.status,
+            contentLength: r.headers.get("content-length"),
+            body: r.body,
+            text: await r.text(),
+            bodyUsed: r.bodyUsed,
+            cloneBody: r.clone().body,
+          });
+        }
+        console.log(JSON.stringify(results));
+      `);
+      const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+      expect(stderr).toBe("");
+      expect(JSON.parse(stdout)).toEqual([
+        { status: 204, contentLength: null, body: null, text: "", bodyUsed: false, cloneBody: null },
+        { status: 205, contentLength: null, body: null, text: "", bodyUsed: false, cloneBody: null },
+        { status: 200, contentLength: "5", body: null, text: "", bodyUsed: false, cloneBody: null },
+      ]);
       expect(exitCode).toBe(0);
     } finally {
       server.close();

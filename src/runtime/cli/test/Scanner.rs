@@ -3,11 +3,12 @@ use std::collections::VecDeque;
 use bun_alloc::AllocError;
 use bun_bundler::Transpiler;
 use bun_bundler::options::BundleOptions;
+use bun_collections::index_sort;
 #[cfg(not(windows))]
 use bun_core::ZStr;
 use bun_core::{StringOrTinyString, strings};
 use bun_output::{declare_scope, scoped_log};
-use bun_paths::resolve_path::{join_abs_string_buf, platform};
+use bun_paths::resolve_path::{join_abs_string_buf_checked, platform};
 use bun_paths::{self, PathBuffer};
 use bun_ptr::Interned;
 use bun_resolver::fs::{self as fs, DirEntryIterator, EntriesOption, FileSystem};
@@ -17,50 +18,43 @@ declare_scope!(jest, hidden);
 
 pub struct Scanner<'a> {
     /// Memory is borrowed.
-    pub exclusion_names: &'a [&'a [u8]],
+    pub(crate) exclusion_names: &'a [&'a [u8]],
     /// When this list is empty, no filters are applied.
     /// "test" suffixes (e.g. .spec.*) are always applied when traversing directories.
-    pub filter_names: &'a [&'a [u8]],
+    pub(crate) filter_names: &'a [&'a [u8]],
     /// Glob patterns for paths to ignore. Matched against the path relative to the
     /// project root (top_level_dir). When a file matches any pattern, it is excluded.
-    pub path_ignore_patterns: &'a [&'a [u8]],
-    pub dirs_to_scan: Fifo,
+    pub(crate) path_ignore_patterns: &'a [&'a [u8]],
+    pub(crate) dirs_to_scan: Fifo,
     /// Paths to test files found while scanning.
-    pub test_files: Vec<Interned>,
-    pub fs: *mut FileSystem,
-    pub open_dir_buf: PathBuffer,
-    pub scan_dir_buf: PathBuffer,
-    pub options: &'a BundleOptions<'a>,
-    pub has_iterated: bool,
-    pub search_count: usize,
+    pub(crate) test_files: Vec<Interned>,
+    pub(crate) fs: *mut FileSystem,
+    pub(crate) open_dir_buf: PathBuffer,
+    pub(crate) options: &'a BundleOptions<'a>,
+    pub(crate) has_iterated: bool,
+    pub(crate) search_count: usize,
 }
 
 // FIFO queue of scan entries (pop_front / push_back).
 pub(crate) type Fifo = VecDeque<ScanEntry>;
 
 pub struct ScanEntry {
-    pub relative_dir: Fd,
+    pub(crate) relative_dir: Fd,
     // `'static` is sound here: borrows from FileSystem.dirname_store, a
     // process-lifetime arena that is never reset.
-    pub dir_path: &'static [u8],
+    pub(crate) dir_path: &'static [u8],
     pub name: StringOrTinyString,
 }
 
-#[derive(thiserror::Error, Debug, strum::IntoStaticStr)]
+#[derive(thiserror::Error, Debug)]
 pub enum ScanError {
-    /// Scan entrypoint file/directory does not exist. Not returned when
-    /// a subdirectory is scanned but does not exist.
+    /// The entrypoint does not exist or does not fit a `PathBuffer`; never returned for subdirectories.
     #[error("DoesNotExist")]
     DoesNotExist,
     #[error("OutOfMemory")]
     OutOfMemory,
 }
 bun_core::oom_from_alloc!(ScanError);
-impl PartialEq<crate::Error> for ScanError {
-    fn eq(&self, other: &crate::Error) -> bool {
-        <&'static str>::from(self) == other.name()
-    }
-}
 
 /// Newtype around `*mut Scanner` so it can satisfy [`DirEntryIterator`]
 /// (whose `next` takes `&self`) while still allowing mutable calls.
@@ -76,7 +70,7 @@ impl<'a> DirEntryIterator for ScannerDirIter<'a> {
 }
 
 impl<'a> Scanner<'a> {
-    pub fn init(
+    pub(crate) fn init(
         transpiler: &'a Transpiler,
         initial_results_capacity: usize,
     ) -> Result<Scanner<'a>, AllocError> {
@@ -90,7 +84,6 @@ impl<'a> Scanner<'a> {
             fs: transpiler.fs,
             test_files: results,
             open_dir_buf: PathBuffer::uninit(),
-            scan_dir_buf: PathBuffer::uninit(),
             has_iterated: false,
             search_count: 0,
         })
@@ -119,27 +112,23 @@ impl<'a> Scanner<'a> {
         top_level_dir: &'static [u8],
         parts: &[&[u8]],
         buf: &'b mut [u8],
-    ) -> &'b [u8] {
-        join_abs_string_buf::<platform::Loose>(top_level_dir, buf, parts)
+    ) -> Option<&'b [u8]> {
+        join_abs_string_buf_checked::<platform::Loose>(top_level_dir, buf, parts)
     }
 
     /// Take the list of test files out of this scanner. Caller owns the returned
     /// allocation.
-    pub fn take_found_test_files(&mut self) -> Result<Box<[Interned]>, AllocError> {
+    pub(crate) fn take_found_test_files(&mut self) -> Result<Box<[Interned]>, AllocError> {
         Ok(core::mem::take(&mut self.test_files).into_boxed_slice())
     }
 
-    pub fn scan(&mut self, path_literal: &[u8]) -> Result<(), ScanError> {
-        let parts: [&[u8]; 2] = [self.fs().top_level_dir, path_literal];
-        // reshaped for borrowck — abs_buf's return keeps a &mut borrow
-        // of scan_dir_buf alive across the &mut self calls below. Capture only the
-        // length, then reconstruct a detached slice from the raw buffer pointer.
-        let path_len = self.fs().abs_buf(&parts, &mut self.scan_dir_buf).len();
-        // SAFETY: scan_dir_buf is not written again for the remainder of this
-        // function — read_dir_with_name/next() only touch open_dir_buf — so the
-        // bytes at [0, path_len) remain valid while `path` is live.
-        let path: &[u8] =
-            unsafe { core::slice::from_raw_parts(self.scan_dir_buf.0.as_ptr(), path_len) };
+    pub(crate) fn scan(&mut self, path_literal: &[u8]) -> Result<(), ScanError> {
+        let mut scan_dir_buf = PathBuffer::uninit();
+        let parts: [&[u8]; 2] = [self.top_level_dir(), path_literal];
+        let Some(path) = Self::abs_buf_projected(self.top_level_dir(), &parts, &mut scan_dir_buf)
+        else {
+            return Err(ScanError::DoesNotExist);
+        };
 
         let root = self
             .read_dir_with_name(path, None)
@@ -185,7 +174,7 @@ impl<'a> Scanner<'a> {
                 // regression/issue/26851 relies on `a_*.test` running before
                 // `b_*.test` under `--bail`.
                 let mut entry_ptrs: Vec<*mut fs::Entry> = entries.data.values().copied().collect();
-                entry_ptrs.sort_by(|a, b| {
+                index_sort::sort_slice_by(&mut entry_ptrs, |a, b| {
                     // SAFETY: `EntryMap` stores `*mut Entry` into the
                     // process-static `EntryStore`; valid for `'static`.
                     let (an, bn) = unsafe { ((**a).base_lowercase(), (**b).base_lowercase()) };
@@ -206,7 +195,13 @@ impl<'a> Scanner<'a> {
                 let dir = entry.relative_dir;
 
                 let parts2: [&[u8]; 2] = [entry.dir_path, entry.name.slice()];
-                let path2 = self.fs().abs_buf(&parts2, &mut self.open_dir_buf);
+                let buf_len = self.open_dir_buf.len();
+                let Some(path2) = self
+                    .fs()
+                    .abs_buf_checked(&parts2, &mut self.open_dir_buf[..buf_len - 1])
+                else {
+                    continue;
+                };
                 let path2_len = path2.len();
                 self.open_dir_buf[path2_len] = 0;
                 let name_len = entry.name.slice().len();
@@ -236,17 +231,18 @@ impl<'a> Scanner<'a> {
             {
                 let fs = self.fs();
                 let parts2: [&[u8]; 2] = [entry.dir_path, entry.name.slice()];
-                let path2 = fs.abs_buf_z(&parts2, &mut self.open_dir_buf);
-                let Ok(child_fd) = bun_sys::open_dir_no_renaming_or_deleting_windows(
-                    Fd::INVALID,
-                    path2.as_bytes(),
-                ) else {
+                let Some(path2) = fs.abs_buf_checked(&parts2, &mut self.open_dir_buf) else {
+                    continue;
+                };
+                let Ok(child_fd) =
+                    bun_sys::open_dir_no_renaming_or_deleting_windows(Fd::INVALID, path2)
+                else {
                     continue;
                 };
                 let child_dir = bun_sys::Dir::from_fd(child_fd);
                 let stored = fs
                     .dirname_store
-                    .append_slice(path2.as_bytes())
+                    .append_slice(path2)
                     .map_err(|_| ScanError::OutOfMemory)?;
                 let _ = self
                     .read_dir_with_name(stored, Some(child_dir))
@@ -271,7 +267,7 @@ impl<'a> Scanner<'a> {
             .map_err(Into::into)
     }
 
-    pub fn could_be_test_file<const NEEDS_TEST_SUFFIX: bool>(&self, name: &[u8]) -> bool {
+    pub(crate) fn could_be_test_file<const NEEDS_TEST_SUFFIX: bool>(&self, name: &[u8]) -> bool {
         let extname = bun_paths::extension(name);
         if extname.is_empty() || !self.options.loader(extname).is_javascript_like() {
             return false;
@@ -289,7 +285,7 @@ impl<'a> Scanner<'a> {
         false
     }
 
-    pub fn does_absolute_path_match_filter(&self, name: &[u8]) -> bool {
+    pub(crate) fn does_absolute_path_match_filter(&self, name: &[u8]) -> bool {
         if self.filter_names.is_empty() {
             return true;
         }
@@ -303,7 +299,7 @@ impl<'a> Scanner<'a> {
         false
     }
 
-    pub fn does_path_match_filter(&self, name: &[u8]) -> bool {
+    pub(crate) fn does_path_match_filter(&self, name: &[u8]) -> bool {
         if self.filter_names.is_empty() {
             return true;
         }
@@ -319,7 +315,7 @@ impl<'a> Scanner<'a> {
 
     /// Returns true if the given path matches any of the path ignore patterns.
     /// The path is matched as a relative path from the project root.
-    pub fn matches_path_ignore_pattern(&self, abs_path: &[u8]) -> bool {
+    pub(crate) fn matches_path_ignore_pattern(&self, abs_path: &[u8]) -> bool {
         if self.path_ignore_patterns.is_empty() {
             return false;
         }
@@ -357,13 +353,13 @@ impl<'a> Scanner<'a> {
         false
     }
 
-    pub fn is_test_file(&self, name: &[u8]) -> bool {
+    pub(crate) fn is_test_file(&self, name: &[u8]) -> bool {
         self.could_be_test_file::<false>(name)
             && self.does_path_match_filter(name)
             && !self.matches_path_ignore_pattern(name)
     }
 
-    pub fn next(&mut self, entry: &mut fs::Entry, fd: Fd) {
+    pub(crate) fn next(&mut self, entry: &mut fs::Entry, fd: Fd) {
         let name = entry.base_lowercase();
         self.has_iterated = true;
         // SAFETY: `self.fs` is the process singleton.
@@ -375,11 +371,7 @@ impl<'a> Scanner<'a> {
                     return;
                 }
 
-                if cfg!(debug_assertions) {
-                    debug_assert!(
-                        strings::index_of(name, bun_paths::NODE_MODULES_NEEDLE).is_none()
-                    );
-                }
+                debug_assert!(strings::index_of(name, bun_paths::NODE_MODULES_NEEDLE).is_none());
 
                 for exclude_name in self.exclusion_names {
                     if strings::eql(exclude_name, name) {
@@ -393,12 +385,14 @@ impl<'a> Scanner<'a> {
                     // reshaped for borrowck — drop the &mut borrow from
                     // abs_buf and reborrow open_dir_buf immutably so &self methods
                     // can be called with the slice.
-                    let dir_path_len = Self::abs_buf_projected(
+                    let Some(dir_path_len) = Self::abs_buf_projected(
                         self.top_level_dir(),
                         &parts,
                         &mut self.open_dir_buf,
                     )
-                    .len();
+                    .map(<[u8]>::len) else {
+                        return;
+                    };
                     let dir_path = &self.open_dir_buf[..dir_path_len];
                     if self.matches_path_ignore_pattern(dir_path) {
                         return;
@@ -430,9 +424,12 @@ impl<'a> Scanner<'a> {
                 // reshaped for borrowck — drop the &mut borrow from
                 // abs_buf and reborrow open_dir_buf immutably so &self methods
                 // below can be called with the slice.
-                let path_len =
+                let Some(path_len) =
                     Self::abs_buf_projected(self.top_level_dir(), &parts, &mut self.open_dir_buf)
-                        .len();
+                        .map(<[u8]>::len)
+                else {
+                    return;
+                };
                 let path = &self.open_dir_buf[..path_len];
 
                 if !self.does_absolute_path_match_filter(path) {

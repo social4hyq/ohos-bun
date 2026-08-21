@@ -100,7 +100,7 @@ pub struct RegularExpression(NonNull<()>);
 
 impl RegularExpression {
     #[inline]
-    pub(crate) fn matches(&self, input: &BunString) -> bool {
+    fn matches(&self, input: &BunString) -> bool {
         // SAFETY: self.0 was produced by `__bun_regex_compile`.
         unsafe { __bun_regex_matches(self.0, input) }
     }
@@ -118,7 +118,7 @@ impl Drop for RegularExpression {
 /// duplicating the `__bun_regex_*` extern block (one declarer per upward call,
 /// per PORTING.md §extern-Rust-ban).
 #[inline]
-pub(crate) fn compile_regex(pattern: BunString) -> Option<RegularExpression> {
+fn compile_regex(pattern: BunString) -> Option<RegularExpression> {
     // SAFETY: link-time extern; pattern ownership transfers.
     unsafe { __bun_regex_compile(pattern) }.map(RegularExpression)
 }
@@ -129,7 +129,7 @@ pub struct PnpmMatcher {
 }
 
 pub struct Matcher {
-    pub pattern: Pattern,
+    pub(crate) pattern: Pattern,
     pub is_exclude: bool,
 }
 
@@ -154,15 +154,6 @@ pub enum FromExprError {
 bun_core::impl_tag_error!(FromExprError);
 
 bun_core::oom_from_alloc!(FromExprError);
-
-impl From<CreateMatcherError> for FromExprError {
-    fn from(e: CreateMatcherError) -> Self {
-        match e {
-            CreateMatcherError::OutOfMemory => Self::OutOfMemory,
-            CreateMatcherError::InvalidRegExp => Self::InvalidRegExp,
-        }
-    }
-}
 
 impl PnpmMatcher {
     // `bun_ast::ExprData` exposes the real value-shaped enum
