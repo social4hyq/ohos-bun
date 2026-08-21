@@ -4350,3 +4350,9 @@ r70 基线「平台/沙箱 5（deleted-cwd×2）」里 `test-cwd-enoent-improved
 **范围说明**：`run-crash-handler.test.ts` 的「cwd deleted before startup」是**另一套机制**（bun 启动时 cwd 检测走 `run_command.rs` 的 OHOS `$HOME` 回退，非 `process.cwd()`），且 standalone 跑撞 `ENOENT reading "bun:internal-for-testing"`（release 构建缺内部测试模块，已知大类），与本次修复无关，仍留失败列。
 
 关联记忆：`[[project_ohos_readlink_proc_cwd_enoent]]`。
+
+## 通过率更新（r73 后）
+
+r70 基线 53 真实失败 → r73 修复 `test-cwd-enoent-improved-message.js` 1 条 → **52 真实失败**，去重后通过率 **99.09% → 99.11%**（5792/5844）。
+
+**`test-net-autoselectfamily.js` 仍未修复（r71 IPv6 修复失效）**：`has_global_ipv6()`（`src/runtime/dns_jsc/dns.rs:5154`）只过滤首字节 `00`（::1 loopback）和 `fe`（fe80::/10 link-local），漏了 `fc`/`fd`（ULA `fc00::/7`，IPv6 的 RFC1918 等价物）。真机 `wlan0`/`vpn-tun` 带 `fdfd9db9...` 等 ULA 地址，`has_global_ipv6()` 误判「有全局 IPv6」→ 不强制 AF_INET → `dns.lookup({all:true})` 仍返回 AAAA → `net.autoselectfamily` 仍只拿到单条 IPv6（少 5 条）。修法：只认 `2000::/3`（首 hex digit `2`/`3`）为全局 IPv6，`00`/`fe`/`fc`/`fd` 全过滤。**待下一轮修复**。
