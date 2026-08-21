@@ -1441,6 +1441,8 @@ class ChildProcess extends EventEmitter {
         argv0: spawnargs[0],
         windowsHide: !!options.windowsHide,
         windowsVerbatimArguments: !!options.windowsVerbatimArguments,
+        // Own pgroup so a timeout kill(-pid) reaches shell grandchildren.
+        newProcessGroup: !!(options.timeout && options.timeout > 0),
       });
       this.pid = this.#handle.pid;
 

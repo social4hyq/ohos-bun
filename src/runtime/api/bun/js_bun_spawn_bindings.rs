@@ -373,6 +373,7 @@ fn spawn_maybe_sync<const IS_SYNC: bool>(
     let mut argv: Vec<CStrPtr> = Vec::new();
     let cmd_value: JSValue;
     let mut detached = false;
+    let mut new_process_group = false;
     let mut args = args_;
     let mut maybe_ipc_mode: Option<IPC::Mode> = None;
     let mut ipc_callback: JSValue = JSValue::ZERO;
@@ -682,6 +683,12 @@ fn spawn_maybe_sync<const IS_SYNC: bool>(
             if let Some(detached_val) = args.get(global_this, "detached")? {
                 if detached_val.is_boolean() {
                     detached = detached_val.to_boolean();
+                }
+            }
+
+            if let Some(npg_val) = args.get(global_this, "newProcessGroup")? {
+                if npg_val.is_boolean() && npg_val.to_boolean() {
+                    new_process_group = true;
                 }
             }
 
@@ -1247,6 +1254,8 @@ fn spawn_maybe_sync<const IS_SYNC: bool>(
         },
         argv0,
         can_block_entire_thread_to_reduce_cpu_usage_in_fast_path,
+        // Timeout must reach shell grandchildren (ash/toybox do not exec-optimize).
+        new_process_group: new_process_group || timeout.is_some(),
         // Only pass pty_slave_fd for newly created terminals (for setsid+TIOCSCTTY setup).
         // For existing terminals, the session is already set up - child just uses the fd as stdio.
         #[cfg(unix)]

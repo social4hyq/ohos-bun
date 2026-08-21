@@ -389,6 +389,28 @@ describe("spawn()", () => {
     expect(end! - start < 2000).toBe(true);
   });
 
+  // No-op TERM trap (not SIG_IGN — children keep the default disposition):
+  // timeout must kill(-pid) or the grandchild runs to completion.
+  const grandchildTimeoutCmd = `trap ":" TERM; ${shellExe()} -c "sleep 2; true"`;
+
+  it.skipIf(isWindows)("exec timeout kills a TERM-immune shell's grandchild", async () => {
+    const start = performance.now();
+    const { promise, resolve, reject } = Promise.withResolvers<Error | null>();
+    exec(grandchildTimeoutCmd, { timeout: 200, env: bunEnv }, err => {
+      resolve(err);
+    }).on("error", reject);
+    await promise;
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
+
+  it.skipIf(isWindows)("execSync timeout kills a TERM-immune shell's grandchild", () => {
+    const start = performance.now();
+    expect(() => {
+      execSync(grandchildTimeoutCmd, { timeout: 200, env: bunEnv });
+    }).toThrow();
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
+
   it("should allow us to set env", async () => {
     async function getChildEnv(env: any): Promise<object> {
       const result: string = await new Promise(resolve => {

@@ -339,7 +339,7 @@ pub struct PosixSpawnOptions {
     pub no_sigpipe: bool,
     /// setpgid(0, 0) in the child so it leads its own process group. The parent
     /// can then `kill(-pid, sig)` to signal the child and all its descendants.
-    /// Not exposed to JS yet.
+    /// Set from JS `newProcessGroup` or automatically when `timeout` is set.
     pub new_process_group: bool,
     /// PTY slave fd for controlling terminal setup (-1 if not using PTY).
     pub pty_slave_fd: i32,
@@ -470,6 +470,9 @@ pub struct PosixSpawnResult {
     pub memfds: [bool; 3],
     // ESRCH can happen when requesting the pidfd
     pub has_exited: bool,
+    /// Child is a process-group leader (`setpgid(0, 0)` / `setsid`). Copied
+    /// onto `Process` so timeout `kill(-pid)` can reach shell grandchildren.
+    pub owns_process_group: bool,
 }
 
 /// Entry in `extra_pipes` for a stdio slot at index >= 3.
@@ -1099,6 +1102,7 @@ pub unsafe fn spawn_process_posix(
         Ok(pid) => {
             spawned.pid = pid;
             spawned.extra_pipes = extra_fds;
+            spawned.owns_process_group = options.new_process_group;
 
             #[cfg(any(target_os = "linux", target_os = "android"))]
             {
