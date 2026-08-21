@@ -1899,6 +1899,44 @@ impl FilePollRef {
         }
     }
     #[inline]
+    pub fn register_level_triggered_with_fd(
+        self,
+        loop_: *mut bun_uws_sys::Loop,
+        kind: FilePollKind,
+        fd: Fd,
+    ) -> sys::Result<()> {
+        let flag = match kind {
+            FilePollKind::Readable => PollFlags::Readable,
+            FilePollKind::Writable => PollFlags::Writable,
+        };
+        #[cfg(not(windows))]
+        {
+            self.inner()
+                .register_level_triggered_with_fd(Self::uws_loop_mut(loop_), flag, fd)
+        }
+        #[cfg(windows)]
+        {
+            let _ = (loop_, flag, fd);
+            unreachable!("FilePoll fd registration is POSIX-only");
+        }
+    }
+    #[inline]
+    pub fn set_writable_interest(
+        self,
+        loop_: *mut bun_uws_sys::Loop,
+        on: bool,
+    ) -> sys::Result<()> {
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            self.inner().set_writable_interest(Self::uws_loop_mut(loop_), on)
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        {
+            let _ = (loop_, on);
+            sys::Result::Ok(())
+        }
+    }
+    #[inline]
     pub(crate) fn has_flag(self, f: FilePollFlag) -> bool {
         self.inner().flags.contains(f)
     }

@@ -161,6 +161,11 @@ pub struct PosixBufferedReader {
     // MaxBuf uses hand-rolled dual-ownership (Subprocess + reader) via
     // `add_to_pipereader`/`remove_from_pipereader`, not Arc — see MaxBuf.rs.
     pub maxbuf: Option<NonNull<MaxBuf>>,
+    // When Some, the poll is registered with this owner tag/pointer instead of
+    // `PollTag::BufferedReader`/self — the Terminal's shared master-fd poll owns
+    // both directions, so the single registration is owned by the Terminal and
+    // routes events through `Terminal::on_poll` (see dispatch.rs).
+    pub(crate) poll_owner_override: Option<Owner>,
 }
 
 bitflags::bitflags! {
@@ -201,6 +206,7 @@ impl PosixBufferedReader {
             vtable: BufferedReaderVTable::init::<T>(),
             flags: PosixFlags::new(),
             maxbuf: None,
+            poll_owner_override: None,
         }
     }
 
@@ -234,6 +240,7 @@ impl PosixBufferedReader {
             flags: other.flags,
             vtable: BufferedReaderVTable { kind, parent },
             maxbuf: None,
+            poll_owner_override: other.poll_owner_override,
         };
         other.flags.insert(PosixFlags::IS_DONE);
         other._offset = 0;
@@ -492,27 +499,39 @@ impl PosixBufferedReader {
         if self.flags.contains(PosixFlags::IS_PAUSED) {
             return Ok(());
         }
+        // Shared (Terminal single-registration) polls are level-triggered: the
+        // fd stays armed after EAGAIN and the kernel re-reports EPOLLIN on new
+        // data, so the OneShot-style re-arm is a no-op. Re-registering would
+        // only issue a redundant CTL_MOD that could disturb the writer's
+        // EPOLLOUT interest on the shared entry.
+        if self.poll_owner_override.is_some() {
+            if let Some(poll) = self.handle.get_poll() {
+                if poll.is_registered() {
+                    return Ok(());
+                }
+            }
+        }
         // Hoist vtable-derived scalars and
         // normalize self.handle to Poll before taking the single &mut borrow,
         // so no raw-pointer escape is needed.
         let ev = self.vtable.event_loop();
         let lp = self.vtable.loop_();
         let owner_ptr = std::ptr::from_mut(self).cast::<c_void>();
+        // `Owner` is Copy; capture the override once so the later `poll` borrow
+        // of `self.handle` doesn't conflict with a field read of `self`.
+        let override_owner = self.poll_owner_override;
+        let owner = override_owner.unwrap_or_else(|| Owner::new(PollTag::BufferedReader, owner_ptr.cast()));
 
         if let PollOrFd::Fd(fd) = self.handle {
             if !self.flags.contains(PosixFlags::POLLABLE) {
                 return Ok(());
             }
-            self.handle = PollOrFd::Poll(FilePollRef::init(
-                ev,
-                fd,
-                Owner::new(PollTag::BufferedReader, owner_ptr.cast()),
-            ));
+            self.handle = PollOrFd::Poll(FilePollRef::init(ev, fd, owner));
         }
         let Some(poll) = self.handle.get_poll_mut() else {
             return Ok(());
         };
-        poll.set_owner(Owner::new(PollTag::BufferedReader, owner_ptr.cast()));
+        poll.set_owner(owner);
 
         if !poll.has_flag(FilePollFlag::WasEverRegistered)
             && self.flags.contains(PosixFlags::KEEP_ALIVE)
@@ -524,7 +543,12 @@ impl PosixBufferedReader {
             poll.set_flag(FilePollFlag::EpollRearmWatch);
         }
 
-        match poll.register_with_fd(lp.cast(), FilePollKind::Readable, poll.fd()) {
+        let result = if override_owner.is_some() {
+            poll.register_level_triggered_with_fd(lp.cast(), FilePollKind::Readable, poll.fd())
+        } else {
+            poll.register_with_fd(lp.cast(), FilePollKind::Readable, poll.fd())
+        };
+        match result {
             sys::Result::Err(err) => Err(err),
             sys::Result::Ok(()) => Ok(()),
         }

@@ -91,6 +91,7 @@ use crate::webcore::streams::Pending as StreamPending;
 use crate::api::bun_subprocess::Subprocess;
 #[cfg(not(windows))]
 use crate::api::bun_terminal_body::Poll as TerminalPoll;
+use crate::api::bun_terminal_body::Terminal;
 use crate::api::cron::CronJob;
 use crate::api::native_promise_context::DeferredDerefTask as NativePromiseContextDeferredDerefTask;
 #[cfg(not(windows))]
@@ -755,6 +756,14 @@ pub(crate) unsafe fn __bun_run_file_poll(poll: *mut FilePoll, size_or_offset: i6
             }
         }
         poll_tag::TERMINAL_POLL => poll_arm!(TerminalPoll),
+        poll_tag::TERMINAL => {
+            // OHOS shared single-registration poll: the Terminal owns the one
+            // master-fd FilePoll (both directions). Route the ready direction to
+            // the writer drain and/or reader read loop.
+            let terminal = owner.ptr.cast::<Terminal>();
+            // SAFETY: tag set together with this pointee at first registration.
+            unsafe { Terminal::on_poll(terminal, poll, size_or_offset as isize, hup) }
+        }
         // `OutputReader = BufferedReader` in install crate — separate tag for ownership.
         poll_tag::LIFECYCLE_SCRIPT_SUBPROCESS_OUTPUT_READER => {
             poll_arm!(bun_io::BufferedReader, |h| {

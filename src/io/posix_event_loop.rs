@@ -212,6 +212,7 @@ pub enum PollTag {
     ParentDeathWatchdog,
     LifecycleScriptSubprocessOutputReader,
     MemoryPressure,
+    Terminal,
 }
 
 /// Compatibility module — call sites in `bun_runtime`/`bun_install` still spell
@@ -235,6 +236,7 @@ pub mod poll_tag {
     pub const LIFECYCLE_SCRIPT_SUBPROCESS_OUTPUT_READER: PollTag =
         PollTag::LifecycleScriptSubprocessOutputReader;
     pub const MEMORY_PRESSURE: PollTag = PollTag::MemoryPressure;
+    pub const TERMINAL: PollTag = PollTag::Terminal;
 }
 
 #[derive(Copy, Clone)]
@@ -591,6 +593,62 @@ impl FilePoll {
             let _ = (loop_, flag, one_shot, fd);
             sys::Result::Ok(())
         }
+    }
+
+    /// Register a direction as level-triggered (no `EPOLLONESHOT`). Used by the
+    /// Terminal's single shared poll: bidirectional one-shot is unsupported
+    /// (`EPOLLONESHOT` disarms the whole fd after the first event in either
+    /// direction), so the shared poll must stay level-triggered.
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "freebsd"
+    ))]
+    pub fn register_level_triggered_with_fd(
+        &mut self,
+        loop_: &mut Loop,
+        flag: Flags,
+        fd: Fd,
+    ) -> sys::Result<()> {
+        self.register_with_fd_impl(loop_, flag, OneShotFlag::None, fd)
+    }
+
+    /// Toggle the writable direction on an already-registered shared poll via
+    /// `CTL_MOD`, without ever issuing a `CTL_DEL`. The Terminal's writer arms
+    /// `EPOLLOUT` while it has buffered output and drops it on drain — dropping
+    /// via `CTL_DEL` is what triggers the HongMeng same-OFD DEL-poisoning bug, so
+    /// this must stay a `CTL_MOD` that shrinks the mask back to `IN|HUP`.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    pub fn set_writable_interest(&mut self, loop_: &mut Loop, on: bool) -> sys::Result<()> {
+        debug_assert!(
+            self.flags.contains(Flags::PollReadable),
+            "shared poll: reader must be armed before toggling writable interest"
+        );
+        if on {
+            // `Writable` with `PollReadable` still set -> mask IN|OUT|HUP|ERR, CTL_MOD.
+            self.register_with_fd_impl(loop_, Flags::Writable, OneShotFlag::None, self.fd)?;
+            // `register_with_fd_impl` only re-tracks the watchdog for `Readable`;
+            // refresh it here so the stored poke mask keeps EPOLLOUT, otherwise a
+            // stale IN|HUP poke would strip writable interest and strand output.
+            if self.flags.contains(Flags::EpollRearmWatch) {
+                epoll_rearm_watchdog::track(
+                    loop_.fd,
+                    self.fd.native(),
+                    bun_sys::linux::EPOLL::IN
+                        | bun_sys::linux::EPOLL::OUT
+                        | bun_sys::linux::EPOLL::HUP
+                        | bun_sys::linux::EPOLL::ERR,
+                    Pollable::init(self).ptr() as u64,
+                );
+            }
+        } else {
+            // Drop PollWritable first so the Readable registration below no longer
+            // sees the "preserve other direction" branch -> mask IN|HUP, CTL_MOD.
+            self.flags.remove(Flags::PollWritable);
+            self.register_with_fd_impl(loop_, Flags::Readable, OneShotFlag::None, self.fd)?;
+        }
+        Ok(())
     }
 
     #[cfg(any(

@@ -61,6 +61,24 @@ pub trait PosixPipeWriter {
 
     fn handle(&self) -> &PollOrFd;
 
+    /// Empty-buffer wake with nothing to write: drop the watch. Default drops
+    /// via `unregister`; the Terminal's shared-poll writer overrides this to
+    /// shrink the shared entry's mask via CTL_MOD instead (a CTL_DEL there is
+    /// what triggers the HongMeng same-OFD DEL-poisoning bug).
+    fn on_empty_buffer_wake(&mut self) {
+        if let PollOrFd::Poll(poll) = self.handle() {
+            // Empty-buffer wake with nothing to write: drop the watch
+            // explicitly instead of relying on the kernel's EPOLLONESHOT
+            // auto-disarm. Kernels that lack it (HongMeng: a ONESHOT
+            // registration fires EPOLLOUT forever on a writable pipe)
+            // would otherwise wake the loop continuously at 100% CPU.
+            // `force` because on such a kernel the fd is still armed —
+            // the needs_rearm fast path skips the syscall entirely.
+            // The next buffered write re-registers via register_poll().
+            _ = poll.unregister(crate::Loop::get(), true);
+        }
+    }
+
     /// Only reads `get_file_type()` / `get_fd()` from `self`; takes `&self` so
     /// callers may pass a `buf` that borrows from a field of `self` (e.g.
     /// `self.outgoing.slice()`) without raw-pointer aliasing escapes.
@@ -136,16 +154,11 @@ pub trait PosixPipeWriter {
                     self_addr,
                     poll.is_registered()
                 );
-                // Empty-buffer wake with nothing to write: drop the watch
-                // explicitly instead of relying on the kernel's EPOLLONESHOT
-                // auto-disarm. Kernels that lack it (HongMeng: a ONESHOT
-                // registration fires EPOLLOUT forever on a writable pipe)
-                // would otherwise wake the loop continuously at 100% CPU.
-                // `force` because on such a kernel the fd is still armed —
-                // the needs_rearm fast path skips the syscall entirely.
-                // The next buffered write re-registers via register_poll().
-                _ = poll.unregister(crate::Loop::get(), true);
             }
+            // Drop the watch on an empty-buffer wake. For a shared-poll writer
+            // (`handle == Fd`, no FilePoll of its own) this shrinks the shared
+            // entry's mask via CTL_MOD; for an owned poll it unregisters.
+            self.on_empty_buffer_wake();
             // Some kernels (observed on HongMeng/OHOS) keep delivering ready
             // events for `fd` even after the CTL_DEL above reports success:
             // a *second*, unconditional CTL_DEL attempt on the very next
@@ -639,6 +652,12 @@ pub trait PosixStreamingWriterParent {
     /// # Safety
     /// `this` must point to a live `Self`.
     unsafe fn loop_(this: *mut Self) -> *mut bun_uws_sys::Loop;
+    /// Toggle writable interest on a shared (single-registration) poll. Default
+    /// no-op: only the Terminal overrides this, where the reader owns the one
+    /// master-fd poll and the writer piggybacks EPOLLOUT on it via CTL_MOD.
+    /// # Safety
+    /// `this` must point to a live `Self`.
+    unsafe fn set_writable_interest(_this: *mut Self, _on: bool) {}
 }
 
 pub struct PosixStreamingWriter<Parent: PosixStreamingWriterParent> {
@@ -648,6 +667,11 @@ pub struct PosixStreamingWriter<Parent: PosixStreamingWriterParent> {
     pub is_done: bool,
     pub(crate) closed_without_reporting: bool,
     pub force_sync: bool,
+    /// Terminal shared mode: this writer does not own a FilePoll of its own.
+    /// It shares the reader's single master-fd poll and toggles EPOLLOUT on it
+    /// via `set_writable_interest` (a CTL_MOD), never registering or closing a
+    /// poll/fd of its own.
+    pub(crate) shared_poll: bool,
     /// Last reported `WriteStatus == Pending` (i.e. write(2) returned EAGAIN).
     backed_up: core::cell::Cell<bool>,
 }
@@ -661,6 +685,7 @@ impl<Parent: PosixStreamingWriterParent> Default for PosixStreamingWriter<Parent
             is_done: false,
             closed_without_reporting: false,
             force_sync: false,
+            shared_poll: false,
             backed_up: core::cell::Cell::new(false),
         }
     }
@@ -690,6 +715,20 @@ impl<Parent: PosixStreamingWriterParent> PosixPipeWriter for PosixStreamingWrite
     }
     fn handle(&self) -> &PollOrFd {
         &self.handle
+    }
+
+    fn on_empty_buffer_wake(&mut self) {
+        if self.shared_poll {
+            // Shared poll: the writer doesn't own a FilePoll; drop writable
+            // interest on the reader's single entry via CTL_MOD (never CTL_DEL).
+            // SAFETY: parent BACKREF set via set_parent; outlives this writer.
+            unsafe { Parent::set_writable_interest(self.parent(), false) };
+        } else {
+            // Non-shared: default unregister path.
+            if let PollOrFd::Poll(poll) = self.handle() {
+                _ = poll.unregister(crate::Loop::get(), true);
+            }
+        }
     }
 }
 
@@ -817,6 +856,9 @@ impl<Parent: PosixStreamingWriterParent> PosixStreamingWriter<Parent> {
     }
 
     fn close_without_reporting(&mut self) {
+        if self.shared_poll {
+            return;
+        }
         if self.get_fd() != Fd::INVALID {
             debug_assert!(!self.closed_without_reporting);
             self.closed_without_reporting = true;
@@ -825,6 +867,12 @@ impl<Parent: PosixStreamingWriterParent> PosixStreamingWriter<Parent> {
     }
 
     fn register_poll(&mut self) {
+        if self.shared_poll {
+            // Shared poll: arm EPOLLOUT on the reader's single entry via CTL_MOD.
+            // SAFETY: parent BACKREF set via set_parent; outlives this writer.
+            unsafe { Parent::set_writable_interest(self.parent(), true) };
+            return;
+        }
         let Some(poll) = self.get_poll() else { return };
         // SAFETY: parent BACKREF set via set_parent; outlives this writer.
         let loop_ = unsafe { Parent::loop_(self.parent()) }.cast();
@@ -1081,6 +1129,14 @@ impl<Parent: PosixStreamingWriterParent> PosixStreamingWriter<Parent> {
             return;
         }
 
+        if self.shared_poll {
+            // No FilePoll/fd of our own to close; the reader owns the single
+            // entry and fd. Just release the writer's ref via the parent.
+            // SAFETY: parent BACKREF valid.
+            unsafe { Parent::on_close(self.parent()) };
+            return;
+        }
+
         let parent = self.parent;
         self.handle.close(
             Some(parent.cast()),
@@ -1092,6 +1148,14 @@ impl<Parent: PosixStreamingWriterParent> PosixStreamingWriter<Parent> {
     pub fn start(&mut self, fd: Fd, is_pollable: bool) -> sys::Result<()> {
         if !is_pollable {
             self.close();
+            self.handle = PollOrFd::Fd(fd);
+            return sys::Result::Ok(());
+        }
+
+        if self.shared_poll {
+            // Shared poll: the writer stores the (aliased) fd but never owns a
+            // FilePoll — the reader's single entry already covers this fd. No
+            // registration here; `register_poll` toggles EPOLLOUT via CTL_MOD.
             self.handle = PollOrFd::Fd(fd);
             return sys::Result::Ok(());
         }

@@ -29,6 +29,8 @@ use bun_jsc::{
 };
 use bun_sys::{self as sys, Fd, FdExt};
 
+#[cfg(unix)]
+use bun_io::pipe_writer::PosixPipeWriter as _;
 #[cfg(windows)]
 use bun_io::pipe_writer::BaseWindowsPipeWriter as _;
 #[cfg(windows)]
@@ -499,6 +501,24 @@ impl Terminal {
 
         // Set writer parent
         terminal.writer.with_mut(|w| w.parent = parent_ptr);
+
+        // OHOS single-registration shared poll: the reader owns the ONE
+        // master-fd FilePoll (registered level-triggered for both directions),
+        // and the writer piggybacks EPOLLOUT on it via CTL_MOD. Must be set
+        // before `reader.start()` so the first registration carries the
+        // Terminal owner tag + the EpollRearmWatch flag (a shared poll never
+        // re-registers, so the watchdog would otherwise never enroll).
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            terminal.writer.with_mut(|w| w.shared_poll = true);
+            terminal.reader.with_mut(|r| {
+                r.poll_owner_override = Some(bun_io::Owner::new(
+                    bun_io::PollTag::Terminal,
+                    parent_ptr.cast(),
+                ));
+                r.flags.insert(PosixFlags::EPOLL_REARM_WATCH);
+            });
+        }
 
         // Start writer with the write fd - adds a ref
         match terminal
@@ -1125,6 +1145,13 @@ fn create_pty_posix(cols: u16, rows: u16) -> Result<PtyResult, CreatePtyError> {
         }
     };
 
+    // OHOS single-registration: reader and writer share ONE open file
+    // description (aliased, not owning). A second dup would put two epoll
+    // entries on the same description in the one epfd — the exact shape the
+    // HongMeng kernel poisons on CTL_DEL. macOS/freebsd keep the dual dup.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let write_fd = read_fd;
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
     let write_fd = match sys::dup(master_fd_desc) {
         sys::Result::Ok(fd) => fd,
         sys::Result::Err(_) => {
@@ -1796,6 +1823,11 @@ impl Terminal {
         }
         self.update_flags(|f| f.insert(Flags::CLOSED));
 
+        // Single-deinit invariant (OHOS shared poll): the reader owns the one
+        // master-fd FilePoll. In shared mode `writer.close()` below no-ops on
+        // the handle (no fd/poll of its own), so `reader.close()` is the sole
+        // point that deinits the shared epoll entry + closes the aliased fd.
+
         // Close writer (closes write_fd). R-2: `with_mut` borrow is held across
         // the synchronous `on_writer_close` parent callback, but that callback
         // touches only sibling `Cell`/`JsCell` fields, never `writer`.
@@ -1837,6 +1869,57 @@ impl Terminal {
             slave.close();
             self.slave_fd.set(Fd::INVALID);
         }
+    }
+
+    /// Single shared poll dispatch (OHOS single-registration): the reader owns
+    /// the one master-fd FilePoll, registered level-triggered for both
+    /// directions, with this Terminal as the owner tag. Route the ready
+    /// direction to the writer drain and/or the reader read loop.
+    ///
+    /// # Safety
+    /// `this` is the live Terminal registered as the poll's owner; `poll` is
+    /// the live shared FilePoll. Raw-pointer discipline mirrors the parent
+    /// vtable thunks: hold `ref_` across both drains so a callback that closes
+    /// the Terminal cannot free it mid-dispatch.
+    #[cfg(not(windows))]
+    pub(crate) unsafe fn on_poll(
+        this: *mut Terminal,
+        poll: *mut bun_io::FilePoll,
+        size_hint: isize,
+        hup: bool,
+    ) {
+        // SAFETY: caller contract — the owner tag was set together with this
+        // pointer at first registration.
+        let t = unsafe { &*this };
+        t.ref_();
+
+        // Consume the direction flags first; `is_readable`/`is_writable` clear
+        // their flag on read.
+        // SAFETY: `poll` is the live shared FilePoll, single-threaded loop.
+        let readable = unsafe { (&mut *poll).is_readable() };
+        // SAFETY: same as above.
+        let writable = unsafe { (&mut *poll).is_writable() };
+
+        if writable {
+            // Drain the writer first: its empty-buffer wake drops EPOLLOUT via
+            // `set_writable_interest(false)`, and its callbacks may close the
+            // Terminal (reader poll gets deinit'd). Guard the reader below.
+            // SAFETY: `get_mut` on the single-threaded loop; no re-entrancy at
+            // the point of access.
+            let writer = unsafe { t.writer.get_mut() };
+            bun_io::pipe_writer::PosixPipeWriter::on_poll(writer, size_hint, hup);
+        }
+
+        // Writer drain may have closed us (close_internal → reader.close →
+        // shared poll deinit'd). Do not touch the reader in that case.
+        if readable && !t.flags.get().contains(Flags::CLOSED) {
+            // SAFETY: reader is live; `BufferedReader::on_poll` takes the raw
+            // pointer and drives the read loop.
+            let reader_ptr = unsafe { t.reader.get_mut() } as *mut _;
+            bun_io::BufferedReader::on_poll(reader_ptr, size_hint, hup);
+        }
+
+        t.deref_();
     }
 
     // IOWriter callbacks
@@ -2161,6 +2244,17 @@ impl bun_io::pipe_writer::PosixStreamingWriterParent for Terminal {
     }
     unsafe fn loop_(this: *mut Self) -> *mut bun_uws_sys::Loop {
         Self::from_parent_ptr(this).event_loop_handle.r#loop()
+    }
+    unsafe fn set_writable_interest(this: *mut Self, on: bool) {
+        // SAFETY: BACKREF valid; single-JS-thread. Reach the shared poll through
+        // the reader (which owns the single master-fd FilePoll) and toggle
+        // EPOLLOUT on it — raw disjoint field access, no `&Terminal` across a
+        // live writer borrow.
+        let t = unsafe { &*this };
+        let reader = t.reader.get();
+        if let Some(poll) = reader.handle.get_poll() {
+            let _ = poll.set_writable_interest(bun_io::Loop::get(), on);
+        }
     }
 }
 
