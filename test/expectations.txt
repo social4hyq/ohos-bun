@@ -379,3 +379,8 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # (node_fs.rs:4918) EOF loop gated on `!broke` instead of `stat_size==0`.
 # GREEN verified with r23 build: 33/33 pass.
 
+# bun:ffi cc() cannot resolve bits/alltypes.h through the OHOS SDK sysroot's
+# stdint.h include chain. Segfaults the runner in ohos-full-test CI and fails
+# on a real device with the same include miss — not a container artifact.
+[ OPENHARMONY ] test/napi/napi-value-ffi.test.ts [ CRASH ] # OHOS SDK sysroot missing bits/alltypes.h
+
