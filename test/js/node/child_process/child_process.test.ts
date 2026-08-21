@@ -290,9 +290,9 @@ describe("spawn()", () => {
     expect(end! - start < 2000).toBe(true);
   });
 
-  // Compound `sh -c` plus a TERM-immune parent: the timeout must signal the
-  // process group or the grandchild keeps stdio open until it finishes.
-  const grandchildTimeoutCmd = `trap "" TERM; ${shellExe()} -c "sleep 2; true"`;
+  // No-op TERM trap (not SIG_IGN — children keep the default disposition):
+  // timeout must kill(-pid) or the grandchild runs to completion.
+  const grandchildTimeoutCmd = `trap ":" TERM; ${shellExe()} -c "sleep 2; true"`;
 
   it.skipIf(isWindows)("exec timeout kills a TERM-immune shell's grandchild", async () => {
     const start = performance.now();

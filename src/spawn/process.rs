@@ -131,9 +131,9 @@ pub struct Process {
     pub exit_handler: ProcessExitHandler,
     pub sync: bool,
     pub event_loop: EventLoopHandle,
-    /// Child called `setpgid(0, 0)` (or `setsid`) so `kill(-pid)` reaches its
-    /// descendants. Set when spawn used a timeout — exec shells that do not
-    /// exec-optimize otherwise survive `kill(pid)` while a grandchild holds stdio.
+    /// Child called `setpgid(0, 0)` so `kill(-pid)` reaches its descendants.
+    /// Set when spawn used a timeout: shells that do not exec-optimize otherwise
+    /// survive `kill(pid)` while a grandchild holds stdio.
     pub owns_process_group: bool,
 }
 
