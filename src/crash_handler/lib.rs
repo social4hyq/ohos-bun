@@ -2174,16 +2174,27 @@ mod draft {
                         .map_err(fmt_err)?;
                     }
                 }
-                #[cfg(all(target_os = "linux", any(target_env = "musl", target_env = "ohos")))]
+                #[cfg(all(target_os = "linux", target_env = "musl"))]
                 {
                     let kernel_version =
                         bun_analytics::GenerateHeader::generate_platform::kernel_version();
-                    let libc = if cfg!(target_env = "ohos") { "ohos (musl)" } else { "musl" };
                     write!(
                         writer,
-                        "Linux Kernel v{}.{}.{} | {}\n",
-                        kernel_version.major, kernel_version.minor, kernel_version.patch,
-                        libc,
+                        "Linux Kernel v{}.{}.{} | musl\n",
+                        kernel_version.major, kernel_version.minor, kernel_version.patch
+                    )
+                    .map_err(fmt_err)?;
+                }
+                // `aarch64-unknown-linux-ohos` is `target_os=linux` +
+                // `target_env=ohos` (not `musl`), so the musl arm above misses it.
+                #[cfg(all(target_os = "linux", target_env = "ohos"))]
+                {
+                    let kernel_version =
+                        bun_analytics::GenerateHeader::generate_platform::kernel_version();
+                    write!(
+                        writer,
+                        "Linux Kernel v{}.{}.{} | ohos (musl)\n",
+                        kernel_version.major, kernel_version.minor, kernel_version.patch
                     )
                     .map_err(fmt_err)?;
                 }
@@ -2778,6 +2789,124 @@ mod draft {
         false
     }
 
+    /// HTTP/1.0 GET of `url + "/ack"` via a blocking IPv4 socket.
+    /// All of socket/connect/write/close are async-signal-safe.
+    #[cfg(all(target_os = "linux", target_env = "ohos"))]
+    fn report_via_socket(url: &[u8]) {
+        let Some(rest) = url.strip_prefix(b"http://") else {
+            return;
+        };
+        let slash = rest.iter().position(|&c| c == b'/').unwrap_or(rest.len());
+        let hostport = &rest[..slash];
+        let path = if slash < rest.len() {
+            &rest[slash..]
+        } else {
+            b"/"
+        };
+
+        let (host, port) = match hostport.iter().rposition(|&c| c == b':') {
+            Some(colon) => {
+                let mut port: u32 = 0;
+                if colon + 1 >= hostport.len() {
+                    return;
+                }
+                for &b in &hostport[colon + 1..] {
+                    if !b.is_ascii_digit() {
+                        return;
+                    }
+                    port = port.saturating_mul(10).saturating_add(u32::from(b - b'0'));
+                    if port > 65535 {
+                        return;
+                    }
+                }
+                (&hostport[..colon], port as u16)
+            }
+            None => (hostport, 80u16),
+        };
+        if host.is_empty() || host[0] == b'[' {
+            return;
+        }
+        let addr = if host == b"localhost" {
+            u32::from_be_bytes([127, 0, 0, 1])
+        } else {
+            let mut parts = [0u8; 4];
+            let mut idx = 0usize;
+            let mut val = 0u32;
+            let mut saw_digit = false;
+            for &b in host {
+                if b == b'.' {
+                    if !saw_digit || idx >= 3 || val > 255 {
+                        return;
+                    }
+                    parts[idx] = val as u8;
+                    idx += 1;
+                    val = 0;
+                    saw_digit = false;
+                } else if b.is_ascii_digit() {
+                    val = val * 10 + u32::from(b - b'0');
+                    saw_digit = true;
+                } else {
+                    return;
+                }
+            }
+            if !saw_digit || idx != 3 || val > 255 {
+                return;
+            }
+            parts[3] = val as u8;
+            u32::from_be_bytes(parts)
+        };
+
+        let mut req = BoundedArray::<u8, 4096>::default();
+        if req.append_slice(b"GET ").is_err()
+            || req.append_slice(path).is_err()
+            || req.append_slice(b"/ack HTTP/1.0\r\nHost: ").is_err()
+            || req.append_slice(hostport).is_err()
+            || req.append_slice(b"\r\nConnection: close\r\n\r\n").is_err()
+        {
+            return;
+        }
+
+        // SAFETY: AF_INET/SOCK_STREAM socket; connect/write/close are
+        // async-signal-safe. Best-effort crash-ack — ignore all errors.
+        unsafe {
+            let fd = libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0);
+            if fd < 0 {
+                return;
+            }
+            let tv = libc::timeval {
+                tv_sec: 2,
+                tv_usec: 0,
+            };
+            let _ = libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_SNDTIMEO,
+                core::ptr::from_ref(&tv).cast(),
+                core::mem::size_of::<libc::timeval>() as libc::socklen_t,
+            );
+            let _ = libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_RCVTIMEO,
+                core::ptr::from_ref(&tv).cast(),
+                core::mem::size_of::<libc::timeval>() as libc::socklen_t,
+            );
+            let mut sin: libc::sockaddr_in = bun_core::ffi::zeroed();
+            sin.sin_family = libc::AF_INET as libc::sa_family_t;
+            sin.sin_port = port.to_be();
+            sin.sin_addr.s_addr = addr.to_be();
+            let rc = libc::connect(
+                fd,
+                core::ptr::from_ref(&sin).cast(),
+                core::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+            );
+            if rc == 0 {
+                let _ = libc::write(fd, req.const_slice().as_ptr().cast(), req.len());
+            }
+            libc::close(fd);
+        }
+    }
+
     /// Bun automatically reports crashes on Windows and macOS
     ///
     /// These URLs contain no source code or personally-identifiable
@@ -2892,9 +3021,15 @@ mod draft {
             let _ = spawn_result;
             let _ = url;
         }
+        // OHOS: never fork+exec here. musl sigchain/DFX and processdump
+        // often hang a crashing child, and `curl` is frequently absent.
+        #[cfg(all(target_os = "linux", target_env = "ohos"))]
+        {
+            report_via_socket(url);
+        }
         #[cfg(any(
             target_os = "macos",
-            target_os = "linux",
+            all(target_os = "linux", not(target_env = "ohos")),
             target_os = "android",
             target_os = "freebsd"
         ))]
@@ -2959,6 +3094,67 @@ mod draft {
         let _ = url;
     }
 
+    /// Fatal signals whose JS `process.on()` listeners (and, on OHOS, musl
+    /// sigchain/DFX special handlers) must not outrank crash termination.
+    #[cfg(not(windows))]
+    const FATAL_TERMINATION_SIGNALS: [c_int; 8] = [
+        libc::SIGSEGV,
+        libc::SIGILL,
+        libc::SIGBUS,
+        libc::SIGABRT,
+        libc::SIGFPE,
+        libc::SIGHUP,
+        libc::SIGTERM,
+        // Keep SIGTRAP reset so the `core::intrinsics::abort()`
+        // fallback (brk on aarch64) is lethal even when JS installed
+        // a SIGTRAP listener via `process.on("SIGTRAP")` (npm's
+        // `signal-exit` package does).
+        libc::SIGTRAP,
+    ];
+
+    /// Kernel `struct sigaction` for `rt_sigaction(2)` (Linux UAPI).
+    /// Handler 0 is SIG_DFL; no restorer is needed because it never returns.
+    #[cfg(all(target_os = "linux", target_env = "ohos"))]
+    #[repr(C)]
+    struct KernelSigactionDfl {
+        handler: usize,
+        flags: usize,
+        restorer: usize,
+        mask: u64,
+    }
+
+    /// Install SIG_DFL via `rt_sigaction` so musl sigchain cannot keep DFX.
+    #[cfg(all(target_os = "linux", target_env = "ohos"))]
+    fn raw_sigaction_dfl(sig: c_int) {
+        let ksa = KernelSigactionDfl {
+            handler: 0,
+            flags: 0,
+            restorer: 0,
+            mask: 0,
+        };
+        // SAFETY: ksa is a valid kernel sigaction (SIG_DFL); 8 = `_NSIG/8`.
+        unsafe {
+            libc::syscall(
+                libc::SYS_rt_sigaction,
+                sig,
+                &raw const ksa,
+                core::ptr::null::<KernelSigactionDfl>(),
+                8usize,
+            );
+        }
+    }
+
+    /// `exit_group` cannot be caught; used when raise() is swallowed.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    fn exit_group_unconditionally(sig: c_int) -> ! {
+        // SAFETY: exit_group tears down the process; 128+sig matches a
+        // shell-style fatal-signal status if raise() never delivered.
+        unsafe {
+            libc::syscall(libc::SYS_exit_group, 128 + sig);
+        }
+        core::intrinsics::abort();
+    }
+
     /// Crash. Make sure segfault handlers are off so that this doesnt trigger the crash handler.
     /// On POSIX this re-raises the signal that caused the crash (or SIGABRT
     /// for panics) so the parent sees the real fault and core dumps are
@@ -2977,24 +3173,15 @@ mod draft {
             unsafe {
                 libc::sigemptyset(&raw mut sigact.sa_mask);
             }
-            for s in [
-                libc::SIGSEGV,
-                libc::SIGILL,
-                libc::SIGBUS,
-                libc::SIGABRT,
-                libc::SIGFPE,
-                libc::SIGHUP,
-                libc::SIGTERM,
-                // Keep SIGTRAP reset so the `core::intrinsics::abort()`
-                // fallback (brk on aarch64) is lethal even when JS installed
-                // a SIGTRAP listener via `process.on("SIGTRAP")` (npm's
-                // `signal-exit` package does).
-                libc::SIGTRAP,
-            ] {
+            for s in FATAL_TERMINATION_SIGNALS {
                 // SAFETY: &sigact is a valid sigaction; null oldact is permitted.
                 unsafe {
                     libc::sigaction(s, &raw const sigact, core::ptr::null_mut());
                 }
+                // OHOS sigchain keeps DFX as the kernel handler; libc
+                // SIG_DFL never arrives. Bypass so raise() can be lethal.
+                #[cfg(target_env = "ohos")]
+                raw_sigaction_dfl(s);
             }
 
             // We may be running inside the signal handler for `sig`, in which
@@ -3007,6 +3194,17 @@ mod draft {
                 libc::sigemptyset(&raw mut set);
                 libc::sigaddset(&raw mut set, sig);
                 libc::pthread_sigmask(libc::SIG_UNBLOCK, &raw const set, core::ptr::null_mut());
+                #[cfg(all(target_os = "linux", target_env = "ohos"))]
+                {
+                    // Same reason as raw_sigaction_dfl: bypass sigchain.
+                    libc::syscall(
+                        libc::SYS_rt_sigprocmask,
+                        libc::SIG_UNBLOCK,
+                        &raw const set,
+                        core::ptr::null::<libc::sigset_t>(),
+                        8usize,
+                    );
+                }
             }
 
             // SAFETY: raise has no preconditions; with SIG_DFL installed and
@@ -3014,7 +3212,12 @@ mod draft {
             unsafe {
                 libc::raise(sig);
             }
-            // If we somehow get here, fall through to a guaranteed-fatal trap.
+            // abort() is brk→SIGTRAP on aarch64. If SIGTRAP is still chained
+            // (JS listener or DFX), the handler returns and we spin. exit_group
+            // cannot be intercepted.
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            exit_group_unconditionally(sig);
+            #[cfg(not(any(target_os = "linux", target_os = "android")))]
             core::intrinsics::abort();
         }
         #[cfg(windows)]
