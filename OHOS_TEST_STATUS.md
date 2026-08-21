@@ -4327,3 +4327,26 @@ epoll_ctl 路线到头后剩下的用户态通路是**绕过事件、直查数�
 
 - 诊断分支 `debug/rearm-add-retry`（ohos-bun）与 `diag-bun-probe` r76（tap）保留不合并；真机 `bun-probe` r76 keg 保留供复现
 - 探针与轨迹：`logs/triage-2026-08-20/{echo-probe-flags.ts,echo-probe-seq.ts,add-retry-baseline.out,add-retry-r76-baseline.out,add-retry-r76-deladd.out}`
+
+## r70 全量基线（2026-08-21，bun 1.4.0_70 / `391bfb862`）
+
+20 核全量 5844 文件 → 5776 过 / 68 失败 = **98.84%**；低并发/隔离复测后 68 失败 → 15 并发假象转绿 / 53 仍失败。`terminal`/`tty`/`ls` 三件套全 PASS（r69 修复坐实）。**53 个真实失败全量定案：0 个真 bun 运行时 bug**——曾把 `spawn-streaming-stdin` 的 fd 泄漏误判为真 bug，后证伪：OHOS 内核 `close()` 在 `/proc/self/fd` 留陈旧条目（fd 号实际可复用，fstat EBADF），`getMaxFD()` 判泄漏是假阳性（见 [[environment_ohos_close_stale_fd]]，已进 expectations.txt OPENHARMONY quarantine；无效修复 r71 已回退）。53 个分类：环境依赖 23（valkey docker 10 + 外部凭据 10 + google.com 2 + EFBIG/toybox ulimit 1）、原生绑定/签名 2、source-lints 6（3 自有 debt + 2 上游 drift + 1 环境）、child_process TMPDIR shim 1、平台/沙箱 5（net EACCES、ptrace、deleted-cwd×2、getaddrinfo）、时序/TLS 4、泄漏检测 3、网络/安装 4、websocket 并发 flake 1、rm PATH_MAX 平台差异 1、spawn gcTick 时序 1、node-http-connect node 基线环境 1、**spawn-streaming-stdin fd 假阳性 1**。
+
+详见分轮次报告：`logs/verify-r70-2026-08-21/round-r70-20260821-165507.md`（含 5 核复测、错误签名聚类、14 并发假象清单、过程性 bug 留档）。
+
+## getcwd deleted-cwd 修复（r73，bun 1.4.0_73 / `9b8d199f68`，bottle r76）
+
+r70 基线「平台/沙箱 5（deleted-cwd×2）」里 `test-cwd-enoent-improved-message.js` 这一条已修复并真机验证。
+
+**根因（两层）**：① ohos-compat-shim 的 `getcwd()` 拦截在 cwd 被 rmdir 后回退 `$HOME`（生命周期脚本鲁棒性，有意保留）；② r72 试图在 `bun_sys::getcwd` 里加 `/proc/self/cwd` 探针兜底，但写成 `readlink(...) > 0` 再 `stat`——假设 Linux 行为（readlink 返回 `" (deleted)"` 后缀、stat 才 ENOENT）。真机实测 OHOS procfs 的 **readlink 本身直接返回 ENOENT**（正常/新目录返回路径，删 cwd 后 readlink 抛 ENOENT），`n > 0` 恒不成立，r72 探针是死代码，`process.cwd()` 仍走 `$HOME` 回退。
+
+**修复**：新增 `bun_sys::process_cwd()`（`src/sys/lib.rs`，只服务 `process.cwd()`），`cwd_is_deleted()` 同时识别两种信号——`stat`-ENOENT（Linux 式）和 `readlink`-ENOENT（OHOS 式）。刻意**不**全局改 `bun_sys::getcwd`：bun 其余 24 个 getcwd 调用者（install/resolver/lockfile 等，含 `WorkspaceMap.rs` 的 `.expect("unreachable")`）依赖 shim 的 `$HOME` 回退，全局抛 ENOENT 会误伤。跨 crate 限制（`Tag::getcwd` 是 `pub(crate)`）也决定了错误构造必须收进 bun_sys 内部。
+
+**真机验证**（r73）：
+- 删 cwd 后 `process.cwd()` 抛 `ENOENT: process.cwd failed with error no such file or directory, the current working directory was likely removed without changing the working directory, uv_cwd`——与 Node `uv_cwd()` 文案逐字一致（含 deleted-cwd hint）
+- 正常 cwd / chdir 新目录仍正常返回
+- `test-cwd-enoent.js`、`-preload`、`-repl`、`-improved-message` 4 个全过（exit 0）
+
+**范围说明**：`run-crash-handler.test.ts` 的「cwd deleted before startup」是**另一套机制**（bun 启动时 cwd 检测走 `run_command.rs` 的 OHOS `$HOME` 回退，非 `process.cwd()`），且 standalone 跑撞 `ENOENT reading "bun:internal-for-testing"`（release 构建缺内部测试模块，已知大类），与本次修复无关，仍留失败列。
+
+关联记忆：`[[project_ohos_readlink_proc_cwd_enoent]]`。
