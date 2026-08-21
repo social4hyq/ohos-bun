@@ -9,6 +9,7 @@
 #include <openssl/x509.h>
 #include <openssl/x509_vfy.h>
 #include <openssl/pem.h>
+#include <openssl/err.h>
 
 // Helper function to load certificates from a directory
 static void load_certs_from_directory(const char* dir_path, STACK_OF(X509)* cert_stack, bool accept_hashed) {
@@ -51,12 +52,17 @@ static void load_certs_from_directory(const char* dir_path, STACK_OF(X509)* cert
     char filepath[PATH_MAX];
     snprintf(filepath, sizeof(filepath), "%s/%s", dir_path, entry->d_name);
     
-    // Try to load certificate
-    FILE* file = fopen(filepath, "r");
+    // PEM first; some OHOS/Android hashed store files are DER.
+    FILE* file = fopen(filepath, "rb");
     if (file) {
       X509* cert = PEM_read_X509(file, NULL, NULL, NULL);
+      if (!cert) {
+        rewind(file);
+        cert = d2i_X509_fp(file, NULL);
+        ERR_clear_error();
+      }
       fclose(file);
-      
+
       if (cert) {
         if (!sk_X509_push(cert_stack, cert)) {
           X509_free(cert);
@@ -135,6 +141,7 @@ extern "C" void us_load_system_certificates_linux(STACK_OF(X509) **system_certs)
     "/data/misc/user/0/cacerts-added",      // user-installed
     NULL
   };
+  static const char* hashed_dir_paths[] = { NULL };
 #else
   // Common certificate bundle locations (single file with multiple certs)
   // These paths are based on common Linux distributions and OpenSSL defaults
@@ -147,6 +154,11 @@ extern "C" void us_load_system_certificates_linux(STACK_OF(X509) **system_certs)
     "/etc/ssl/cert.pem",                    // Alpine Linux, macOS OpenSSL
     "/usr/local/etc/openssl/cert.pem",      // Homebrew OpenSSL on macOS
     "/usr/local/share/ca-certificates/ca-certificates.crt", // Custom CA installs
+    // OpenHarmony / HarmonyOS: documented OpenSSL CA bundle. Missing on
+    // Linux so these are no-ops there. Huawei/OpenHarmony docs pin
+    // /system/etc/ssl/certs/cacert.pem as the system PEM store.
+    "/system/etc/ssl/certs/cacert.pem",
+    "/etc/ssl/certs/cacert.pem",
     NULL
   };
 
@@ -161,6 +173,16 @@ extern "C" void us_load_system_certificates_linux(STACK_OF(X509) **system_certs)
     "/var/ssl/certs",           // AIX
     "/usr/local/etc/openssl/certs", // Homebrew OpenSSL on macOS
     "/System/Library/OpenSSL/certs", // macOS system OpenSSL (older versions)
+    NULL
+  };
+
+  // c_rehash-only stores. Not /etc/ssl/certs: Debian has *.pem and <hash>.0
+  // symlinks to the same files there, and hashed+plain would double-load.
+  // HarmonyOS Certificate Manager + user-installed CAs use this format.
+  static const char* hashed_dir_paths[] = {
+    "/etc/security/certificates",
+    "/system/etc/security/certificates",
+    "/data/certificates/user_cacerts/0",
     NULL
   };
 #endif
@@ -178,6 +200,10 @@ extern "C" void us_load_system_certificates_linux(STACK_OF(X509) **system_certs)
 #endif
   for (const char** path = dir_paths; *path != NULL; path++) {
     load_certs_from_directory(*path, *system_certs, accept_hashed);
+  }
+
+  for (const char** path = hashed_dir_paths; *path != NULL; path++) {
+    load_certs_from_directory(*path, *system_certs, /*accept_hashed=*/true);
   }
 }
 
