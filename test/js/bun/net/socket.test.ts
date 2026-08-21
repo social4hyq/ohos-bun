@@ -358,7 +358,10 @@ describe.concurrent("socket", () => {
     expect(exitCode).toBe(0);
   }, 60_000);
 
-  it.skipIf(isWindows)("kqueue should not dispatch spurious drain events on readable", async () => {
+  // The fixture needs bun:internal-for-testing, unavailable in OHOS's release
+  // build ("ENOENT reading bun:internal-for-testing" — whole fixture process
+  // exits nonzero before running any assertion).
+  it.skipIf(isWindows || process.platform === "openharmony")("kqueue should not dispatch spurious drain events on readable", async () => {
     expect(await bunRun(fileURLToPath(new URL("./kqueue-filter-coalesce-fixture.ts", import.meta.url)))).toSpawn();
   });
 

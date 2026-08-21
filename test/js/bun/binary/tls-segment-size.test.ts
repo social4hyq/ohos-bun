@@ -18,6 +18,8 @@ import { describe, expect, test } from "bun:test";
 import { isFreeBSD, isLinux, isWindows } from "harness";
 import { closeSync, openSync, readSync } from "node:fs";
 
+const isOhos = process.platform === "openharmony";
+
 /** Read `len` bytes from `fd` at absolute `offset`. */
 function preadExact(fd: number, offset: number, len: number): Buffer {
   const buf = Buffer.alloc(len);
@@ -104,7 +106,7 @@ describe("static TLS footprint", () => {
   // static threadlocal will.
   const CEILING = 192 * 1024;
 
-  test.skipIf(!(isLinux || isFreeBSD))("ELF PT_TLS MemSiz stays under the ceiling", () => {
+  test.skipIf(!(isLinux || isFreeBSD) || isOhos)("ELF PT_TLS MemSiz stays under the ceiling", () => {
     const size = elfTlsMemSize(process.execPath);
     console.log(`PT_TLS p_memsz = ${size} bytes (${(size / 1024).toFixed(1)} KB)`);
     expect(size).toBeGreaterThan(0);

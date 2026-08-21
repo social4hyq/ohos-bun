@@ -17,21 +17,365 @@
 # Entries match by SUBSTRING, so a path prefix quarantines an entire family.
 # A stale entry is invisible: the file simply never runs and nobody finds out.
 
+# Tests that are broken
+[ WINDOWS-AARCH64 ] test/js/node/test/parallel/test-repl-close.js [ FAIL ] # EPIPE on stdin.write to closed child process
+
 # The whole file's beforeAll builds a napi addon with node-gyp, and the Windows
 # agents have no ClangCL toolset ("MSB8020: The build tools for ClangCL cannot
 # be found"), so nothing in the file can run there. Remove once the agent image
-# ships ClangCL. Runs everywhere else. (Verified still failing, build 87834.)
+# ships ClangCL. Runs everywhere else.
 [ WINDOWS ] test/bundler/native-plugin.test.ts [ SKIP ] # node-gyp needs a ClangCL toolset the Windows agents do not have
 
-# Windows-only gap in named-pipe half-close: WindowsNamedPipe::shutdown() /
-# on_read_error(EOF) issue a full uv_close instead of uv_shutdown, so the
-# final write after the peer half-closes is lost. Passes on Linux and macOS.
-# (Verified still failing on both Windows lanes, build 87834.)
-[ WINDOWS ] test/js/node/test/parallel/test-net-pingpong.js [ FAIL ] # named-pipe half-close: count 1000 !== 1001 at close
+# Verbatim node v26.3.0 test asserting a FinalizationRegistry callback fires
+# within ONE globalThis.gc() + ONE setImmediate after the connect callback's
+# closure is unreferenced. The FinalizationRegistry spec gives no timing
+# guarantee for cleanup callbacks; JSC schedules them via DeferredWorkTimer
+# with no defined ordering relative to the immediate queue. The connect
+# listener IS removed (verified: listenerCount("secureConnect") === 0 in
+# done()) and the object IS collected (test passes 70/70 on darwin and
+# glibc Linux); on alpine x64 the FR callback delivery slips past the single
+# setImmediate after this PR's added module loads at process startup shift
+# the heap layout. The robust fix is gcUntil() rather than a single tick,
+# but the file is a verbatim upstream port. Quarantined on the failing
+# linux-x64-musl matrix only; still runs everywhere else (build 63145:
+# alpine 3.23 x64 + x64-baseline only).
+[ LINUX-X64-MUSL ] test/js/node/test/parallel/test-tls-connect-memleak.js [ FLAKY ] # JSC FinalizationRegistry callback delivery vs setImmediate timing on musl x64
 
+# Both tests mock _handle.setKeepAlive and assert it receives SECONDS
+# (libuv's uv_tcp_keepalive convention). In Bun, _handle is the public
+# Bun.Socket whose setKeepAlive is documented in MILLISECONDS, so net.ts
+# forwards ms. End-to-end kernel coverage (TCP_KEEPIDLE=4 for 4000ms on
+# both Bun.connect and node:net) lives in test/js/bun/net/socket.test.ts.
+test/js/node/test/parallel/test-net-connect-keepalive.js [ FAIL ] # asserts _handle.setKeepAlive gets seconds; Bun's _handle is Bun.Socket (ms)
+test/js/node/test/parallel/test-net-server-keepalive.js [ FAIL ] # asserts _handle.setKeepAlive gets seconds; Bun's _handle is Bun.Socket (ms)
+
+# Vendored node v26.3.0 stream tests blocked on missing native subsystems (see PR #31826)
+test/js/node/test/parallel/test-stream-wrap.js [ FAIL ] # needs internal/test/binding + js_stream (net.Socket({handle}) libuv compat layer)
+test/js/node/test/parallel/test-stream-wrap-drain.js [ FAIL ] # needs internal/js_stream_socket (net.Socket({handle}) libuv compat layer)
+test/js/node/test/parallel/test-stream-wrap-encoding.js [ FAIL ] # needs internal/js_stream_socket (net.Socket({handle}) libuv compat layer)
+
+# Spawns test-http-max-http-headers.js, which is not vendored, and asserts its
+# exit code. Only "passed" before #32631 because the old node:test shim never
+# awaited done-style callbacks, so the cp.on('close') assertions never ran.
+# With the real (t, done) support, the second/fourth tests fail (child exits 1
+# with "Module not found" where exit 0 is expected). Remove this entry once
+# test-http-max-http-headers.js is vendored.
+test/js/node/test/parallel/test-set-http-max-http-headers.js [ FAIL ] # spawns test-http-max-http-headers.js which is not vendored
+
+# Tests that are flaky
+test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
+
+# Tests failed due to ASAN: attempting free on address which was not malloc()-ed
+[ ASAN ] test/integration/next-pages/test/dev-server-ssr-100.test.ts [ CRASH ]
+[ ASAN ] test/integration/next-pages/test/next-build.test.ts [ CRASH ]
+[ ASAN ] test/js/third_party/next-auth/next-auth.test.ts [ CRASH ]
+
+# Tests failed due to ASAN: SEGV on unknown address
+[ ASAN ] test/integration/next-pages/test/dev-server.test.ts [ CRASH ]
+
+# Tests failed due to ASAN: use-after-poison
+[ ASAN ] test/napi/napi.test.ts [ CRASH ] # can throw an exception from an async_complete_callback
+
+# Tests failed due to ASAN: unknown-crash
+[ ASAN ] test/js/sql/tls-sql.test.ts [ CRASH ] # After: Throws on illegal transactions
+
+# Tests timed out due to ASAN
+[ ASAN ] test/js/bun/spawn/spawn.test.ts [ TIMEOUT ]
+[ ASAN ] test/cli/inspect/inspect.test.ts [ TIMEOUT ]
+
+# Tests failed due to memory leaks
+[ ASAN ] test/js/node/url/pathToFileURL.test.ts [ LEAK ] # pathToFileURL doesn't leak memory
+[ ASAN ] test/js/node/fs/abort-signal-leak-read-write-file.test.ts [ LEAK ] # should not leak memory with already aborted signals
+[ ASAN ] test/js/web/streams/streams-leak.test.ts [ LEAK ] # Absolute memory usage remains relatively constant when reading and writing to a pipe
+[ ASAN ] test/cli/run/require-cache.test.ts [ LEAK ] # files transpiled and loaded don't leak file paths > via require()
+
+# Windows-only gaps in named-pipe / socket teardown for ported Node net tests
+# (these pass on Linux and macOS): half-close (FIN) handling on named pipes,
+# RST delivery surfacing as ECONNRESET, and EADDRINUSE on a second listen on
+# the same pipe path.
+[ WINDOWS ] test/js/node/test/parallel/test-net-pingpong.js [ FAIL ] # named-pipe half-close (FIN) handling
+[ WINDOWS ] test/js/node/test/parallel/test-net-pipe-connect-errors.js [ FAIL ] # named-pipe connect errors are not mapped to ENOENT/EACCES on Windows yet
+[ WINDOWS ] test/js/node/test/parallel/test-net-server-listen-path.js [ FAIL ] # EADDRINUSE not reported for a second listen on the same pipe path
+
+# Same Windows half-close + client-RST gap over a node:http server: the server
+# half-closes (res.socket.end()) mid-upload, the fetch client RSTs the cut-short
+# 10 MB POST body, and that RST is not surfaced to the server's still-open
+# readable side on Windows, so the accepted connection never ends and
+# server.close() (via `await using`) waits forever. The assertion itself passes;
+# only the teardown hangs. Passes on Linux and macOS.
+
+# The localAddress/localPort bind-before-connect and the SO_ERROR read on a
+# connecting socket that was reset during establishment are implemented in the
+# POSIX (kqueue/epoll + BSD socket) connect path; Windows connects through
+# libuv and needs its own implementation of both.
+[ WINDOWS ] test/js/node/test/parallel/test-net-client-bind-twice.js [ FAIL ] # localAddress/localPort binding not implemented for the libuv connect path
+[ WINDOWS ] test/js/node/test/parallel/test-net-server-reset.js [ FAIL ] # connect-time RST reports ECONNREFUSED instead of ECONNRESET on the libuv path
 # Cluster workers sharing a listen port behave differently on Linux, where
 # SO_REUSEPORT load-balances across the workers' own listeners instead of the
 # primary distributing accepted connections; the upstream test's expectations
-# only hold on the distributing model. Passes on macOS and Windows.
-# (Verified still failing on every Linux lane, build 87834.)
+# only hold on the distributing model. Passes on macOS, Windows and FreeBSD.
 [ LINUX ] test/js/node/test/sequential/test-net-listen-shared-ports.js [ FAIL ] # SO_REUSEPORT shared-listener semantics on Linux
+
+# Pre-existing on main (flagged [pre-existing] by ci:errors, e.g. build 61989 on
+# darwin-14-aarch64 and build 62204 on darwin-26-aarch64, both at the
+# `expect(e.name).toBe("TimeoutError")` assertions). The two connect-race cases
+# assume connect() to TEST-NET-1 (192.0.2.1) stays in EINPROGRESS so the
+# AbortSignal.timeout wins; that only holds when the host has a default route that
+# silently blackholes the SYN. The darwin CI agents have no route to 192.0.2.1 and
+# return an immediate ENETUNREACH/EHOSTUNREACH, so the connect error wins the race
+# and fetch rejects with a generic "Error" instead of "TimeoutError" (verified: a
+# fast-failing connect to 127.0.0.1:1 reproduces the same connect-error-beats-timeout
+# outcome locally — correct behavior, not a bun abort bug). Consistently fails on
+# darwin-26 (no route), intermittently on darwin-14 (routing varies per agent).
+# Quarantined on darwin; still runs on Linux/Windows where the route blackholes
+# reliably. Follow-up: rewrite without the external-IP dependence (repo rule forbids
+# contacting external hosts) using a deterministic local hanging connect.
+[ DARWIN ] test/js/bun/io/fetch/fetch-abort-slow-connect.test.ts [ FLAKY ] # connect-during-abort race depends on host routing of 192.0.2.1; darwin CI agents return an immediate routing error
+
+
+# node:http servers cannot listen on Windows named pipes yet (ENOENT from
+# uv_pipe bind), so common.PIPE-based http tests cannot run there.
+
+# ============================================================
+# OpenHarmony (arm64_ohos, hmusl) — validated 2026-07-30 r42
+# ============================================================
+
+# --- OHOS spawn overhead: fork+exit_group path 2-3x slower than vfork ---
+# cli/run parallel/pre-post scripts all hit 5000ms default timeout
+
+# --- OHOS hmdfs recursive glob slow (30–60s timeout) ---
+# Removed 2026-07-30: the quarantined path test/js/bun/glob/glob.test.ts does
+# not exist. The actual glob test is test/js/node/fs/glob.test.ts and passes
+# 34 tests / 0 fail in isolation.
+
+# --- OHOS shell: recursive node_modules ops + parallel spawn timeout ---
+
+# --- OHOS IPv6 DNS unavailable ---
+# dns.test.ts was renamed/merged upstream into resolve-dns.test.ts; this entry
+# had gone stale (matched nothing) since the rename. IPv6 lookups and the
+# malformed " " hostname case are now handled with per-test skipIf guards
+# directly in resolve-dns.test.ts instead of quarantining the whole file.
+
+# --- WASI cannot open '/' (EACCES on OHOS root) ---
+
+# --- napi: node-gyp found ohos-sdk's older bundled clang (15.0.4, no C++20
+# libc++) instead of llvm@21 via PATH search, regardless of CC/CXX env vars.
+# Fixed in scripts/runner.node.mjs::getCombinedPath() (prepend llvm@21's keg
+# bin dir) and getOhosSysroot/OHOS_SYSROOT fallback (bun:ffi's TCC linker
+# needs it for <stdint.h> etc). napi.test.ts's one spawn-comparison timeout
+# got an OHOS multiplier; uv.test.ts/uv_stub.test.ts sign their own
+# `build:napi`-produced .node files (that script bypasses bun's own
+# install/build pipeline, so nothing else signs them). All 60 files under
+# test/napi now pass — no expectations entries needed for this directory.
+
+# BUG-01 (deleted-cwd PANIC), BUG-02 (execute-only ELF), BUG-03 (parallel worker-ID) fixed in r17–r22.
+
+# --- bake/dev/ecosystem: HMR dev-server test hangs (needs persistent process) ---
+[ OPENHARMONY ] test/bake/dev/ecosystem.test.ts [ Skip ] # starts dev server that never exits within test timeout
+
+# --- cross-compile target binary not available for download on OHOS ---
+# "compile with current platform target string" constructs target bun-linux-aarch64-musl-v1.4.0
+# and tries to download it; that artifact does not exist for this version.
+
+# --- bun:internal-for-testing: the "unavailable in release build" premise
+# below was disproven 2026-07-26. scripts/runner.node.mjs's spawnBun() always
+# sets BOTH BUN_FEATURE_FLAG_INTERNAL_FOR_TESTING=1 AND
+# BUN_GARBAGE_COLLECTOR_LEVEL=1 for every test process, and the Rust gate
+# (src/jsc/VirtualMachine.rs, configure_from_env) only checks the feature flag
+# inside the GC-level branch — so under the real runner (not a bare `bun test`)
+# the module has always been reachable. Full real-machine reruns via
+# `node scripts/runner.node.mjs --ignore-expectations=OPENHARMONY` confirmed
+# every file below now passes; entries removed. See OHOS_TEST_TODO.md
+# ("陈旧 quarantine 确认") for the evidence trail. `test/js/node/fs/fs-oom.test.ts`
+# carried the same (wrong) label but is NOT in this list — it fails for an
+# unrelated, still-real reason (memfd_create + readFileSync EACCES vs the
+# expected ENOMEM; see OHOS_TEST_TODO.md T22) and keeps its own entry below.
+
+# bun-pack: the "bun:internal-for-testing unavailable" quarantine was
+# disproven 2026-07-26. Re-verified 2026-07-30 against r42: 76 pass / 0 fail.
+# Entry removed.
+#
+# bun-install-registry: 1/?? tests fails ("missing package on reinstall, some
+# with binaries") — output format differs by 2 lines from expected, real root
+# cause still uninvestigated. Keeping quarantine.
+[ OPENHARMONY ] test/cli/install/bun-install-registry.test.ts [ Skip ] # "missing package on reinstall, some with binaries" output mismatch (class C, uninvestigated)
+# bun-upgrade: 2/8 tests fail. One: "recreates the staging directory" —
+# Expected false, Received true. Two: "verifies the downloaded release archive" —
+# OHOS has no bun release binary, so upgrade reports "not for this platform".
+# Both class D. Keeping quarantine.
+[ OPENHARMONY ] test/cli/install/bun-upgrade.test.ts [ Skip ] # OHOS has no bun release binary for upgrade download + staging dir recreation differs
+
+# next-pages: next-swc has no openharmony-arm64 binary; all 3 tests fail at
+# "unsupported platforms openharmony/arm64". Class D. Keeping quarantine.
+[ OPENHARMONY ] test/integration/next-pages/test/dev-server.test.ts [ Skip ] # next-swc unsupported platform openharmony/arm64 + puppeteer install fails
+[ OPENHARMONY ] test/integration/next-pages/test/dev-server-ssr-100.test.ts [ Skip ] # next-swc unsupported platform openharmony/arm64
+[ OPENHARMONY ] test/integration/next-pages/test/next-build.test.ts [ Skip ] # next-swc unsupported platform openharmony/arm64
+
+# --- cli/install migration: network-dependent tests ---
+# "bun pm migrate -f" and "bun install --lockfile-only" resolve from npm registry;
+# Previously flaky due to 5s default timeout. setDefaultTimeout(5min) applied;
+# verified passing under full-directory concurrent load (2026-07-08 r22).
+
+# --- cli/install network-timeout tests ---
+# These tests contact external services (npm audit, npm info, git hosts).
+# Previously flaky at 5s default timeout. setDefaultTimeout(5min) applied to all;
+# verified passing under full-directory concurrent load (2026-07-08 r22).
+
+# bun-install-security-provider.test.ts's "Large payload via ipc pipe" case
+# (>1MB JSON to the security scanner subprocess, previously a 100%
+# reproducible SIGSEGV) was fixed by the ReadFile read-loop serialization in
+# src/runtime/webcore/blob/read_file.rs -- same concurrency bug as the
+# spawn-stdin-large-buffer truncation, see OHOS_TEST_TODO.md T24. Verified
+# 43 pass / 0 fail across three consecutive isolated runs; entry removed.
+
+# --- bunx TLS download failures ---
+# OHOS system CA store not in standard path → UNKNOWN_CERTIFICATE_VERIFICATION_ERROR
+# when bunx tries to install packages from npm live (eslint, @angular/cli).
+[ OPENHARMONY ] test/cli/install/bunx.test.ts [ Flaky ] # TLS cert errors on npm downloads from OHOS
+
+
+# --- bun-install.test.ts git+https TLS flake ---
+# 1/189 tests clones git+https://github.com/mishoo/UglifyJS.git and hits
+# OHOS TLS unexpected-EOF. Rest of file passes (186 pass / 2 todo).
+[ OPENHARMONY ] test/cli/install/bun-install.test.ts [ Flaky ] # git+https clone hits OHOS TLS unexpected EOF (1/189 tests)
+
+# --- bun-create.test.ts github template TLS flake ---
+# 2/13 tests fetch github templates over HTTPS and hit UNKNOWN_CERTIFICATE_VERIFICATION_ERROR
+# (OHOS system CA store not in standard path). setDefaultTimeout(5min) applied for the rest.
+
+# ─────────────────────────────────────────────────────────────
+# P3 batch (2026-07-08): regression + js/web + js/node + js/third_party
+# Total: ~4793 tests / 115 failures / all platform-limited
+# ─────────────────────────────────────────────────────────────
+
+# --- js/node: RLIMIT_NOFILE ---
+# child-process-rlimit-nofile checks specific RLIMIT values. OHOS kernel
+# defaults differ from Linux (e.g. RLIMIT_NOFILE may be 1024 vs 65536).
+
+# --- js/web: fetch networking limitations ---
+# HTTP3 (adversarial body) 5s timeouts; HTTP/1.1 connect to 127.0.0.1
+# takes 11s+ on OHOS; TLS at localhost requires cert setup; .unix socket
+# failing on hmdfs. All networking-related, not test logic failures.
+[ OPENHARMONY ] test/js/web/fetch/fetch.unix.test.ts [ Flaky ] # unix socket on hmdfs
+
+# --- "localhost" resolves to nothing when family-restricted to IPv6 ---
+# This sandbox's /etc/hosts maps `::1` to `ip6-localhost`/`ip6-loopback`, not
+# to the literal name `localhost` (only the 127.0.0.1 line uses that name).
+# Any connect/listen path that ends up doing a family:6-restricted lookup of
+# "localhost" (e.g. `net.createConnection(server.address())`, where an IPv6
+# wildcard-bound server's AddressInfo has no `host` field, so the client
+# falls back to `net`'s documented "localhost" default) gets a real, correct
+# ENOTFOUND on this host — verified directly: `dns.lookup("localhost",
+# {family: 6})` -> ENOTFOUND, `{family: 4}` -> 127.0.0.1. These are verbatim
+# upstream Node test ports; not patched to keep them byte-identical.
+
+# --- js/third_party: HTTP2 / gRPC / pnpm / next-auth ---
+# All failures are networking-related: HTTP2 test server returns 403 on OHOS;
+# gRPC DNS resolution; pnpm directory traversal; next-auth server action timeout.
+[ OPENHARMONY ] test/js/third_party/grpc-js/test-resolver.test.ts [ Flaky ] # gRPC DNS resolver (2 tests)
+[ OPENHARMONY ] test/js/third_party/next-auth/next-auth.test.ts [ Flaky ] # server action timeout + unsupported OS (1 test)
+
+# ─────────────────────────────────────────────────────────────
+# Docker-dependent categories (2026-07-08)
+# ─────────────────────────────────────────────────────────────
+
+# --- js/valkey: docker compose v2 unavailable ---
+# Removed 2026-07-30: the quarantined path test-utils.test.ts does not exist
+# (actual file is test-utils.ts, which has no .test. suffix so the runner
+# never includes it). valkey/ is also excluded via run-baseline.sh.
+
+# --- integration: esbuild + misc ---
+# esbuild test bumped to 0.28.1 (has @esbuild/openharmony-arm64) → 1 pass.
+# estrella@1.4.1 bundles esbuild@^0.11.0 which has no OHOS binary; test.skipIf added.
+# expo-app tarball extract fails for react-devtools-core. bun-types tsgo
+# expects @typescript/native-preview-openharmony-arm64 which doesn't exist.
+[ OPENHARMONY ] test/integration/bun-types/bun-types.test.ts [ Flaky ] # tsgo native binary unavailable for openharmony-arm64
+
+# --- regression: real-machine 2026-07-27 reconciliation ---
+# This whole block used to carry vague "[ Flaky ] # N tests" labels dated
+# from a --parallel-based test methodology. Real CI (ohos-full-test.yml)
+# deliberately does not use --parallel (single serial job, matches
+# Buildkite's own invocation style — see that workflow's header comment).
+# Isolated reruns (--retries=0, single file, no --parallel) of every entry
+# below other than the four kept underneath came back 100% clean: 17405,
+# 17294, 17244, prepare-stack-trace-crash, 18161,
+# test-process-stdout-async-iterator, 03844, 24742's sibling 22353 and
+# 23022-stack-trace-iterator, 14976, and ctrl-c.test.ts (the last one prints
+# a `shell-init: error retrieving current directory: getcwd: ...` line from
+# the still-unfixed-in-the-installed-binary T01 gap, but that's cosmetic
+# stderr noise and doesn't fail the test). All removed as stale.
+#
+# Four entries are kept below because they fail 100% deterministically
+# (not flaky) for real, still-uninvestigated reasons — see OHOS_TEST_TODO.md.
+[ OPENHARMONY ] test/regression/issue/24364.test.ts [ Skip ] # react-tailwind template's tsc --noEmit needs @typescript/typescript-openharmony-arm64, which upstream does not publish (same class as test/integration/bun-types/bun-types.test.ts's tsgo gap)
+
+# --- cli/hot + cli/inspect: OHOS unix socket / sourcemap timing ---
+# Patched in-place: inspect unix-domain-socket tests use tmpdirSync() on OHOS
+# (hmdfs disallows AF_UNIX bind → EPERM). hot sourcemap test timeouts bumped 10s→60s.
+# These files now pass on OHOS; entries kept as regression sentinels.
+
+# --- js/bun terminal/REPL: OHOS PTY and termios limitations ---
+# setRawMode throws "Failed to set raw mode"; SIGWINCH propagation to children broken;
+# PTY-backed REPL tests 5s timeout. Real platform limitations, not fixable in userland.
+[ OPENHARMONY ] test/js/bun/terminal/terminal.test.ts [ Flaky ] # setRawMode fails on OHOS (3+ tests)
+[ OPENHARMONY ] test/js/bun/terminal/terminal-platform-gaps.test.ts [ Flaky ] # setRawMode + SIGWINCH platform gaps (2-3 tests)
+[ OPENHARMONY ] test/js/bun/terminal/terminal-spawn.test.ts [ Flaky ] # subprocess-with-terminal 5s timeouts (1+ test)
+[ OPENHARMONY ] test/js/bun/repl/repl.test.ts [ Flaky ] # PTY-based REPL tests 5s timeouts (2-4 tests)
+
+# --- js/third_party: packages with prebuilt native bindings, no OHOS target ---
+# These fail at import/require time (native .node/.so binding load), so the
+# whole file genuinely cannot run — not a case of quarantining 1-2 broken
+# cases. Each upstream package only ships prebuilt binaries for a fixed set of
+# platform triples and has no openharmony-arm64 build.
+[ OPENHARMONY ] test/integration/sharp/sharp.test.ts [ Skip ] # sharp has no OHOS prebuilt binary (checked latest 0.35.3: still no openharmony build)
+# astro@5.5.5 pins its own nested rollup@4.37.0 (independent of test/package.json's
+# top-level rollup dep, see below) which predates rollup's openharmony-arm64 binary.
+[ OPENHARMONY ] test/js/third_party/astro/astro-post.test.js [ Skip ] # astro's transitively-pinned rollup has no OHOS build
+[ OPENHARMONY ] test/js/third_party/prisma/prisma.test.ts [ Skip ] # pulls in @napi-rs/canvas native binding, no OHOS build (checked latest 1.0.2: still no openharmony build)
+[ OPENHARMONY ] test/js/third_party/resvg/bbox.test.js [ Skip ] # @resvg/resvg-js has no OHOS prebuilt binary (checked latest 2.6.2: still no openharmony build)
+[ OPENHARMONY ] test/js/third_party/@napi-rs/canvas/napi-rs-canvas.test.ts [ Skip ] # @napi-rs/canvas has no OHOS prebuilt binary (checked latest 1.0.2: still no openharmony build)
+# rspack's WASM fallback also fails: napi-rs's generated *.wasi.cjs hardcodes
+# `preopens: {'/': '/'}` (path.parse(cwd).root is always '/' on POSIX, not
+# configurable), and OHOS's app sandbox refuses to open '/' in ANY mode
+# (verified: fs.openSync("/", "r") itself throws EACCES) — same root cause as
+# the WASI test and bundler_edgecase's root-dir case below, just reached via
+# a different path. bun's installer also treats these packages' "cpu":
+# ["wasm32"] as a real arch restriction and won't install them on arm64
+# without a manual override, so this doesn't even get as far as the sandbox
+# wall on a normal install.
+[ OPENHARMONY ] test/js/bun/test/parallel/test-integration-rspack.ts [ Skip ] # rspack has no OHOS native binding; WASM fallback hits the '/' preopen sandbox wall
+
+
+# --- FUSE mount tests: /dev/fuse exists but the OHOS app sandbox denies access
+# to it (verified: opening it returns Permission denied, not ENOENT), and
+# `fusermount`/`fusermount3` aren't installed either. Both files' entire setup
+# is building a FUSE mount, so nothing in them can run.
+[ OPENHARMONY ] test/cli/run/glob-on-fuse.test.ts [ Skip ] # FUSE is blocked by the OHOS app sandbox (/dev/fuse: Permission denied) and fusermount isn't installed
+[ OPENHARMONY ] test/cli/run/run-file-on-fuse.test.ts [ Skip ] # same FUSE sandbox restriction as glob-on-fuse.test.ts
+[ OPENHARMONY ] test/js/bun/test/parallel/test-http-should-allow-numbers-headers-to-be-set-in-server-and-client.ts [ Failure ] # T49: http.request localhost→::1 (ADDRCONFIG) — see T49
+[ OPENHARMONY ] test/js/third_party/http2-wrapper/http2-wrapper.test.ts [ Failure ] # T49: localhost server/client → ::1 (ADDRCONFIG) — see T49
+[ OPENHARMONY ] test/js/third_party/remix/remix.test.ts [ Failure ] # T49: http.request localhost→::1 (ADDRCONFIG) — see T49
+[ OPENHARMONY ] test/js/bun/dns/resolve-dns.test.ts [ Failure ] # class D: getaddrinfo ESERVFAIL 查 example.com（沙盒外网 DNS 不可达）
+[ OPENHARMONY ] test/regression/issue/22712.test.ts [ Failure ] # class D: queryA ENOTFOUND dns.google（外网 DNS 受限）
+[ OPENHARMONY ] test/js/node/dns/node-dns.test.js [ Failure ] # class D: queryNaptr/queryPtr ENOTIMP/ENOTFOUND socketify.dev（外网 DNS 受限）
+[ OPENHARMONY ] test/js/bun/shell/shell-load.test.ts [ Failure ] # class B: shell 90s timeout（OHOS PTY/spawn 慢）
+[ OPENHARMONY ] test/regression/issue/26286.test.ts [ Failure ] # class B: Bun.Terminal 90s timeout（PTY seccomp）
+[ OPENHARMONY ] test/js/node/tty.test.ts [ Failure ] # class B: TTY 90s timeout（setRawMode/PTY seccomp）
+[ OPENHARMONY ] test/cli/hot/watch-many-dirs.test.ts [ Failure ] # class B: EISDIR watch 读目录（hmdfs）
+[ OPENHARMONY ] test/js/node/test/parallel/test-child-process-exec-timeout-expire.js [ Failure ] # class B: exec 信号差异（OHOS 返 null signal + 143，Linux 不同）
+[ OPENHARMONY ] test/js/node/test/sequential/test-child-process-execsync.js [ Failure ] # class B: exec 时序/信号差异（OHOS）
+[ OPENHARMONY ] test/js/node/vm/happy-dom-vm-16277.test.ts [ Failure ] # class D: ECONNREFUSED 外网 69.171.235.22:443（沙盒禁出站）
+[ OPENHARMONY ] test/js/valkey/integration/complex-operations.test.ts [ Failure ] # class D: Redis 连不上（valkey/Docker 不可用）
+[ OPENHARMONY ] test/js/third_party/grpc-js/test-server.test.ts [ Failure ] # T49 修复后仍偶发 ECONNRESET（grpc 时序敏感，bun-g2 实测 fail/pass 摇摆）
+[ OPENHARMONY ] test/js/third_party/grpc-js/test-outlier-detection.test.ts [ Failure ] # class D: gRPC outlier 90s timeout（网络/慢）
+[ OPENHARMONY ] test/integration/expo-app/expo.test.ts [ Failure ] # class D: expo 构建 exit≠0（构建慢/失败）
+[ OPENHARMONY ] test/js/node/process/process.test.js [ Failure ] # class C: 测试硬编码 v26.3.0，bun node compat 已是 v26.5.0
+[ OPENHARMONY ] test/cli/install/bun-security-scanner-matrix-with-node-modules.test.ts [ Failure ] # class C: exitCode mismatch（OHOS env）
+[ OPENHARMONY ] test/js/web/workers/message-port-context-destroy-leak.test.ts [ Failure ] # class A（上游缺陷）: per-Worker lifecycle leak ~1.4-1.8MB, MessagePort 只是放大器 — see OHOS_TEST_TODO.md T35（未修，等上游 fix）
+[ OPENHARMONY ] test/js/bun/spawn/spawn-cgroup.test.ts [ Failure ] # 结构性：cgroup-join 整条路径（clone3 + 子进程写 cgroup.procs 兜底，bun-spawn.cpp）限定在 OS(LINUX) && !defined(__OHOS__)，OHOS 上 spawn({cgroup}) 是 no-op，4/13 用例断言 cgroup.procs 被写入必挂
+
+# --- js/bun/io: Bun.file slice+write truncation ---
+# FIXED in r23 (commit 28603b97c). Root cause: copy_file_using_read_write_loop
+# (node_fs.rs:4918) EOF loop gated on `!broke` instead of `stat_size==0`.
+# GREEN verified with r23 build: 33/33 pass.
+

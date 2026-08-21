@@ -1,7 +1,7 @@
 import { serve, type Server } from "bun";
 import { afterEach, describe, expect, it } from "bun:test";
 import { symlinkSync } from "fs";
-import { bunEnv, bunExe, isLinux, tempDir } from "harness";
+import { bunEnv, bunExe, isLinux, isOHOS, tempDir } from "harness";
 import { join } from "path";
 
 const strace = isLinux ? Bun.which("strace") : null;
@@ -364,7 +364,9 @@ describe("Bun.serve() directory routes", () => {
     expect(dbl.body).not.toContain("SECRET");
   });
 
-  it.skipIf(!isLinux)("rejects symlink escapes on Linux via RESOLVE_IN_ROOT", async () => {
+  // OHOS: openat2 被 seccomp SIGSYS 拦截，回退到普通 openat 后没有 RESOLVE_IN_ROOT
+  // 防护——符号链接逃逸在该平台无法拒绝（安全能力降级，见 STATUS openat2 条目）
+  it.skipIf(!isLinux || isOHOS)("rejects symlink escapes on Linux via RESOLVE_IN_ROOT", async () => {
     using dir = tempDir("serve-dir-symlink", {
       "secret.txt": "SECRET",
       "public/ok.txt": "ok",

@@ -16,7 +16,11 @@ import path from "path";
 // TODO: we need to install build-essential and Apple SDK in CI.
 // It can't find includes. It can on machines with that enabled.
 // TinyCC's setjmp/longjmp error handling conflicts with ASan.
-it.todoIf(isWindows || isASAN)("can run a .c file", () => {
+// On OHOS, TinyCC's number parser rejects the SDK sysroot's
+// `__attribute__((__availability__(ohos, introduced=12.0.0)))` annotations
+// (used throughout stdio.h etc.) with "invalid number" — TCC doesn't
+// understand this OHOS-specific attribute syntax the way clang/gcc do.
+it.todoIf(isWindows || isASAN || process.platform === "openharmony")("can run a .c file", () => {
   const result = Bun.spawnSync({
     cmd: [bunExe(), path.join(__dirname, "cc-fixture.js")],
     cwd: __dirname,

@@ -1,6 +1,6 @@
 import { $ } from "bun";
 import { describe, expect, test } from "bun:test";
-import { isPosix } from "harness";
+import { isOHOS, isPosix } from "harness";
 import {
   accessSync,
   chmodSync,
@@ -70,7 +70,8 @@ describe("mv", async () => {
   // POSIX `mv` must fall back to copy+unlink when `rename()` returns EXDEV
   // (source and destination on different filesystems). Requires a writable
   // mount on a different device from the harness temp dir.
-  describe("cross-device (EXDEV)", () => {
+  // OHOS: /dev/shm 不可写（EACCES），跨设备 fixture 无法构造 — class B 平台限制
+  describe.skipIf(isOHOS)("cross-device (EXDEV)", () => {
     const tmp = tmpdir();
     function findCrossDeviceDir(): string | undefined {
       if (!isPosix) return undefined;

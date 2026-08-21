@@ -1,7 +1,8 @@
 import { SQL } from "bun";
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { isWindows, tempDir } from "harness";
+import { isWindows, tempDir, tmpdirSync } from "harness";
 import { unlinkSync } from "js/node/fs/export-star-from";
+import { join } from "node:path";
 
 declare module "bun" {
   namespace SQL {
@@ -585,8 +586,9 @@ describe("SQL adapter environment variable precedence", () => {
     });
 
     test.skipIf(isWindows)("should work with unix:// protocol and explicit adapter", () => {
+      const sockPath = join(tmpdirSync(), "thisisacoolmysql.sock");
       using sock = Bun.listen({
-        unix: "/tmp/thisisacoolmysql.sock",
+        unix: sockPath,
         socket: {
           data: console.log,
         },
@@ -594,7 +596,7 @@ describe("SQL adapter environment variable precedence", () => {
 
       const options = new SQL(`unix://${sock.unix}`, { adapter: "mysql" });
       expect(options.options.adapter).toBe("mysql");
-      expect(options.options.path).toBe("/tmp/thisisacoolmysql.sock");
+      expect(options.options.path).toBe(sockPath);
 
       unlinkSync(sock.unix);
     });

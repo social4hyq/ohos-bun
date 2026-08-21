@@ -14,6 +14,11 @@ import net from "node:net";
 import path from "node:path";
 import nodeTls from "node:tls";
 
+// Pushing 2 GB through backpressure-aware writes over a local HTTP
+// connection; OHOS I/O throughput is measurably lower in this sandbox
+// (observed timing out at the full 30_000ms budget).
+const OHOS_TIMEOUT = process.platform === "openharmony" ? 90_000 : 30_000;
+
 describe("backpressure", () => {
   // Writes `total` bytes to `res` in `chunk`-sized pieces, waiting for "drain"
   // whenever a write reports backpressure, then ends the response. Reusing one
@@ -508,7 +513,7 @@ describe("backpressure", () => {
     const totalBytes = await countResponseBytes(PORT);
 
     expect(totalBytes).toBe(totalSize);
-  }, 30_000);
+  }, OHOS_TIMEOUT);
 
   it("should handle backpressure with more than INT_MAX bytes", async () => {
     // enough to fill the socket buffer
@@ -530,5 +535,5 @@ describe("backpressure", () => {
     const totalBytes = await countResponseBytes(PORT);
 
     expect(totalBytes).toBe(totalSize + smallPayloadSize);
-  }, 30_000);
+  }, OHOS_TIMEOUT);
 });
