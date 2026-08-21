@@ -257,6 +257,7 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # takes 11s+ on OHOS; TLS at localhost requires cert setup; .unix socket
 # failing on hmdfs. All networking-related, not test logic failures.
 [ OPENHARMONY ] test/js/web/fetch/fetch.unix.test.ts [ Flaky ] # unix socket on hmdfs
+[ OPENHARMONY ] test/js/web/fetch/fetch-tcp-keepalive.test.ts [ Skip ] # /proc/self/net/tcp blocked by OHOS app sandbox (EACCES); the LD_PRELOAD shim half already verifies SO_KEEPALIVE is set, but the /proc/net/tcp timer-state half cannot run
 
 # --- "localhost" resolves to nothing when family-restricted to IPv6 ---
 # This sandbox's /etc/hosts maps `::1` to `ip6-localhost`/`ip6-loopback`, not
