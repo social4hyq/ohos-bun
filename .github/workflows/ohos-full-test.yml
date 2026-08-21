@@ -1,0 +1,514 @@
+name: ohos-full-test
+
+run-name: "ohos-full-test (filter=${{ inputs.test-filter || 'none' }})"
+
+# Runs Bun's own `test/` suite (the real oven-sh/bun compat suite, vendored
+# in this repo with OHOS patches on top) against the bun ACTUALLY SHIPPED by
+# harmonybrew-core (social4hyq/core/bun bottle) — not a freshly rebuilt
+# binary, not this branch's HEAD.
+#
+# Design borrows two things from upstream, adapted to what we actually have:
+#
+#   1. Container lifecycle (start/fixup/teardown) copies
+#      harmonybrew-core/.github/workflows/bottle-build.yml's
+#      .github/scripts/setup-container.sh almost verbatim: GitHub-hosted
+#      ubuntu-24.04-arm runner + the same OHOS container image, spun up fresh
+#      per run. Keep IMAGE in sync with that file if it bumps.
+#
+#   2. Test invocation copies oven-sh/bun's own Buildkite pipeline
+#      (.buildkite/ci.mjs, getTestBunStep()) as closely as our infrastructure
+#      allows: same script (scripts/runner.node.mjs), same flags
+#      (--exec-path/--results-json/--exclude=integration/bun-types
+#      --exclude=internal/source-lints). Buildkite runs this under a stable
+#      system `node` so a broken candidate bun can't take down the harness
+#      that's supposed to report on it; we do the same — Harmonybrew's own
+#      default core tap ships an arm64_ohos `node` bottle (confirmed:
+#      process.platform reports "openharmony", so all the OHOS branches in
+#      runner.node.mjs/utils.mjs activate correctly under it) — no need for
+#      the bun-bootstrap workaround this design went through in review.
+#
+#      Deliberately NOT passed: --parallel. Buildkite's own CI doesn't use
+#      it either — getTestBunStep()'s command line never includes it.
+#      Buildkite's "parallel" is machine-level sharding (parallelism: 20,
+#      via --shard/--max-shards reading BUILDKITE_PARALLEL_JOB(_COUNT)),
+#      with each shard running serially inside its own agent. We run as one
+#      job with no sharding, so the faithful equivalent is just: run
+#      serially, single job. (A matrix-of-shards version exists as a
+#      follow-up if wall-clock time here becomes a problem — ask before
+#      adding it, it multiplies container-setup cost by shard count.)
+#
+#      Also not reinvented: retry/flake handling. runner.node.mjs already
+#      retries a failing file up to --retries times (maxAttempts = 1 +
+#      retries) before counting it as failed; a file that passes on retry is
+#      tracked as "flaky", not "failed", and is excluded from the
+#      exit-code-determining result set (see the
+#      `[...okResults, ...failedResults]` return in runTests(), flaky
+#      omitted on purpose). test/expectations.txt's `[ OPENHARMONY ]`
+#      entries are excluded from the run entirely before any test executes
+#      (getRelevantTests()). So the plain process exit code already means
+#      "failed after retries, and not a known/accepted OHOS limitation" —
+#      no separate rerun-and-diff pass needed on top of that.
+#
+#      We pass --retries=1 rather than taking the CI default of 3: the
+#      slowest remaining failures are minutes long on their own
+#      (cli/run/run-crash-handler.test.ts measured 411s in run 30150421934),
+#      so 4 attempts each would cost more wall clock than the entire rest of
+#      the suite. One retry still separates a hard failure from a flake,
+#      which is all the exit code needs.
+#
+# What's NOT borrowed from Buildkite: the platform matrix (testPlatforms in
+# ci.mjs). We only have one target — arm64_ohos — so there's exactly one
+# lane, not twelve.
+
+on:
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: 'Optional --include substring filter (e.g. "js/node/test/parallel"), for a quick partial run instead of the full ~5200-file suite'
+        required: false
+        type: string
+        default: ''
+  schedule:
+    # Weekly, Sunday 21:00 UTC. This runs serially (see the no-`--parallel`
+    # note above), single job, no sharding. Measured shape of the suite on
+    # this runner (run 30150421934, after subtracting the css-fuzz stall the
+    # CI= fix below removes): ~5min container/dependency setup, ~46min for
+    # the first ~300 files (bake/ bundler/ cli/ integration/ — of which
+    # bake/dev, now excluded, was ~27min), and under a minute for the
+    # remaining ~4900, since the 3251-file parallel-safe phase already runs
+    # 4-wide. So the cost is concentrated in a few dozen slow files, and a
+    # sharded matrix would have to beat a ~5min per-shard setup tax to be
+    # worth it. Revisit that only if a real baseline stops fitting inside
+    # timeout-minutes below.
+    - cron: '0 21 * * 0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ohos-full-test-${{ github.event_name }}
+  cancel-in-progress: false
+
+env:
+  # Keep in sync with harmonybrew-core/.github/workflows/bottle-build.yml's
+  # IMAGE — same OHOS container, just consumed from a different repo's CI.
+  IMAGE: swr.cn-north-4.myhuaweicloud.com/harmonybrew/ci-runner@sha256:57ce4ca832d937dcc86abae6ec0e8fb6b34ac86aa8fdbe43548b6fe78d3438c1 # :latest, 2026-07-03 (SWR mirror, anon-pullable)
+  CONTAINER: ohos-fulltest
+  BREW_ENV: HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ANALYTICS=1 HOMEBREW_NO_ENV_HINTS=1
+
+defaults:
+  run:
+    shell: bash -euo pipefail {0}
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 360
+    strategy:
+      # A red shard must not cancel the others: the point of the run is the
+      # full failure list, and losing three quarters of it to one failure
+      # would defeat that.
+      fail-fast: false
+      matrix:
+        # Four, because that is where splitting stops paying. Measured from
+        # run 30179934099 (63.0 min of test work, LPT-packed by the ohos lane
+        # in expected-durations.json), heaviest shard by shard count:
+        #
+        #   2 -> 31.5 min   3 -> 21.0 min   4 -> 15.8 min
+        #   5 -> 15.7 min   6 -> 15.7 min  12 -> 15.7 min
+        #
+        # Sharding cannot split a file, and cli/run/run-crash-handler.test.ts
+        # alone is 15.7 min — a quarter of the suite. 63/4 lands almost exactly
+        # on that floor, so a fifth shard buys nothing while still paying its
+        # own ~5 min of container setup: 83 machine-minutes at 4 shards, 248 at
+        # 12, for identical wall clock. If that file is ever fixed or excluded
+        # the floor drops to 3.1 min and 8-12 shards become worth revisiting.
+        #
+        # A single shard when --include is in play: runner.node.mjs applies
+        # filters *instead of* sharding (`if (filters?.length) ... else if
+        # (maxShards > 1)`), so four shards would each run the whole filtered
+        # set rather than a quarter of it.
+        shard: ${{ fromJSON(inputs.test-filter && '[0]' || '[0, 1, 2, 3]') }}
+    steps:
+      # Run 30187374849 died at file 1596 of 5272 with "No space left on
+      # device", 69 minutes in, taking results.json with it. Nothing in the
+      # log says what filled the disk — the only evidence is the fatal error
+      # itself, so the first job here is to stop guessing: report what the
+      # runner starts with, reclaim the preinstalled toolchains this job has
+      # no use for, and (in the test step) sample free space throughout so a
+      # future exhaustion can be pinned to a point in the suite.
+      #
+      # The removals are the usual hosted-runner ballast — none of it is
+      # reachable from anything this job does, which runs inside the OHOS
+      # container. Each is guarded: the set present on ubuntu-24.04-arm is
+      # not identical to the x64 images these lists are usually written for.
+      - name: Reclaim runner disk space
+        run: |
+          echo "--- before"
+          df -h /
+          for d in /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                   /usr/local/share/powershell /usr/share/swift \
+                   /usr/local/.ghcup /opt/hostedtoolcache/CodeQL; do
+            [ -e "$d" ] || continue
+            echo "removing $d ($(du -sh "$d" 2>/dev/null | cut -f1))"
+            sudo rm -rf "$d" || true
+          done
+          echo "--- after"
+          df -h /
+
+      - name: Start OHOS container
+        run: |
+          docker pull "$IMAGE"
+          # seccomp=unconfined: default docker profile blocks io_uring_setup, killing bun
+          docker run -d --name "$CONTAINER" --init \
+            --security-opt seccomp=unconfined \
+            "$IMAGE" sleep infinity
+
+          # musl tmpfile() hardcoded path + /system/bin/sh + /system/lib/ld-musl
+          # (bottle ELFs' PT_INTERP targets the real-device path) — same
+          # one-time fixup as bottle-build.yml's setup-container.sh.
+          docker exec "$CONTAINER" bash -lc '
+            mkdir -p /data/local/tmp /system/bin /system/lib &&
+            ln -sf /bin/sh /system/bin/sh &&
+            ln -sf /lib/ld-musl-aarch64.so.1 /system/lib/ld-musl-aarch64.so.1
+          '
+
+          # No docker/podman stub is installed here any more. There is no
+          # docker in this container and never will be, and harness.ts:1051
+          # used to turn that into a hard error rather than a skip once CI was
+          # set — but that ordering bug is fixed in-tree now (isDockerEnabled()
+          # checks the `isLinux && arm64` opt-out before the presence probe),
+          # and the checkout step below takes this workflow's own ref, so the
+          # fix is live without waiting on a rebottle.
+
+      - name: Install node (Harmonybrew default core tap) + bun and llvm@21 bottles (social4hyq/core)
+        run: |
+          # The container image is a snapshot baked on a fixed date (see
+          # IMAGE above) — its default-tap formula index can reference a
+          # node version whose bottle has since been superseded/removed from
+          # the CDN (hit exactly this: baked index said 26.4.0, live tap is
+          # 26.5.0, the 26.4.0 bottle 404s). $BREW_ENV sets
+          # HOMEBREW_NO_AUTO_UPDATE=1 (intentional for the social4hyq/core
+          # tap below — we want exactly what we just tapped, not whatever
+          # else `brew update` might touch), so it never self-heals unless
+          # asked. `brew update` here, without that flag, refreshes the
+          # default tap's index before we resolve node's bottle URL from it.
+          docker exec "$CONTAINER" bash -lc "brew update"
+          docker exec "$CONTAINER" bash -lc "$BREW_ENV brew install node"
+          # llvm@21: the node-gyp tests (test/napi/*, and any test that builds a
+          # native addon) need a C++ toolchain whose libc++ has the C++20
+          # headers node's own headers include. Without it the addon build dies
+          # at:
+          #
+          #   .cache/node-gyp/26.3.0/include/node/v8-source-location.h:9:10:
+          #     fatal error: 'source_location' file not found
+          #
+          # which is what sank napi.test.ts / uv_stub.test.ts /
+          # napi-value-ffi.test.ts in run 30175507434. The keg ships that header
+          # at include/aarch64-linux-ohos/c++/v1/source_location (verified), and
+          # its arm64_ohos bottle pours in seconds, so this is not the ~62min
+          # source build the formula is otherwise known for.
+          #
+          # Bare name, not social4hyq/core-qualified: nothing else in the tap
+          # search path provides llvm@21 (checked), and this repo only
+          # fully-qualifies formulae that collide with a default-tap name.
+          docker exec "$CONTAINER" bash -lc "
+            $BREW_ENV brew tap social4hyq/core https://atomgit.com/social4hyq/homebrew-core.git &&
+            $BREW_ENV brew trust social4hyq/core &&
+            $BREW_ENV brew install social4hyq/core/bun &&
+            $BREW_ENV brew install llvm@21
+          "
+
+      - name: Smoke check
+        run: |
+          docker exec "$CONTAINER" bash -lc '
+            node --version &&
+            node -e "console.log(process.platform)" &&
+            $(brew --prefix bun)/bin/bun --version &&
+            $(brew --prefix bun)/bin/bun -e "console.log(2**32)"
+          '
+
+      - name: Resolve the bottled bun's exact source revision
+        id: pin
+        run: |
+          REV=$(docker exec "$CONTAINER" bash -lc "$BREW_ENV brew cat social4hyq/core/bun" \
+            | sed -n 's/.*revision: *"\([0-9a-f]*\)".*/\1/p' | head -1)
+          if [ -z "$REV" ]; then
+            echo "::error::could not extract a git revision from the bun formula's url line"
+            exit 1
+          fi
+          echo "Bottled bun was built from social4hyq/ohos-bun@$REV"
+          echo "sha=$REV" >> "$GITHUB_OUTPUT"
+
+      - name: Failure diagnostics
+        if: failure()
+        run: |
+          docker exec "$CONTAINER" bash -lc \
+            'for f in /root/.cache/Homebrew/Logs/*/*; do echo "--- $f"; tail -30 "$f"; done' || true
+
+      # Check out test/ + scripts/ at this workflow's own ref, NOT at the
+      # bottle's pinned revision.
+      #
+      # This used to pin to steps.pin.outputs.sha, reasoning that a drifted
+      # formula pin would silently test the wrong test/expectations.txt against
+      # the running binary. The cost of that was not worth it: the harness, the
+      # runner and the expectations file are the parts we iterate on, and
+      # pinning meant every one-line expectations entry had to wait for a full
+      # bun rebuild and rebottle before it could even be tried. Changing the
+      # test tree does not change the binary under test, so making test-only
+      # work depend on rebuilding that binary is backwards.
+      #
+      # The provenance the pin protected is still reported: the step above
+      # prints the revision the bottle was built from, so any log tells you
+      # exactly which binary these tests ran against. Drift is now visible
+      # rather than prevented — read that line before trusting a run whose
+      # results hinge on a recent src/ change.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Copy test tree into the container
+        run: docker cp . "$CONTAINER":/root/bun-src
+
+      # scripts/bootstrap.sh (this repo's own canonical CI bootstrap,
+      # ~line 2210) runs `bun install --ignore-scripts` in BOTH the repo
+      # root and test/ before any test runs, on every platform — not an
+      # OHOS-specific step. Skipping either one breaks real test files:
+      #
+      #  - test/ alone: found by running this workflow for real.
+      #    stringWidth.test.ts / stripANSI.test.ts import string-width /
+      #    strip-ansi, declared only in test/package.json (root's
+      #    package.json is Bun's own build deps, unrelated).
+      #  - root before test/: also found by running it for real. test/'s
+      #    own lockfile pins react as `file:../node_modules/react` — a
+      #    relative reference to the ROOT node_modules, so `cd test && bun
+      #    install` alone 404s on it ("failed to link package:
+      #    react@../node_modules/react") unless root has already been
+      #    installed first.
+      #  - --ignore-scripts on both: also found by running it for real.
+      #    Without it, test/'s puppeteer postinstall tries to download a
+      #    Chromium build and throws "The current platform is not
+      #    supported" for openharmony, aborting the whole install.
+      - name: Install npm dependencies (root, then test/)
+        run: |
+          docker exec "$CONTAINER" bash -lc '
+            cd /root/bun-src &&
+            "$(brew --prefix bun)/bin/bun" install --ignore-scripts &&
+            cd test &&
+            "$(brew --prefix bun)/bin/bun" install --ignore-scripts
+          '
+
+      # No --parallel (see header note); --retries=1 instead of the CI
+      # default of 3 (see header note). --quiet keeps the log from ballooning
+      # over a run this long; --results-json is the artifact for any
+      # follow-up triage, not for gating (the exit code IS the gate).
+      #
+      # --exclude=bake/dev: found by running the first full run for real (43
+      # real failures, 9 of them here). Root cause has nothing to do with
+      # OHOS: bake.DevServer's `--app` / dev-server feature set is gated by
+      # `IS_CANARY || IS_DEBUG || BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE`
+      # (src/bun_core/feature_flags.rs) — harmonybrew-core's bun.rb builds a
+      # genuine stable release (version "1.4.0", no canary flag), so `bake()`
+      # is compiled off. Buildkite never surfaces this because its own
+      # isCanary defaults true for every non-[release]-tagged build
+      # (.buildkite/ci.mjs, getPipelineOptions()) — this repo's own CI is
+      # effectively always testing canary, so this gap was never exercised
+      # anywhere before this workflow tested an actual stable bottle. Would
+      # fail identically on a stable macOS/Linux/Windows build; not an
+      # OHOS-specific expectations.txt entry.
+      #
+      # The three cc.test/20144/26249 excludes: bun:ffi's cc() (the in-memory
+      # TCC compiler) segfaults at address 0x48 *inside this container image*,
+      # and the process then hangs instead of exiting, burning the whole test
+      # timeout. Scoped precisely — exactly the 4 test files in the tree that
+      # call cc() were the ones failing, and no others. Verified on a real
+      # HarmonyOS device against the very same published bottle (adb57a212)
+      # that CI pours: cc.test.ts 17 pass/0 fail, 20144 1 pass, 26249 2 pass.
+      # So this is a container-environment artifact, not a defect in what
+      # ships — and per this workspace's standing rule, real-device results,
+      # not container results, decide shippability. Ruled out by direct
+      # experiment (not assumed): OHOS_SYSROOT presence (segfaults either
+      # way in-container) and /usr/lib64/libc.so -> ld-musl, which the
+      # container has and the device lacks (feeding the device's TCC that
+      # exact ld-musl as libc compiles fine). The faulting line itself is
+      # still unidentified; excluding costs us cc() coverage in CI, which is
+      # accepted because the device is the target and does pass.
+      #
+      # Deliberately NOT excluded, though it also calls cc() and also fails:
+      # napi/napi-value-ffi.test.ts. It fails on the real device too, with a
+      # different and genuine error ("include file 'bits/alltypes.h' not
+      # found" resolving the OHOS SDK sysroot's stdint.h) — a real
+      # device-affecting gap that belongs in test/expectations.txt, not here.
+      #
+      # CI is passed explicitly because `docker exec` inherits nothing from the
+      # runner's environment. test/harness.ts:28 (`process.env.CI !== undefined`)
+      # gates whole test bodies on it: without it, js/bun/css/css-fuzz.test.ts
+      # runs its `if (!isCI)` fuzz loops — 2600 iterations over deliberately
+      # degenerate inputs (300-deep @media nesting, 100k-long selectors,
+      # 10k-property rules). Upstream's own x64 lane records that file at 57ms
+      # in test/expected-durations.json because CI skips all of it; in run
+      # 30150421934 it took 3h28m, 81.5% of a 4h15m suite. The same flag drives
+      # harness's isFlaky/isBroken, and satisfies scripts/utils.mjs:47 so the
+      # runner also considers itself under CI.
+      #
+      # GITHUB_ACTIONS is deliberately NOT passed, though it would additionally
+      # buy ::group:: folding in the log. It sets scripts/utils.mjs:46's
+      # isGithubAction, which unlocks ~20 code paths that assume the rest of
+      # the Actions environment came with it — and inside `docker exec` none of
+      # it did. Run 30165171805 died on the first hard failure this way:
+      #
+      #   runTest -> formatTestToMarkdown -> getBuildUrl
+      #     -> getEnv("GITHUB_REPOSITORY")   # required=true
+      #     -> Error: Environment variable is missing: GITHUB_REPOSITORY
+      #
+      # which is an uncaught throw in the runner itself, not a test failure: it
+      # killed the whole process at file 174 of 5281, 8 minutes in, with no
+      # results.json written. Forwarding GITHUB_REPOSITORY/GITHUB_RUN_ID alone
+      # would clear that one call site and leave the other paths (step
+      # summaries, comment.md, artifact upload) waiting to trip on the next
+      # thing they expect. Folding is not worth that surface; CI alone is the
+      # flag that actually changes what the tests do.
+      - name: Run test suite
+        env:
+          TEST_FILTER: ${{ inputs.test-filter }}
+          SHARD: ${{ matrix.shard }}
+          # Must track the matrix above: one shard when filtering, four
+          # otherwise. The runner packs by test/expected-durations.json's ohos
+          # lane, which is what makes the split even — packed by the default
+          # lane the heaviest shard is 30.1 min instead of 16.0.
+          MAX_SHARDS: ${{ inputs.test-filter && 1 || 4 }}
+        run: |
+          # Free space every 30s for the life of the suite, timestamped so it
+          # lines up with the runner's own log timestamps and therefore with
+          # the [N/M] progress markers. Reported by the step below whether or
+          # not the suite finishes — the point is to have this when it does
+          # not.
+          # No -P: GNU df rejects it alongside --output ("options -P and
+          # --output are mutually exclusive"), and with stderr swallowed that
+          # would leave an empty file and nothing to read afterwards.
+          ( while :; do
+              printf '%s %s\n' "$(date -u +%H:%M:%S)" "$(df -B1 --output=avail / | tail -1)"
+              sleep 30
+            done ) > "$RUNNER_TEMP/disk-samples.txt" &
+          SAMPLER=$!
+          trap 'kill "$SAMPLER" 2>/dev/null || true' EXIT
+
+          set +e
+          # BUN_TEST_NO_SECRETS: this lane has no secret store, so harness.ts's
+          # getSecret() returns undefined instead of throwing at module scope.
+          # The throw takes whole files down; undefined lets each file's own
+          # `skipIf(!secret)` skip just the cases that need the credential.
+          docker exec -e TEST_FILTER -e SHARD -e MAX_SHARDS -e CI=true -e BUN_TEST_NO_SECRETS=1 "$CONTAINER" bash -lc '
+            cd /root/bun-src
+            INCLUDE_ARGS=()
+            if [ -n "$TEST_FILTER" ]; then
+              INCLUDE_ARGS=(--include="$TEST_FILTER")
+            fi
+            node scripts/runner.node.mjs \
+              --exec-path="$(brew --prefix bun)/bin/bun" \
+              --quiet \
+              --shard="$SHARD" \
+              --max-shards="$MAX_SHARDS" \
+              --retries=1 \
+              --results-json=/root/results.json \
+              --exclude=integration/bun-types \
+              --exclude=internal/source-lints \
+              --exclude=bake/dev \
+              --exclude=js/bun/ffi/cc.test.ts \
+              --exclude=regression/issue/20144 \
+              --exclude=regression/issue/26249 \
+              "${INCLUDE_ARGS[@]}"
+          '
+          RUNNER_EXIT=$?
+          set -e
+          docker cp "$CONTAINER":/root/results.json results.json || true
+          echo "runner exit code: $RUNNER_EXIT"
+          exit $RUNNER_EXIT
+
+      # Deliberately a separate always() step: when the suite dies the way run
+      # 30187374849 did, the step above never reaches its own last line.
+      - name: Disk usage report
+        if: always()
+        run: |
+          SAMPLES="$RUNNER_TEMP/disk-samples.txt"
+          echo "--- final"
+          df -h /
+          echo "--- docker"
+          docker system df || true
+          if [ -s "$SAMPLES" ]; then
+            echo "--- free space over the suite (GiB), first / min / last"
+            awk '{ gib = $2 / 1073741824
+                   if (NR == 1) { first = gib; ft = $1 }
+                   if (NR == 1 || gib < min) { min = gib; mt = $1 }
+                   last = gib; lt = $1 }
+                 END { printf "  first %s  %.2f\n  min   %s  %.2f\n  last  %s  %.2f\n",
+                              ft, first, mt, min, lt, last }' "$SAMPLES"
+            echo "--- full series"
+            awk '{ printf "  %s  %.2f GiB\n", $1, $2 / 1073741824 }' "$SAMPLES"
+          else
+            echo "no samples recorded"
+          fi
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ohos-full-test-results-${{ github.run_number }}-shard${{ matrix.shard }}
+          path: results.json
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Stop OHOS container
+        if: always()
+        run: docker rm -f "$CONTAINER" || true
+
+  # Every consumer of this artifact wants one file, not four, and no consumer
+  # cares which shard a result came from — the shard assignment is an artefact
+  # of scheduling, not of the test. Merge on the way out so the published
+  # artifact keeps the shape it had before sharding.
+  collect:
+    needs: test
+    if: always()
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: ohos-full-test-results-${{ github.run_number }}-shard*
+          path: shards
+          merge-multiple: false
+
+      - name: Merge shard results
+        run: |
+          shopt -s nullglob
+          files=(shards/*/results.json)
+          echo "found ${#files[@]} shard result files"
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::warning::no shard produced a results.json"
+            exit 0
+          fi
+          # A shard that died without writing results.json (see run
+          # 30187374849) simply contributes nothing; the count above is the
+          # signal that happened, and the merge still publishes what the other
+          # shards found rather than nothing at all.
+          node -e '
+            const fs = require("fs");
+            const out = [];
+            for (const f of process.argv.slice(1)) {
+              const rows = JSON.parse(fs.readFileSync(f, "utf8"));
+              console.error(`${f}: ${rows.length} entries`);
+              out.push(...rows);
+            }
+            out.sort((a, b) => a.testPath.localeCompare(b.testPath));
+            fs.writeFileSync("results.json", JSON.stringify(out));
+            const failed = out.filter(r => !r.ok);
+            console.error(`merged ${out.length} entries, ${failed.length} failing`);
+            for (const r of failed) console.error(`  FAIL ${r.testPath}`);
+          ' "${files[@]}"
+
+      - name: Upload merged results
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ohos-full-test-results-${{ github.run_number }}
+          path: results.json
+          retention-days: 30
+          if-no-files-found: ignore
