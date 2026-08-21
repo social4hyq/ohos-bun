@@ -28,7 +28,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { availableParallelism, userInfo } from "node:os";
+import { availableParallelism } from "node:os";
 import { basename, dirname, extname, join, relative, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as setTimeoutPromise } from "node:timers/promises";
@@ -53,7 +53,9 @@ import {
   getOs,
   getSecret,
   getShell,
+  getUsername,
   getWindowsExitReason,
+  homedir as getHomedir,
   isAndroid,
   isBuildkite,
   isCI,
@@ -198,6 +200,25 @@ const { values: options, positionals: filters } = parseArgs({
     },
     /** Write per-file results as JSON to this path (for test-fix workflows). */
     ["results-json"]: {
+      type: "string",
+      default: undefined,
+    },
+    /**
+     * Local triage escape hatch: `test/expectations.txt` entries remove a
+     * file from the run entirely (see getRelevantTests), so a file quarantined
+     * there never shows up as pass OR fail — it just vanishes from the
+     * denominator. That's the opposite of what you want when the goal is to
+     * find out whether the quarantine is still earning its keep. This flag
+     * puts matching files back into the run without touching the file.
+     *
+     * Value is a modifier name (e.g. "OPENHARMONY") to un-quarantine only
+     * entries gated to that modifier (bare, unmodifiered entries always stay
+     * excluded — those are cross-platform "this file cannot run" cases, not
+     * OHOS-specific judgment calls), or "all" to ignore expectations.txt
+     * entirely regardless of modifier. Default: unset, so CI's behavior
+     * (every entry enforced) is unchanged.
+     */
+    ["ignore-expectations"]: {
       type: "string",
       default: undefined,
     },
@@ -1738,7 +1759,23 @@ async function spawnSafe(options) {
 let _combinedPath = "";
 function getCombinedPath(execPath) {
   if (!_combinedPath) {
-    _combinedPath = addPath(realpathSync(dirname(execPath)), process.env.PATH);
+    const paths = [realpathSync(dirname(execPath))];
+    if (process.platform === "openharmony") {
+      // `~/.harmonybrew/bin/clang(++)` resolves to ohos-sdk's older bundled
+      // clang (15.0.4, no <source_location>/C++20 libc++), not llvm@21 —
+      // both formulae ship a binary of that name and ohos-sdk's is the one
+      // linked. node-gyp finds a compiler by searching PATH for clang/cc
+      // regardless of the CC/CXX env vars, so any test that builds a native
+      // addon (napi, v8 embedder tests) silently used the wrong one and
+      // failed on missing C++20 headers. Put llvm@21's own versioned keg
+      // bin dir first so `clang`/`clang++` resolve there unambiguously.
+      const brew = spawnSync("brew", ["--prefix", "llvm@21"], { encoding: "utf-8" });
+      if (!brew.error && brew.status === 0) {
+        paths.push(join(brew.stdout.trim(), "bin"));
+      }
+    }
+    paths.push(process.env.PATH);
+    _combinedPath = addPath(...paths);
     // If we're running bun-profile.exe, try to make a symlink to bun.exe so
     // that anything looking for "bun" will find it
     if (isCI && basename(execPath, extname(execPath)).toLowerCase() !== "bun") {
@@ -1774,10 +1811,29 @@ function getCombinedPath(execPath) {
 async function spawnBun(execPath, { args, cwd, timeout, gracefulTimeout, idleTimeout, env, stdout, stderr }) {
   const path = getCombinedPath(execPath);
   const tmpdirPath = mkdtempSync(join(tmpdir(), "buntmp-"));
-  const { username, homedir } = userInfo();
+  const username = getUsername();
+  const homedir = getHomedir();
   const shellPath = getShell();
+  // bun:ffi's TCC linker only adds the OHOS sysroot's libc/include paths
+  // (needed for headers as basic as <stdint.h>) when $OHOS_SYSROOT is set
+  // (see src/runtime/ffi/ffi_body.rs). CI sets this at job level already;
+  // fall back to `brew --prefix ohos-sdk` so ad-hoc local runs of this
+  // runner don't silently lose that include path.
+  let ohosSysroot;
+  if (process.platform === "openharmony" && !process.env.OHOS_SYSROOT) {
+    const brew = spawnSync("brew", ["--prefix", "ohos-sdk"], { encoding: "utf-8" });
+    if (!brew.error && brew.status === 0) {
+      ohosSysroot = join(brew.stdout.trim(), "native", "sysroot");
+    }
+  }
   const bunEnv = {
     ...process.env,
+    // TERM=dumb makes node:readline take its _ttyWriteDumb fallback (cursor
+    // control keys become no-ops), failing every cursor-position assertion in
+    // the readline/REPL suites. Agent shells and CI containers routinely
+    // export TERM=dumb; normalize to a capable terminal. Tests that exercise
+    // dumb-terminal behavior set TERM themselves downstream.
+    TERM: process.env.TERM === "dumb" ? "xterm-256color" : process.env.TERM,
     PATH: path,
     TMPDIR: tmpdirPath,
     BUN_TMPDIR: tmpdirPath,
@@ -1795,6 +1851,16 @@ async function spawnBun(execPath, { args, cwd, timeout, gracefulTimeout, idleTim
     BUN_INSTALL_CACHE_DIR: tmpdirPath,
     SHELLOPTS: isWindows ? "igncr" : undefined, // ignore "\r" on Windows
     TEST_TMPDIR: tmpdirPath, // Used in Node.js tests.
+    // The vendored Node test suite's common/tmpdir.js defaults to a directory
+    // relative to the test file itself, which on OHOS can't hold AF_UNIX
+    // socket files or hardlinks (EPERM). Point it at a tmpdir that does
+    // support them. common/index.js derives its AF_UNIX pipe path via
+    // path.relative(cwd, NODE_TEST_DIR), and sockaddr_un.sun_path is capped
+    // at 108 bytes, so keep the directory name as short as possible.
+    ...(process.platform === "openharmony"
+      ? { NODE_TEST_DIR: mkdtempSync(join(tmpdir(), "nt-")) }
+      : {}),
+    ...(ohosSysroot ? { OHOS_SYSROOT: ohosSysroot } : {}),
     ...(typeof remapPort == "number"
       ? { BUN_CRASH_REPORT_URL: `http://localhost:${remapPort}` }
       : { BUN_ENABLE_CRASH_REPORTING: "0" }),
@@ -2022,7 +2088,14 @@ async function spawnBunTest(execPath, testPath, opts = { cwd }) {
     // setup (napi node-gyp compiles) or many subprocess spawns don't hit
     // the file wall before any individual test times out. Kept below the
     // per-test multiplier so the overall shard stays inside the job timeout.
-    timeout: isReallyTest ? Math.ceil(timeout * (isAsan ? 2 : 1)) : 30_000,
+    // OHOS: this outer wall-clock kill runs regardless of a file's own
+    // setDefaultTimeout() call, so install/migration-heavy files (fork/spawn
+    // and fs syscall overhead documented at 2-3x) were getting killed here
+    // at the plain 3-minute testTimeout even after raising their own
+    // internal timeout to 5 minutes — the outer kill fired first.
+    timeout: isReallyTest
+      ? Math.ceil(timeout * (isAsan ? 2 : 1) * (process.platform === "openharmony" ? 3 : 1))
+      : 30_000,
     env,
     stdout: options.stdout,
     stderr: options.stderr,
@@ -2368,6 +2441,8 @@ function getTests(cwd) {
  * @property {string} [testRunner]
  * @property {string[]} [testExtensions]
  * @property {boolean | Record<string, boolean | string>} [skipTests]
+ * @property {Record<string, string>} [overrides]
+ * @property {Record<string, string>} [overridesReason] documentation only; unused here
  */
 
 /**
@@ -2410,7 +2485,17 @@ async function getVendorTests(cwd) {
 
   return Promise.all(
     relevantVendors.map(
-      async ({ package: name, repository, tag, testPath, testExtensions, testRunner, packageManager, skipTests }) => {
+      async ({
+        package: name,
+        repository,
+        tag,
+        testPath,
+        testExtensions,
+        testRunner,
+        packageManager,
+        skipTests,
+        overrides,
+      }) => {
         const vendorPath = join(cwd, "vendor", name);
 
         if (!existsSync(vendorPath)) {
@@ -2442,6 +2527,24 @@ async function getVendorTests(cwd) {
         const packageJsonPath = join(vendorPath, "package.json");
         if (!existsSync(packageJsonPath)) {
           throw new Error(`Vendor '${name}' does not have a package.json: ${packageJsonPath}`);
+        }
+
+        // Merge vendor.json's `overrides` into the checked-out package.json
+        // before `bun install` runs, for vendors whose pinned dependency
+        // versions cannot install on a platform we test. Written after the
+        // checkout above, so it survives; idempotent, so a reused clone that
+        // no-op checks out the same tag stays correct.
+        //
+        // Note this only takes effect when the range cannot be satisfied by
+        // the vendor's committed lockfile: an override the lockfile already
+        // satisfies changes nothing, which matters because the reason for
+        // overriding may be the lockfile itself rather than the version (see
+        // vendor.json for a case of each).
+        if (overrides && Object.keys(overrides).length) {
+          const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
+          packageJson.overrides = { ...packageJson.overrides, ...overrides };
+          writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2));
+          !isQuiet && console.log(`Overriding vendor '${name}' dependencies:`, overrides);
         }
 
         const testPathPrefix = testPath || "test";
@@ -2504,13 +2607,22 @@ function loadExpectedDurations(cwd) {
   try {
     const raw = JSON.parse(readFileSync(join(cwd, "expected-durations.json"), "utf8"));
     const step = options["step"] || "";
-    const lane = step.includes("asan")
-      ? "asan"
-      : step.includes("musl")
-        ? "musl"
-        : isWindows || step.includes("windows")
-          ? "windows"
-          : "default";
+    // OpenHarmony is keyed off the platform, not --step: it does not run on
+    // Buildkite, so there is no step name to match on. It needs its own lane
+    // because its costs do not resemble the x64 ones — run-crash-handler is
+    // 2268ms on the default lane and 519s here — and packing OHOS shards
+    // with default-lane numbers leaves one shard doing several times the
+    // work of another. See scripts/update-ohos-test-durations.mjs.
+    const lane =
+      process.platform === "openharmony"
+        ? "ohos"
+        : step.includes("asan")
+          ? "asan"
+          : step.includes("musl")
+            ? "musl"
+            : isWindows || step.includes("windows")
+              ? "windows"
+              : "default";
     for (const [path, entry] of Object.entries(raw)) {
       if (path === "_meta") continue;
       const ms = entry[lane] ?? entry.default ?? entry.asan ?? entry.musl ?? entry.windows;
@@ -2588,12 +2700,32 @@ function getRelevantTests(cwd, testModifiers, testExpectations) {
       );
   }
 
-  const skipExpectations = testExpectations
-    .filter(
-      ({ modifiers, expectations }) =>
-        !modifiers?.length || testModifiers.some(modifier => modifiers?.includes(modifier)),
-    )
-    .map(({ filename }) => filename.replace("test/", ""));
+  const ignoreExpectations = options["ignore-expectations"];
+  const matchingExpectations = testExpectations.filter(
+    ({ modifiers, expectations }) =>
+      !modifiers?.length || testModifiers.some(modifier => modifiers?.includes(modifier)),
+  );
+  // Bare (unmodifiered) entries are "this file cannot run anywhere" and stay
+  // enforced regardless of --ignore-expectations; only modifier-gated entries
+  // (e.g. `[ OPENHARMONY ]`) are eligible to be put back into the run.
+  const unignoredExpectations = ignoreExpectations
+    ? matchingExpectations.filter(({ modifiers }) => {
+        if (!modifiers?.length) return true;
+        if (ignoreExpectations === "all") return false;
+        return !modifiers.includes(ignoreExpectations);
+      })
+    : matchingExpectations;
+  if (ignoreExpectations) {
+    const restored = matchingExpectations.filter(entry => !unignoredExpectations.includes(entry));
+    !isQuiet &&
+      console.log(
+        `Ignoring expectations (--ignore-expectations=${ignoreExpectations}):`,
+        restored.length,
+        "entries restored to the run:",
+        restored.map(({ filename }) => filename),
+      );
+  }
+  const skipExpectations = unignoredExpectations.map(({ filename }) => filename.replace("test/", ""));
   if (skipExpectations.length) {
     const skippedTests = availableTests.filter(testPath => skipExpectations.some(filter => isMatch(testPath, filter)));
     if (skippedTests.length) {

@@ -99,6 +99,14 @@ function systemLibs(cfg: Config): string[] {
     libs.push("-lc", "-lpthread", "-lm", "-lexecinfo", "-lkvm", "-lprocstat", "-lelf", "-lutil");
   }
 
+  if (cfg.ohos) {
+    libs.push("-lc", "-lpthread", "-ldl");
+    // Link ICU for local WebKit builds on OHOS (cross-compiled ICU at ohosIcuDir/lib).
+    if (cfg.webkit === "local" && cfg.ohosIcuDir) {
+      libs.push(`-L${cfg.ohosIcuDir}/lib`, "-licudata", "-licui18n", "-licuuc");
+    }
+  }
+
   if (cfg.windows) {
     // Explicit .lib: these go after /link so no auto-suffixing by the
     // clang-cl driver. lld-link auto-appends .lib but link.exe doesn't;
@@ -816,7 +824,10 @@ export function emitPostLink(
  */
 function emitSmokeTest(n: Ninja, cfg: Config, exe: string, exeName: string, strippedExe: string | undefined): void {
   // Skip when the binary can't run on this host (different os/arch/abi) —
-  // `ninja check` becomes a no-op alias for the exe.
+  // `ninja check` becomes a no-op alias for the exe. OHOS targets always
+  // fail this: detectHost() maps the "openharmony" platform to os "linux"
+  // (config.ts), so os "ohos" never equals host.os and canRunOnHost is
+  // always false — same effect as the old explicit `|| cfg.ohos` check.
   if (!cfg.canRunOnHost) {
     n.phony("check", [exe]);
     return;
