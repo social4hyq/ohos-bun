@@ -1897,8 +1897,14 @@ impl Terminal {
         let readable = unsafe { (&mut *poll).is_readable() };
         // SAFETY: same as above.
         let writable = unsafe { (&mut *poll).is_writable() };
+        // ERR (EPOLLERR) maps to the Eof flag and must also reach the writer,
+        // matching the non-shared writer's `EPOLLOUT|HUP|ERR` mask: HUP/ERR fire
+        // even when the fd is not writable (e.g. the child exited and the slave
+        // closed), and the writer needs those to drain + report EndOfFile.
+        // SAFETY: read-only flag check on the live poll.
+        let eof = unsafe { (&*poll).flags.contains(bun_io::PollFlag::Eof) };
 
-        if writable {
+        if writable || hup || eof {
             // Drain the writer first: its empty-buffer wake drops EPOLLOUT via
             // `set_writable_interest(false)`, and its callbacks may close the
             // Terminal (reader poll gets deinit'd). Guard the reader below.
@@ -1909,8 +1915,9 @@ impl Terminal {
         }
 
         // Writer drain may have closed us (close_internal → reader.close →
-        // shared poll deinit'd). Do not touch the reader in that case.
-        if readable && !t.flags.get().contains(Flags::CLOSED) {
+        // shared poll deinit'd). Do not touch the reader in that case. Route on
+        // `hup` too so the reader observes EOF and fires its exit/done path.
+        if (readable || hup) && !t.flags.get().contains(Flags::CLOSED) {
             // SAFETY: reader is live; `BufferedReader::on_poll` takes the raw
             // pointer and drives the read loop.
             let reader_ptr = unsafe { t.reader.get_mut() } as *mut _;
