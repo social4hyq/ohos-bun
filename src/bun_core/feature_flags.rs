@@ -125,9 +125,7 @@ pub fn is_libdeflate_enabled() -> bool {
         return false;
     }
 
-    // env_var's Accessor::get() returns Option<bool>, not bool -- always Some
-    // in practice given this flag's `{default: false}`.
-    !feature_flag::BUN_FEATURE_FLAG_NO_LIBDEFLATE.get().unwrap_or(false)
+    feature_flag::BUN_FEATURE_FLAG_NO_LIBDEFLATE.get() != Some(true)
 }
 
 /// Enable the "app" option in Bun.serve. This option will likely be removed
@@ -136,9 +134,7 @@ pub fn bake() -> bool {
     // In canary or if an environment variable is specified.
     env::IS_CANARY
         || env::IS_DEBUG
-        || feature_flag::BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE
-            .get()
-            .unwrap_or(false)
+        || feature_flag::BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE.get() == Some(true)
 }
 
 /// Additional debugging features for bake.DevServer, such as the incremental visualizer.

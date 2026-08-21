@@ -29,6 +29,6 @@
     "tailwindcss": "^4.3.0"
   },
   "peerDependencies": {
-    "typescript": "^6"
+    "typescript": "^7"
   }
 }

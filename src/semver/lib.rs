@@ -302,7 +302,7 @@ pub mod semver_string {
 
         #[inline]
         pub fn fmt_store_path<'a>(&'a self, buf: &'a [u8]) -> StorePathFormatter<'a> {
-            StorePathFormatter { buf, str: self }
+            fmt_store_path(self.slice(buf))
         }
 
         #[inline]
@@ -714,13 +714,17 @@ pub mod semver_string {
 
     // ── String.StorePathFormatter ─────────────────────────────────────────
     pub struct StorePathFormatter<'a> {
-        pub(crate) str: &'a String,
-        pub(crate) buf: &'a [u8],
+        bytes: &'a [u8],
+    }
+
+    /// Spells `bytes` as a single path component of the isolated store.
+    pub fn fmt_store_path(bytes: &[u8]) -> StorePathFormatter<'_> {
+        StorePathFormatter { bytes }
     }
 
     impl<'a> fmt::Display for StorePathFormatter<'a> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            for &c in self.str.slice(self.buf) {
+            for &c in self.bytes {
                 let n = match c {
                     b'/' => b'+',
                     b'\\' => b'+',
@@ -757,7 +761,7 @@ pub mod semver_string {
     }
 
     // Bridge to `bun_collections::ArrayHashMap` adapted lookups so callers can
-    // pass `ArrayHashContext` directly to `get_adapted` / `get_or_put_adapted`
+    // pass `ArrayHashContext` directly to `get_index_adapted` / `get_or_put_adapted`
     // / `put_assume_capacity_context` without a per-crate orphan-rule wrapper.
     impl<'a> bun_collections::array_hash_map::ArrayHashAdapter<String, String>
         for ArrayHashContext<'a>

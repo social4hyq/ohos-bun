@@ -13,6 +13,7 @@ use bun_semver::string::Buf as StringBuf;
 use crate::dependency as Dependency;
 use crate::hosted_git_info;
 use crate::install::{self as Install, ExtractData, PackageManager};
+use crate::resolution::fmt_store_url;
 
 // Thread-local scratch buffers. Callers return slices that outlive the access
 // (`try_ssh`/`try_https` hand a slice straight to `download`). `thread_local!`
@@ -404,7 +405,6 @@ fn exec(env: &bun_dotenv::Map, argv: &[&[u8]]) -> Result<Vec<u8>, Error> {
         let term = match result.term {
             bun_spawn::Term::Exited(code) => format!("exit code {code}"),
             bun_spawn::Term::Signal(sig) => format!("signal {sig}"),
-            bun_spawn::Term::Stopped(sig) => format!("stopped (signal {sig})"),
             bun_spawn::Term::Unknown(_) => "unknown status".to_string(),
         };
         Output::err_generic("{} failed with {}", (BStr::new(argv[0]), term.as_str()));
@@ -1142,7 +1142,11 @@ impl<'a> fmt::Display for StorePathFormatter<'a> {
             writer.write_str("ssh++")?;
         }
 
-        write!(writer, "{}", self.repo.repo.fmt_store_path(self.string_buf))?;
+        write!(
+            writer,
+            "{}",
+            fmt_store_url(self.repo.repo.slice(self.string_buf))
+        )?;
 
         if !self.repo.resolved.is_empty() {
             writer.write_str("+")?; // this would be '#' but it's not valid on windows
