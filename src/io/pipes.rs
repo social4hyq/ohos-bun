@@ -64,8 +64,14 @@ impl PollOrFd {
         let fd = self.get_fd();
         #[cfg(target_os = "macos")]
         let mut close_async = true;
-        #[cfg(all(not(target_os = "macos"), not(windows)))]
+        #[cfg(all(not(target_os = "macos"), not(windows), not(target_env = "ohos")))]
         let close_async = true;
+        // OHOS: the async fd close (scheduled on the WorkPool) leaks one
+        // socketpair parent-end fd when stdin+stdout are both sockets (a
+        // concurrent-close race). close() on a socket is a non-blocking
+        // syscall, so closing synchronously is correct and fixes the leak.
+        #[cfg(target_env = "ohos")]
+        let close_async = false;
         if matches!(self, PollOrFd::Poll(_)) {
             // workaround kqueue bug.
             // 1) non-blocking FIFO
