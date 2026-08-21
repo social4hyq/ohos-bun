@@ -5145,6 +5145,41 @@ impl Resolver {
         resolver.do_lookup(name.slice(), port, options, global_this)
     }
 
+    /// True if the host has a routable (non-link-local, non-loopback) IPv6
+    /// address. OHOS exposes only `fe80::/10` link-local and `::1` loopback in
+    /// `/proc/net/if_inet6`, so a dual-stack `getaddrinfo` issues an AAAA query
+    /// that times out (EAI_AGAIN → DNS_ETIMEOUT). Callers doing an AF_UNSPEC
+    /// lookup force IPv4 when this returns false.
+    #[cfg(target_env = "ohos")]
+    fn has_global_ipv6() -> bool {
+        const PATH: &[u8] = b"/proc/net/if_inet6\0";
+        let fd = unsafe {
+            libc::open(PATH.as_ptr().cast::<core::ffi::c_char>(), libc::O_RDONLY | libc::O_CLOEXEC)
+        };
+        if fd < 0 {
+            return false;
+        }
+        let mut buf = [0u8; 4096];
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast::<core::ffi::c_void>(), buf.len()) };
+        unsafe { libc::close(fd) };
+        if n <= 0 {
+            return false;
+        }
+        buf[..n as usize].split(|&b| b == b'\n').any(|line| {
+            if line.len() < 2 {
+                return false;
+            }
+            // Global = first byte is neither 0x00 (::/8: unspecified + loopback)
+            // nor 0xfe (fe80::/10 link-local).
+            !(line[0] == b'0' && line[1] == b'0') && !(line[0] == b'f' && line[1] == b'e')
+        })
+    }
+
+    #[cfg(not(target_env = "ohos"))]
+    fn has_global_ipv6() -> bool {
+        true
+    }
+
     pub(crate) fn do_lookup(
         &self,
         name: &[u8],
@@ -5170,6 +5205,14 @@ impl Resolver {
         }
 
         let mut opts = options;
+        // OHOS: no global IPv6 (only fe80::/10 link-local + ::1 loopback), so
+        // a dual-stack (AF_UNSPEC) getaddrinfo issues an AAAA query that times
+        // out (EAI_AGAIN → DNS_ETIMEOUT). Force IPv4 when the caller left the
+        // family unspecified and there is no routable IPv6 address.
+        #[cfg(target_env = "ohos")]
+        if opts.family == bun_dns::Family::Unspecified && !has_global_ipv6() {
+            opts.family = bun_dns::Family::Inet;
+        }
         let mut backend = opts.backend;
         let normalized = normalize_dns_name(name, &mut backend);
         opts.backend = backend;
