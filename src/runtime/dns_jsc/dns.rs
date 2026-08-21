@@ -5210,7 +5210,7 @@ impl Resolver {
         // out (EAI_AGAIN → DNS_ETIMEOUT). Force IPv4 when the caller left the
         // family unspecified and there is no routable IPv6 address.
         #[cfg(target_env = "ohos")]
-        if opts.family == bun_dns::Family::Unspecified && !has_global_ipv6() {
+        if opts.family == bun_dns::Family::Unspecified && !Self::has_global_ipv6() {
             opts.family = bun_dns::Family::Inet;
         }
         let mut backend = opts.backend;
