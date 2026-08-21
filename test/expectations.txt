@@ -322,6 +322,13 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 [ OPENHARMONY ] test/js/bun/terminal/terminal-spawn.test.ts [ Flaky ] # subprocess-with-terminal 5s timeouts (1+ test)
 [ OPENHARMONY ] test/js/bun/repl/repl.test.ts [ Flaky ] # PTY-based REPL tests 5s timeouts (2-4 tests)
 
+# --- js/bun/spawn: getMaxFD leak detection false positive on OHOS ---
+# OHOS kernel close() leaves a stale /proc/self/fd entry (fd number is actually
+# reusable — verified: socketpair reuses the closed fd number immediately).
+# getMaxFD() reads /proc/self/fd and is fooled by the stale entry, so the
+# "didn't leak any fds" assertion fails 100% deterministically. Not a real bun fd leak.
+[ OPENHARMONY ] test/js/bun/spawn/spawn-streaming-stdin.test.ts [ Skip ] # getMaxFD leak check is a false positive (OHOS kernel stale /proc/self/fd entry after close)
+
 # --- js/third_party: packages with prebuilt native bindings, no OHOS target ---
 # These fail at import/require time (native .node/.so binding load), so the
 # whole file genuinely cannot run — not a case of quarantining 1-2 broken
