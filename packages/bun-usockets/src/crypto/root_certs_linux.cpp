@@ -10,6 +10,7 @@
 #include <openssl/x509.h>
 #include <openssl/x509_vfy.h>
 #include <openssl/pem.h>
+#include <openssl/err.h>
 
 // Helper function to load certificates from a directory
 static void load_certs_from_directory(const char* dir_path, STACK_OF(X509)* cert_stack, bool accept_hashed) {
@@ -52,12 +53,17 @@ static void load_certs_from_directory(const char* dir_path, STACK_OF(X509)* cert
     char filepath[PATH_MAX];
     snprintf(filepath, sizeof(filepath), "%s/%s", dir_path, entry->d_name);
     
-    // Try to load certificate
-    FILE* file = fopen(filepath, "r");
+    // PEM first; some OHOS/Android hashed store files are DER.
+    FILE* file = fopen(filepath, "rb");
     if (file) {
       X509* cert = PEM_read_X509(file, NULL, NULL, NULL);
+      if (!cert) {
+        rewind(file);
+        cert = d2i_X509_fp(file, NULL);
+        ERR_clear_error();
+      }
       fclose(file);
-      
+
       if (cert) {
         if (!sk_X509_push(cert_stack, cert)) {
           X509_free(cert);
@@ -137,10 +143,17 @@ extern "C" void us_load_system_certificates_linux(STACK_OF(X509) **system_certs)
     NULL
   };
 #elif defined(__OHOS__)
-  // OHOS: hashed PEM files (c_rehash format <hash>.0)
-  static const char* bundle_paths[] = { NULL };
+  // OHOS: hashed PEM files (c_rehash format <hash>.0) plus the documented
+  // OpenHarmony OpenSSL PEM bundle and HarmonyOS Certificate Manager dirs.
+  static const char* bundle_paths[] = {
+    "/system/etc/ssl/certs/cacert.pem",  // documented OpenHarmony OpenSSL CA bundle
+    "/etc/ssl/certs/cacert.pem",
+    NULL
+  };
   static const char* dir_paths[] = {
     "/system/etc/security/certificates",  // OHOS system CA store
+    "/etc/security/certificates",         // HarmonyOS Certificate Manager
+    "/data/certificates/user_cacerts/0",  // user-installed CAs
     NULL
   };
 #else

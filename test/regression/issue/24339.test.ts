@@ -19,6 +19,8 @@ import tls from "node:tls";
 //
 // On Linux, SSL_CERT_FILE / SSL_CERT_DIR override the default search and may
 // legitimately yield zero certs; this test targets default discovery.
+// OpenHarmony: the Unix loader also searches /system/etc/ssl/certs/cacert.pem
+// and /etc/security/certificates (Certificate Manager hashed store).
 const skip =
   process.platform === "darwin"
     ? "system cert count is environment-dependent on macOS"

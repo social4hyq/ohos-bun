@@ -1,23 +1,90 @@
 import { spawn } from "bun";
 import { describe, expect, test } from "bun:test";
+import { X509Certificate } from "crypto";
 import { readFileSync } from "fs";
-import { bunEnv, bunExe, tempDirWithFiles } from "harness";
+import { bunEnv, bunExe, tempDir, tempDirWithFiles } from "harness";
+import tls from "tls";
 
 // Gate network tests behind environment variable to avoid CI flakes
 // TODO: Replace with hermetic local TLS fixtures in a follow-up
 const networkTest = process.env.BUN_TEST_ALLOW_NET === "1" ? test : test.skip;
 
+describe("system CA discovery", () => {
+  test("SSL_CERT_FILE loads a PEM bundle for getCACertificates('system')", async () => {
+    const pem = tls.rootCertificates[0];
+    using dir = tempDir("system-ca-file", {
+      "bundle.pem": pem,
+    });
+
+    await using proc = spawn({
+      cmd: [
+        bunExe(),
+        "-e",
+        `const c=require("tls").getCACertificates("system");
+         if (!c.length) process.exit(2);
+         if (!String(c[0]).startsWith("-----BEGIN CERTIFICATE-----")) process.exit(3);
+         process.stdout.write(String(c.length));`,
+      ],
+      env: { ...bunEnv, SSL_CERT_FILE: `${dir}/bundle.pem`, SSL_CERT_DIR: undefined },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+    expect({ stdout, stderr, exitCode }).toEqual({
+      stdout: "1",
+      stderr,
+      exitCode: 0,
+    });
+  });
+
+  // Hashed DER is how some OHOS/Android system stores ship individual CAs.
+  // The unfixed loader only PEM-reads directory entries, so this exits 2 on
+  // system bun and passes once d2i_X509_fp is tried after PEM_read fails.
+  test("SSL_CERT_DIR loads a hashed DER certificate for getCACertificates('system')", async () => {
+    const pem = tls.rootCertificates[0];
+    const der = Buffer.from(new X509Certificate(pem).raw);
+    using dir = tempDir("system-ca-dir", {
+      "01234567.0": der,
+    });
+
+    await using proc = spawn({
+      cmd: [
+        bunExe(),
+        "-e",
+        `const c=require("tls").getCACertificates("system");
+         if (!c.length) process.exit(2);
+         if (!String(c[0]).startsWith("-----BEGIN CERTIFICATE-----")) process.exit(3);
+         process.stdout.write(String(c.length));`,
+      ],
+      env: { ...bunEnv, SSL_CERT_FILE: undefined, SSL_CERT_DIR: String(dir) },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+    expect({ stdout, stderr, exitCode }).toEqual({
+      stdout: "1",
+      stderr,
+      exitCode: 0,
+    });
+  });
+});
+
 describe("system CA with HTTPS", () => {
   // Skip test if no system certificates are available
   const skipIfNoSystemCerts = () => {
-    if (process.platform === "linux") {
-      // Check if common certificate paths exist on Linux
+    if (process.platform === "linux" || process.platform === "openharmony") {
+      // Check if common certificate paths exist on Linux/OHOS
       const certPaths = [
         "/etc/ssl/certs/ca-certificates.crt",
         "/etc/pki/tls/certs/ca-bundle.crt",
         "/etc/ssl/ca-bundle.pem",
         "/etc/pki/tls/cacert.pem",
         "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+        "/etc/ssl/cert.pem",
+        "/system/etc/ssl/certs/cacert.pem",
+        "/etc/ssl/certs/cacert.pem",
       ];
       const hasSystemCerts = certPaths.some(path => {
         try {
@@ -28,7 +95,7 @@ describe("system CA with HTTPS", () => {
         }
       });
       if (!hasSystemCerts) {
-        return "no system certificates available on Linux";
+        return "no system certificates available on Linux/OHOS";
       }
     }
     return null;
