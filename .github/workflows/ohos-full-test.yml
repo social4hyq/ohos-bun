@@ -130,13 +130,51 @@ jobs:
             $BREW_ENV brew install social4hyq/core/bun
           "
 
+      # The CI image is an OHOS userspace container, not a device system
+      # image: it does not ship /system/etc/ssl/certs/cacert.pem (OpenHarmony
+      # OpenSSL bundle) or /etc/security/certificates (Certificate Manager).
+      # Bottled bun already searches Linux defaults such as /etc/ssl/cert.pem.
+      # issue/24339.test.ts skips when SSL_CERT_FILE/SSL_CERT_DIR is set, so
+      # we populate those default paths from Harmonybrew's ca-certificates
+      # bottle instead of exporting an override.
+      - name: Point system CA discovery at the image CA bundle
+        run: |
+          docker exec "$CONTAINER" bash -lc "$BREW_ENV brew install ca-certificates"
+          docker exec "$CONTAINER" bash -lc '
+            set -euo pipefail
+            PREFIX="$(brew --prefix)"
+            src=""
+            for c in \
+              "$PREFIX/etc/ca-certificates/cert.pem" \
+              "$(brew --prefix ca-certificates)/share/ca-certificates/cacert.pem" \
+              "$PREFIX/etc/openssl@3/cert.pem"
+            do
+              if [ -s "$c" ]; then
+                src=$c
+                break
+              fi
+            done
+            if [ -z "$src" ]; then
+              echo "::error::no Harmonybrew CA bundle found after brew install ca-certificates"
+              ls -la "$PREFIX/etc" || true
+              exit 1
+            fi
+            echo "Using CA bundle: $src"
+            mkdir -p /etc/ssl/certs /system/etc/ssl/certs
+            ln -sfn "$src" /etc/ssl/cert.pem
+            ln -sfn "$src" /etc/ssl/certs/ca-certificates.crt
+            ln -sfn "$src" /system/etc/ssl/certs/cacert.pem
+            echo "PEM certs in /etc/ssl/cert.pem: $(grep -c "BEGIN CERTIFICATE" /etc/ssl/cert.pem)"
+          '
+
       - name: Smoke check
         run: |
           docker exec "$CONTAINER" bash -lc '
             node --version &&
             node -e "console.log(process.platform)" &&
             $(brew --prefix bun)/bin/bun --version &&
-            $(brew --prefix bun)/bin/bun -e "console.log(2**32)"
+            $(brew --prefix bun)/bin/bun -e "console.log(2**32)" &&
+            $(brew --prefix bun)/bin/bun -e "const n=require(\"tls\").getCACertificates(\"system\").length; console.log(\"system CAs\", n); if(n<1) process.exit(1)"
           '
 
       - name: Resolve the bottled bun's exact source revision
