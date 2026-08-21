@@ -2666,36 +2666,48 @@ mod posix_impl {
         }
         // SAFETY: on success `getcwd` returns `buf`'s pointer NUL-terminated.
         let len = unsafe { libc::strlen(p) };
-        // OHOS: the ohos-compat-shim interposes getcwd() and falls back to
-        // $HOME when the cwd is rmdir'd (so lifecycle scripts keep a valid
-        // path), which hides the real deleted-cwd state from callers. Probe
-        // /proc/self/cwd — resolved server-side via d_path() with no userspace
-        // permission check — and stat it: ENOENT means the cwd was deleted,
-        // so surface that instead of the shim's $HOME guess.
-        #[cfg(target_env = "ohos")]
-        {
-            let mut proc_buf = [0u8; 4096];
-            // SAFETY: "/proc/self/cwd" is a valid NUL-terminated path literal;
-            // proc_buf provides 4095 writable bytes + one reserved NUL slot.
-            let n = unsafe {
-                libc::readlink(
-                    b"/proc/self/cwd\0".as_ptr().cast(),
-                    proc_buf.as_mut_ptr().cast(),
-                    proc_buf.len() - 1,
-                )
-            };
-            if n > 0 {
-                proc_buf[n as usize] = 0;
-                let mut st: libc::stat = unsafe { core::mem::zeroed() };
-                // SAFETY: proc_buf is NUL-terminated by the assignment above.
-                if unsafe { libc::stat(proc_buf.as_ptr().cast(), &mut st) } < 0
-                    && last_errno() == libc::ENOENT
-                {
-                    return Err(Error::from_code(E::ENOENT, Tag::getcwd));
-                }
-            }
-        }
         Ok(len)
+    }
+
+    /// `process.cwd()` entry point: like `getcwd`, but surfaces a rmdir'd cwd
+    /// as ENOENT (Node's uv_cwd() contract) instead of the ohos-compat-shim's
+    /// `$HOME` fallback. Narrow to `process.cwd()` only — bun's other getcwd
+    /// callers (install, resolver, lockfile) rely on the shim's `$HOME`
+    /// fallback for robustness.
+    #[cfg(target_env = "ohos")]
+    pub fn process_cwd(buf: &mut [u8]) -> Maybe<usize> {
+        let result = getcwd(buf);
+        if result.is_ok() && cwd_is_deleted() {
+            return Err(Error::from_code(E::ENOENT, Tag::getcwd));
+        }
+        result
+    }
+
+    /// OHOS: whether the cwd has been rmdir'd. `readlink("/proc/self/cwd")` is
+    /// the honest signal: it resolves server-side via `d_path()` with no
+    /// userspace permission check, and on OHOS the procfs entry itself returns
+    /// ENOENT when the cwd is gone (Linux instead appends " (deleted)" to the
+    /// path and leaves the readlink succeeding — both are handled here).
+    #[cfg(target_env = "ohos")]
+    fn cwd_is_deleted() -> bool {
+        let mut proc_buf = [0u8; 4096];
+        // SAFETY: "/proc/self/cwd" is a valid NUL-terminated path literal;
+        // proc_buf provides 4095 writable bytes + one reserved NUL slot.
+        let n = unsafe {
+            libc::readlink(
+                b"/proc/self/cwd\0".as_ptr().cast(),
+                proc_buf.as_mut_ptr().cast(),
+                proc_buf.len() - 1,
+            )
+        };
+        if n > 0 {
+            proc_buf[n as usize] = 0;
+            let mut st: libc::stat = unsafe { core::mem::zeroed() };
+            // SAFETY: proc_buf is NUL-terminated by the assignment above.
+            return unsafe { libc::stat(proc_buf.as_ptr().cast(), &mut st) } < 0
+                && last_errno() == libc::ENOENT;
+        }
+        n < 0 && last_errno() == libc::ENOENT
     }
 
     // ── link/perm/time/access group ──
