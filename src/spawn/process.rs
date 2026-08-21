@@ -131,6 +131,10 @@ pub struct Process {
     pub exit_handler: ProcessExitHandler,
     pub sync: bool,
     pub event_loop: EventLoopHandle,
+    /// Child called `setpgid(0, 0)` (or `setsid`) so `kill(-pid)` reaches its
+    /// descendants. Set when spawn used a timeout — exec shells that do not
+    /// exec-optimize otherwise survive `kill(pid)` while a grandchild holds stdio.
+    pub owns_process_group: bool,
 }
 
 impl Drop for Process {
@@ -262,6 +266,7 @@ impl Process {
             poller: Poller::Detached,
             status,
             exit_handler: ProcessExitHandler::default(),
+            owns_process_group: posix.owns_process_group,
         }))
     }
 
@@ -665,6 +670,10 @@ impl Process {
                     unsafe extern "C" {
                         #[link_name = "kill"]
                         safe fn libc_kill(pid: libc::pid_t, sig: c_int) -> c_int;
+                    }
+                    // pid > 1: kill(-1) signals every process we can reach.
+                    if self.owns_process_group && self.pid > 1 {
+                        let _ = libc_kill(-self.pid, signal as c_int);
                     }
                     let err = libc_kill(self.pid, signal as c_int);
                     if err != 0 {
@@ -2102,6 +2111,7 @@ mod spawn_process_body {
             poller: Poller::Detached,
             exit_handler: ProcessExitHandler::default(),
             sync: false,
+            owns_process_group: false,
         }));
 
         // defer if failed: process.close(); process.deref(); — handled at error sites
