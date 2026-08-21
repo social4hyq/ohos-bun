@@ -29,8 +29,6 @@ use bun_jsc::{
 };
 use bun_sys::{self as sys, Fd, FdExt};
 
-#[cfg(unix)]
-use bun_io::pipe_writer::PosixPipeWriter as _;
 #[cfg(windows)]
 use bun_io::pipe_writer::BaseWindowsPipeWriter as _;
 #[cfg(windows)]
