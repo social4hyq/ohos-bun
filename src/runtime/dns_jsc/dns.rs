@@ -5166,12 +5166,15 @@ impl Resolver {
             return false;
         }
         buf[..n as usize].split(|&b| b == b'\n').any(|line| {
-            if line.len() < 2 {
+            if line.is_empty() {
                 return false;
             }
-            // Global = first byte is neither 0x00 (::/8: unspecified + loopback)
-            // nor 0xfe (fe80::/10 link-local).
-            !(line[0] == b'0' && line[1] == b'0') && !(line[0] == b'f' && line[1] == b'e')
+            // Global unicast = 2000::/3 (first nibble '2' or '3'). Excludes
+            // ::1 loopback, fe80::/10 link-local, and fc00::/7 ULA — OHOS
+            // devices commonly report a ULA address on wlan0/vpn-tun, and
+            // treating that as "global" made dns.lookup({all:true}) still
+            // return AAAA on networks where it can't actually route.
+            matches!(line[0], b'2' | b'3')
         })
     }
 
