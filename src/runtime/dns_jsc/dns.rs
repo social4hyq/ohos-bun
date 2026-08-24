@@ -5165,7 +5165,7 @@ impl Resolver {
         if n <= 0 {
             return false;
         }
-        buf[..n as usize].split(|&b| b == b'\n').any(|line| {
+        bun_core::strings::split(&buf[..n as usize], b"\n").any(|line| {
             if line.is_empty() {
                 return false;
             }

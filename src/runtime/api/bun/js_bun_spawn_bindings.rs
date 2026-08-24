@@ -1063,7 +1063,7 @@ fn spawn_maybe_sync<const IS_SYNC: bool>(
             // storage owned by `cstr_storage`/`inherited_env_storage` (both
             // still alive here) or a `c"..."` literal.
             let bytes = unsafe { CStr::from_ptr(ptr) }.to_bytes();
-            let key_end = bytes.iter().position(|&b| b == b'=').unwrap_or(bytes.len());
+            let key_end = strings::index_of_char_usize(bytes, b'=').unwrap_or(bytes.len());
             &bytes[..key_end] == b"PWD"
         };
         // `env: {...}` explicitly given by the caller: a PWD key in there is

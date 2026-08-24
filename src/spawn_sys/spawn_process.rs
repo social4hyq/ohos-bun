@@ -12,6 +12,7 @@ use core::sync::atomic::Ordering;
 
 #[cfg(target_os = "macos")]
 use bun_core::Output;
+use bun_core::strings;
 #[cfg(unix)]
 use bun_sys::FdExt as _;
 use bun_sys::{self, Fd};
@@ -1006,7 +1007,7 @@ pub unsafe fn spawn_process_posix(
         if &buf[..2] != b"#!" {
             break 'shim None;
         }
-        let line_end = match buf[..n].iter().position(|&b| b == b'\n') {
+        let line_end = match strings::index_of_char_usize(&buf[..n], b'\n') {
             Some(pos) => pos,
             // No newline in what we read. If we filled the whole buffer,
             // the real line may continue past it — treating `n` as the end
@@ -1023,7 +1024,7 @@ pub unsafe fn spawn_process_posix(
             i += 1;
         }
         let rest = &line[i..];
-        let (interp_b, arg_b): (&[u8], Option<&[u8]>) = match rest.iter().position(|&b| matches!(b, b' ' | b'\t')) {
+        let (interp_b, arg_b): (&[u8], Option<&[u8]>) = match strings::index_of_any(rest, b" \t") {
             Some(sp) => {
                 let interp = &rest[..sp];
                 let mut j = sp;

@@ -1286,7 +1286,7 @@ fn attrib_shadowed_by_create(buf: &[u8], mut off: usize, wd: i32, name: &[u8]) -
         }
         if ev.watch_descriptor == wd && ev.mask & bun_sys::linux::IN::CREATE != 0 {
             let raw = &buf[off + HEADER..next];
-            let ev_name = match raw.iter().position(|&b| b == 0) {
+            let ev_name = match strings::index_of_char_usize(raw, 0) {
                 Some(z) => &raw[..z],
                 None => raw,
             };

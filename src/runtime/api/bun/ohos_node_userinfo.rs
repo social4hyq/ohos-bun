@@ -37,7 +37,7 @@
 
 use core::ffi::{CStr, c_char};
 
-use bun_core::{Once, ZBox, env_var};
+use bun_core::{Once, ZBox, env_var, strings};
 use bun_sys as sys;
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -113,7 +113,7 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 // ─────────────────────────────────────────────────────────────────────────
 
 fn basename(path: &[u8]) -> &[u8] {
-    match path.iter().rposition(|&b| b == b'/') {
+    match strings::last_index_of_char(path, b'/') {
         Some(i) => &path[i + 1..],
         None => path,
     }
@@ -171,7 +171,7 @@ fn is_disabled(env_array: &[*const c_char]) -> bool {
     let shim_disable = find_env_value(env_array, b"OHOS_COMPAT_SHIM_DISABLE")
         .or_else(|| std::env::var_os("OHOS_COMPAT_SHIM_DISABLE").map(|v| v.into_encoded_bytes()));
     if let Some(v) = shim_disable {
-        if v.split(|&b| b == b',').any(|s| s == b"getpwuid_r") {
+        if strings::split(&v, b",").any(|s| s == b"getpwuid_r") {
             return true;
         }
     }
@@ -241,7 +241,7 @@ fn shim_identity() -> &'static ShimIdentity {
         let username = if !pw.pw_name.is_null() {
             // SAFETY: getpwuid_r NUL-terminates pw_name into `buf` on success.
             let bytes = unsafe { CStr::from_ptr(pw.pw_name) }.to_bytes();
-            (!bytes.is_empty() && !bytes.contains(&b'=') && !bytes.contains(&0))
+            (!bytes.is_empty() && !strings::contains_char(bytes, b'=') && !strings::contains_char(bytes, 0))
                 .then(|| Box::<[u8]>::from(bytes))
         } else {
             None
@@ -325,7 +325,7 @@ fn candidate_dirs(ident: &ShimIdentity) -> Vec<Vec<u8>> {
 }
 
 fn push_candidate(out: &mut Vec<Vec<u8>>, base: &[u8], suffix: &[u8]) {
-    if base.iter().any(|&b| matches!(b, b' ' | b'"' | b'\\' | b'\t')) {
+    if strings::index_of_any(base, b" \"\\\t").is_some() {
         return;
     }
     let mut v = Vec::with_capacity(base.len() + suffix.len());
@@ -500,7 +500,7 @@ pub fn is_managed_key(ptr: *const c_char) -> bool {
     // point is NUL-terminated storage that outlives this call, same
     // invariant `is_pwd_key` and `find_env_value` rely on.
     let bytes = unsafe { CStr::from_ptr(ptr) }.to_bytes();
-    let key_end = bytes.iter().position(|&b| b == b'=').unwrap_or(bytes.len());
+    let key_end = strings::index_of_char_usize(bytes, b'=').unwrap_or(bytes.len());
     matches!(&bytes[..key_end], b"NODE_OPTIONS" | b"BUN_OHOS_USERNAME")
 }
 
@@ -511,7 +511,7 @@ fn find_env_value(env_array: &[*const c_char], key: &[u8]) -> Option<Vec<u8>> {
         }
         // SAFETY: see `is_managed_key`.
         let bytes = unsafe { CStr::from_ptr(ptr) }.to_bytes();
-        let key_end = bytes.iter().position(|&b| b == b'=').unwrap_or(bytes.len());
+        let key_end = strings::index_of_char_usize(bytes, b'=').unwrap_or(bytes.len());
         if &bytes[..key_end] == key {
             // musl/glibc getenv() returns the FIRST match -- mirror that so
             // "existing" reflects what the child would actually observe.

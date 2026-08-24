@@ -107,7 +107,10 @@ describe("allRustTargets", () => {
       return rustTriple(os, arch, abi);
     });
 
-    const listed: string[] = [...allRustTargets].sort();
+    // The OHOS port never builds through .buildkite/ci.mjs (upstream's own
+    // Buildkite pipeline) — it builds via the harmonybrew tap's bun.rb formula
+    // instead — so it has no entry there by design, not by omission.
+    const listed: string[] = allRustTargets.filter(t => t !== "aarch64-unknown-linux-ohos").sort();
     expect(listed).toEqual([...new Set(built)].sort());
   });
 
@@ -120,7 +123,7 @@ describe("allRustTargets", () => {
 
     // rust:check-all reaches the remaining triples with -Zbuild-std; that path
     // is only exercised if the matrix really contains a Tier 3 triple.
-    expect(allRustTargets.filter(rustTargetIsTier3)).toEqual(["aarch64-unknown-freebsd"]);
+    expect(allRustTargets.filter(rustTargetIsTier3)).toEqual(["aarch64-unknown-linux-ohos", "aarch64-unknown-freebsd"]);
   });
 
   test("a Tier 3 target builds std from source with the flag rust:check-all shares", () => {

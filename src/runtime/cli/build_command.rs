@@ -1010,7 +1010,7 @@ impl BuildCommand {
                 #[cfg(target_env = "ohos")]
                 {
                     use std::os::unix::ffi::OsStrExt;
-                    let outfile_basename: &[u8] = match outfile.iter().rposition(|&b| b == b'/') {
+                    let outfile_basename: &[u8] = match strings::last_index_of_char(outfile, b'/') {
                         Some(i) => &outfile[i + 1..],
                         None => outfile,
                     };
