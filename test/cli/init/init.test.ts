@@ -319,9 +319,14 @@ const initEnv = { ...bunEnv, BUN_AGENT_RULE_DISABLED: "1" };
   // --react=tailwind and --react=shadcn's `build` script goes through
   // bun-plugin-tailwind, which needs @tailwindcss/oxide's native binding —
   // unavailable on OHOS (no prebuilt binary; see test/expectations.txt).
-  test.each(
-    process.platform === "openharmony" ? ["-y", "--react"] : ["-y", "--react", "--react=tailwind", "--react=shadcn"],
-  )(
+  //
+  // The tsc invocation itself is unrunnable on OHOS regardless of flag: TS7's
+  // bin/tsc execs a native compiler from @typescript/typescript-<os>-<arch>,
+  // and upstream does not publish @typescript/typescript-openharmony-arm64
+  // (same class as test/integration/bun-types/bun-types.test.ts's tsgo gap
+  // and test/regression/issue/24364.test.ts). `bun init` and its `bun install`
+  // still work fine on OHOS — only the typecheck/build step is unrunnable.
+  test.skipIf(process.platform === "openharmony").each(["-y", "--react", "--react=tailwind", "--react=shadcn"])(
     "bun init %s installs TypeScript 7, typechecks, and builds",
     async flag => {
       await using temp = tempDir(`bun-init-ts7${flag.replace(/[^a-z]+/g, "-")}`, {});
