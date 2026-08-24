@@ -4396,3 +4396,19 @@ r70 基线「原生绑定缺失/签名（2 个）」两条均已改测试修复�
    补签名分两轮才真正落地：第一轮（单次 sign+chmod）在**强制清空 `napi-app/{build,node_modules}` 触发真正从零构建**后暴露了两个新问题——① 单次签名不够可靠：OHOS 对刚签名文件的执行权限检查不总是立即生效（`null_addon.node`、`test_finalizer_iterator_invalidation.node` 首次干净构建报 `Permission denied`，几分钟后原地不动重新 require 却又能加载），和 herdr formula 的签名重试循环是同一类抖动；② 校验探针本身有假阳性：`ffi_addon_1.node`/`ffi_addon_2.node` 是 `bun:ffi` 的 `dlopen()` 目标，不是 NAPI 模块，裸 `require()` 必然报「symbol napi_register_module_v1 not found」——这个报错本身证明 dlopen 已经成功（只是符号解析对不上），不该被判定为签名失败去重签。改成 8 次上限的重签+校验循环，且校验只认 loader 级错误（`Error loading shared library`/`Permission denied`），干净重建复测两轮均 `175 pass / 0 fail`。
 
 两条都是「改测试修复」而非「quarantine」，因为都不是平台/内核层面测不出真实结果，是测试自身的依赖/构建脚本缺了 OHOS 特定的一步（换包 / 补签名），修完之后测的还是真实功能。
+
+## source-lints 自有 debt 3 条转绿（PR #419，2026-08-24 续三）
+
+r70 基线「原生绑定/签名」之外，「source-lints 6 个」里此前定性为「自己的补丁、可修」的 3 条也已改代码修复（`fix(ohos): clear source-lints debt`，fork commit `1df316a2c1`，tap PR [#419](https://github.com/social4hyq/homebrew-core/pull/419) 已合并，r75→r76）：
+
+1. **byte-search**：12 处标量字节扫描循环（`ohos_node_userinfo.rs` 7 处、`js_bun_spawn_bindings.rs`/`dns.rs`/`path_watcher.rs`/`build_command.rs`/`spawn_process.rs` 各 1-2 处，均命中我们自己的 OHOS commit）改用 `bun_core::strings` 的 SIMD 分发实现。
+2. **build-rust**：`rustTargetIsTier3()` 在给 `allRustTargets` 加 `aarch64-unknown-linux-ohos` 时没同步更新——**不只是 lint 不一致，是真 bug**：`cargoBuildInvocation()` 用 `tier3 || release || asan` 门控 `-Zbuild-std`，OHOS 确实没有 rustup 预编译 std（`bun.rb` 自己单独 stage 了一份 rust-nightly+rust-src），一个假设中经这条脚本路径跑的 debug/非 asan OHOS 构建会漏加 `-Zbuild-std`。已修函数本身，不是只改测试期望。另把 OHOS 从 `.buildkite/ci.mjs`（上游自己的 Buildkite 矩阵，本 fork 从不走）的比对里排除，注释写明原因。
+3. **vm-thread-door**：`read_file.rs` 的 `WorkPool::schedule*` 计数 2→3，出自一次非 OHOS 专属的 commit（T24 并发读循环修复，windows/non-windows 拆分导致同一个已审查过、不需要 Ticket 的 `ReadFile` 类型多出一次文本命中，非新增不安全模式），用 lint 自带的 `--update` 重新生成 inventory。
+
+**真机验证**：CI（pr-validate）跑完整源码构建 + `brew test`，全绿（`build (bun)/build` 17m50s）；合并后本机 `brew upgrade` 到 `bun 1.4.0_76`，对 6 处改动分别做了功能烟测——`dns.lookup`、`spawnSync` 传 cwd 校验子进程 `$PWD`、`os.userInfo()`、`bun build --compile`+执行产物、`fs.watch` 建文件触发事件、执行 `#!/bin/sh` shebang 脚本，全部正常；source-lints 三文件在 r76 上复测 58/58。
+
+## `fs.test.ts` EFBIG 用例改测试修复（2026-08-24 续四）
+
+`test/js/node/fs/fs.test.ts` 里 `"surfaces EFBIG when RLIMIT_FSIZE truncates a write"`（第 3989 行附近）此前用 `sh -c 'ulimit -f 2048; ...'`——根因已在本轮早前定位：OHOS 的 `/bin/sh` 是 toybox，其 `ulimit -f` 内建是静默 no-op，`RLIMIT_FSIZE` 从未真正生效，写入永远不截断，测试永远看不到 `EFBIG`。真机验证过 `bash -c 'ulimit -f 2048'` 能正常生效（`ulimit -f` 读回 `2048`）。改动：`process.platform === "openharmony"` 时把 shell 从 `sh` 换成 `bash`（本机自带），其余平台不变。真机复测该用例转绿，全文件 `501 pass / 0 fail / 19 skip` 无回归。fork commit `f88b6bedcf`，纯测试文件改动不涉及 bun 二进制，未走 tap PR。
+
+**留档**：同文件里更早的 `"writeFileSync when the write fails partway"` describe 块（约第 841 行）目前整块 `skipIf(!isLinux || process.platform === "openharmony")`，注释给的是另一套（本会话未复核）归因（"OHOS 的 RLIMIT_FSIZE 强制执行和主线 Linux 不同，越界写会得到 code: none 而非 EFBIG"）。鉴于这轮查明的真相是"toybox sh 的 ulimit -f 根本没生效"，这条注释的归因很可能同样是误诊，该块本次未动，值得下一轮用同样的 `bash -c` 方案复核一遍是否也能转绿。
