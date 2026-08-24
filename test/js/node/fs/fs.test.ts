@@ -4004,8 +4004,11 @@ describe("createWriteStream", () => {
       s.write(big);
       s.end();
     `;
+    // OHOS's `sh` is toybox, whose `ulimit -f` builtin is a silent no-op (RLIMIT_FSIZE
+    // never actually gets set); `bash` (present on OHOS) implements it correctly.
+    const ulimitShell = process.platform === "openharmony" ? "bash" : "sh";
     await using proc = Bun.spawn({
-      cmd: ["sh", "-c", `ulimit -f 2048; exec "${bunExe()}" -e '${script.replace(/'/g, "'\\''")}'`],
+      cmd: [ulimitShell, "-c", `ulimit -f 2048; exec "${bunExe()}" -e '${script.replace(/'/g, "'\\''")}'`],
       env: bunEnv,
       stdout: "pipe",
       stderr: "pipe",
