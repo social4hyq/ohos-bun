@@ -319,14 +319,9 @@ const initEnv = { ...bunEnv, BUN_AGENT_RULE_DISABLED: "1" };
   // --react=tailwind and --react=shadcn's `build` script goes through
   // bun-plugin-tailwind, which needs @tailwindcss/oxide's native binding —
   // unavailable on OHOS (no prebuilt binary; see test/expectations.txt).
-  //
-  // The tsc invocation itself is unrunnable on OHOS regardless of flag: TS7's
-  // bin/tsc execs a native compiler from @typescript/typescript-<os>-<arch>,
-  // and upstream does not publish @typescript/typescript-openharmony-arm64
-  // (same class as test/integration/bun-types/bun-types.test.ts's tsgo gap
-  // and test/regression/issue/24364.test.ts). `bun init` and its `bun install`
-  // still work fine on OHOS — only the typecheck/build step is unrunnable.
-  test.skipIf(process.platform === "openharmony").each(["-y", "--react", "--react=tailwind", "--react=shadcn"])(
+  test.each(
+    process.platform === "openharmony" ? ["-y", "--react"] : ["-y", "--react", "--react=tailwind", "--react=shadcn"],
+  )(
     "bun init %s installs TypeScript 7, typechecks, and builds",
     async flag => {
       await using temp = tempDir(`bun-init-ts7${flag.replace(/[^a-z]+/g, "-")}`, {});
@@ -343,6 +338,34 @@ const initEnv = { ...bunEnv, BUN_AGENT_RULE_DISABLED: "1" };
         init.exited,
       ]);
       expect({ initStdout, initStderr, initExited }).toMatchObject({ initExited: 0 });
+
+      if (process.platform === "openharmony") {
+        // Upstream's TS7 tsc execs a native compiler from
+        // @typescript/typescript-<os>-<arch>, and does not publish an
+        // openharmony-arm64 one. @ohos-npm-ports/typescript@7.0.2-2 bundles a
+        // working native compiler for OHOS (7.0.2-1 crashed at startup on
+        // fanotify_init(); -2 fixed it). Re-point at it and reinstall — bun
+        // init's own package.json (written above) has no room for this, so
+        // patch it in after the fact and reinstall from scratch.
+        const pkgPath = path.join(temp, "package.json");
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+        pkg.overrides = { typescript: "npm:@ohos-npm-ports/typescript@7.0.2-2" };
+        fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+        fs.rmSync(path.join(temp, "bun.lock"), { force: true });
+
+        await using reinstall = Bun.spawn({
+          cmd: [bunExe(), "install"],
+          cwd: temp,
+          stdio: ["ignore", "pipe", "pipe"],
+          env: initEnv,
+        });
+        const [reinstallStdout, reinstallStderr, reinstallExited] = await Promise.all([
+          reinstall.stdout.text(),
+          reinstall.stderr.text(),
+          reinstall.exited,
+        ]);
+        expect({ reinstallStdout, reinstallStderr, reinstallExited }).toMatchObject({ reinstallExited: 0 });
+      }
 
       const tsPkg = JSON.parse(fs.readFileSync(path.join(temp, "node_modules/typescript/package.json"), "utf8"));
       expect(tsPkg.version).toStartWith("7.");

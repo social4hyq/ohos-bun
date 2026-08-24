@@ -308,7 +308,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 #
 # Four entries are kept below because they fail 100% deterministically
 # (not flaky) for real, still-uninvestigated reasons — see OHOS_TEST_TODO.md.
-[ OPENHARMONY ] test/regression/issue/24364.test.ts [ Skip ] # react-tailwind template's tsc --noEmit needs @typescript/typescript-openharmony-arm64, which upstream does not publish (same class as test/integration/bun-types/bun-types.test.ts's tsgo gap)
 
 # --- cli/hot + cli/inspect: OHOS unix socket / sourcemap timing ---
 # Patched in-place: inspect unix-domain-socket tests use tmpdirSync() on OHOS
