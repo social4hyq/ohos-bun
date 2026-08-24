@@ -4385,3 +4385,12 @@ r70 基线 53 真实失败 → r73 修复 `test-cwd-enoent-improved-message.js` 
 **根因坐实**：`/proc/net/route` + `/proc/net/dev` 显示本机有一个活跃的 `vpn-tun` 接口（累计收发均 ~1.37GB，非闲置），承载 `172.19.0.0/30` 隧道子网——和之前 curl 探测到的伪连接源地址 `172.19.0.1` 精确对应。这是标准的 TUN 模式透明代理客户端行为：本地进程接管出公网的 SYN、立即在本地完成"握手"给调用方一个真实可用的已连接 socket，再由代理自己决定怎么处理/转发实际流量——目标可达就正常代理，不可达就悬空。
 
 **最终归类**：`test-net-autoselectfamily.js` 的失败、以及此前「SIGTERM×2（`google.com` 不可达）」的两个测试（`test-http(s)-get-can-use-Agent.ts`），大概率是**同一个根因**——都不是"连不上被拒绝"，而是"被本机 VPN 客户端假装连上了，然后永远等不到真实响应"。三者都改归为**验证环境限制**（本机 VPN/透明代理客户端伪造 TCP 握手），与 bun 代码、OHOS 平台、`has_global_ipv6` 均无关；GitHub Actions CI runner 没有这个 VPN 客户端，这几个测试在 CI 环境应该能正常通过。`has_global_ipv6` 的 ULA 修复（r75）本身仍然有效、予以保留，只是和这几个失败无关。**不建议在 bun 侧做任何"绕过 VPN 检测/更保守判定 connect 成功"的规避——那是治标不治本，真实原因是本机测试环境本身带了一个会干扰网络语义的透明代理，应该在跑这类网络测试前临时关掉它，而不是让 bun 去猜测/防御一个用户自己开的代理。**
+
+## 「原生绑定/签名」2 个转绿：datadog-pprof 换 ohos-ports 产物 + napi.test.ts 补签名（2026-08-24 续二）
+
+r70 基线「原生绑定缺失/签名（2 个）」两条均已改测试修复，非 quarantine：
+
+1. **`datadog-pprof.test.ts`**：上游 `@datadog/pprof@5.17.0` 无 `openharmony-arm64` 预编译；`@ohos-ports/datadog-pprof@5.17.0-1`（ohos-ports/ohos-ports [#7](https://github.com/ohos-ports/ohos-ports/pull/7)，已合并，真机+社区 CI 双验证，见 `docs/ohos-ports-pending-packages.md`）是同一份 5.17.0 源码补了 OHOS 预编译产物的重发布。测试 fixture 在 `process.platform === "openharmony"` 时把依赖改成 `"npm:@ohos-ports/datadog-pprof@5.17.0-1"`，和 `test/integration/esbuild/esbuild.test.ts` 的 OHOS 版本切换是同一模式。真机复测：`1 pass`。
+2. **`napi.test.ts`**：`beforeAll` 里 `bun install --verbose` 触发 napi-app 的 node-gyp 构建，这条路径不经过 bun 自己会自动签名的安装/构建管线——和 `uv.test.ts`/`uv_stub.test.ts` 此前已修的坑是同一个（`docs` 开头的「本次会话已完成的修复」清单）。补了同款 `binary-sign-tool sign -selfSign 1` 步骤，对每个新构建出的 `build/Debug/*.node` 签名，`process.platform === "openharmony"` 门控。因为本机已有从早前会话留下的、已签名过的构建产物（`needsInstall()` 判定不需要重新构建），这次改动没有强制清空 `napi-app/build`/`node_modules` 触发新代码路径的真实执行——用现有产物复测 `175 pass / 0 fail` 只证明改动本身语法正确、不破坏现状，签名分支要等下一次真正从零构建（比如 CI 干净检出）才会被验证到。
+
+两条都是「改测试修复」而非「quarantine」，因为都不是平台/内核层面测不出真实结果，是测试自身的依赖/构建脚本缺了 OHOS 特定的一步（换包 / 补签名），修完之后测的还是真实功能。
