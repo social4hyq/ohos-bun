@@ -4356,3 +4356,13 @@ r70 基线「平台/沙箱 5（deleted-cwd×2）」里 `test-cwd-enoent-improved
 r70 基线 53 真实失败 → r73 修复 `test-cwd-enoent-improved-message.js` 1 条 → **52 真实失败**，去重后通过率 **99.09% → 99.11%**（5792/5844）。
 
 **`test-net-autoselectfamily.js` 仍未修复（r71 IPv6 修复失效）**：`has_global_ipv6()`（`src/runtime/dns_jsc/dns.rs:5154`）只过滤首字节 `00`（::1 loopback）和 `fe`（fe80::/10 link-local），漏了 `fc`/`fd`（ULA `fc00::/7`，IPv6 的 RFC1918 等价物）。真机 `wlan0`/`vpn-tun` 带 `fdfd9db9...` 等 ULA 地址，`has_global_ipv6()` 误判「有全局 IPv6」→ 不强制 AF_INET → `dns.lookup({all:true})` 仍返回 AAAA → `net.autoselectfamily` 仍只拿到单条 IPv6（少 5 条）。修法：只认 `2000::/3`（首 hex digit `2`/`3`）为全局 IPv6，`00`/`fe`/`fc`/`fd` 全过滤。**待下一轮修复**。
+
+## r75 修复 + 归因订正：`test-net-autoselectfamily.js` 与 `has_global_ipv6` 无关（2026-08-24）
+
+`has_global_ipv6()` 的 ULA 误判已按上条方案修复并发布：fork commit `e5e901557b`（`src/runtime/dns_jsc/dns.rs`，只认 `2000::/3` 为全局 IPv6），tap PR [#415](https://github.com/social4hyq/homebrew-core/pull/415) 已合并（r74→r75），真机 `brew upgrade` 到 `bun 1.4.0_75` 验证过 bottle 正常安装。
+
+**但上条归因是错的，未对着代码验证就按失败签名字面猜测**：`bun run test/js/node/test/parallel/test-net-autoselectfamily.js` 复测，r75 下**签名完全没变**（仍是「6 个候选地址只尝试了 1 个」）。逐条查该文件发现，全部 5 个子用例都用 `lookup: createMockedLookup(...)` 自带一份假地址表，完全绕开 bun 内部 DNS 解析器——`has_global_ipv6()` 只在 `do_lookup()` 内部路径（`family` 未指定时）才被调用，这个测试根本走不到那条路径。ULA 修复是一个真实存在的独立 DNS bug（`dns.lookup({all:true})` 场景），但和这个测试无关。
+
+**真实根因（真机插桩，2026-08-24）**：直接用 bun 和 curl 探测发现，测试环境下**任意 outbound TCP connect 到任意 IP:port（含不可路由的 `203.0.113.1` TEST-NET-3 地址）都在个位数毫秒内"连接成功"**——`curl -v` 也复现同一现象（`Established connection` 后卡死收不到数据），排除是 bun 自身 bug，指向本地网络路径上有透明代理/NAT（探测到的源地址 `172.19.0.1` 是私网段）无差别伪造握手成功。`test-net-autoselectfamily.js` 的 happy-eyeballs 测试逻辑依赖「假地址会连接失败」这个前提，在这种网络下必然测不出真实结果，与 bun/OHOS 均无关。
+
+**处置**：这条从「运行时真实失败」改归为「验证环境限制」——不确定是（a）本机固定的网络中间件，还是（b）仅在跑这次诊断用的工具出网路径里才有的沙箱代理伪影；需要在不经过该工具的真实终端会话里复测同一 TCP 探测才能定性。若确认是本机固定现象，`expectations.txt` 该按「本地网络无法验证 happy-eyeballs 失败路径」的理由 quarantine，而不是当作 bun/has_global_ipv6 的锅。
