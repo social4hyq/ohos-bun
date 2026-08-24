@@ -4431,3 +4431,17 @@ r70 基线「原生绑定/签名」之外，「source-lints 6 个」里此前定
 **已清理**：draft PR #422（关闭，带证伪说明）、tap 分支 `diag-bun-probe-terminal-race`（本地+远端已删）、fork 分支 `debug/waiter-thread-terminal-race`（本地+远端已删）、本机 `bun-probe` keg 已卸载。
 
 **现状**：`bun-security-scanner-matrix-without-node-modules.test.ts` 192/720 失败的真实根因**依然未知**，需要下一轮重新从这个测试文件本身出发排查（而不是从一个自造的 PTY 最小复现脚本出发），并且这次要对任何"提前/延迟"类时序结论强制打时间戳，不能只看日志打印顺序。
+
+## `bun-security-scanner-matrix` 真实根因找到并修复：PTY 排空竞态（2026-08-24 续六）
+
+回到测试文件本身直接跑，不再从自造复现脚本出发，很快拿到了真实失败数据：所有失败案例都精确停在 `"...Continue anyway? [y/N] "`——不管 `ttyResponse` 是 `y` 还是 `n`。关键线索是失败断言的位置：`expect(exitCode).toBe(expectedExitCode)`（第 349 行）**先于**字符串断言执行且从未报错，说明子进程其实是**以正确退出码**结束的（正确处理了 y/N 响应）。真正丢失的只是子进程退出前打印的最后一段文本（"Installation cancelled."/"Continuing with installation..."），`Bun.Terminal` 的 `data()` 回调没收到。
+
+**根因**：`proc.exited`（`wait4()`）和 PTY 主端真正排空最后一批缓冲输出，是两个独立事件——本机上这两者之间的间隙可以大到测试来不及等。用单独脚本量证：一个只打印一行就退出的子进程，`data()` 收到最后一行的时间点确实会晚于 `proc.exited` resolve（曾用 `Bun.sleep(300)` 补一段等待后单测直接转绿，验证了这个假设）。原先怀疑 `Bun.Terminal` 自带的 `exit` 回调（"PTY stream closes (EOF or read error)"）是更精确的排空完成信号，但接入后该回调本身有时**根本不触发**、拖到 5000ms 测试超时才被杀（疑似另一个 HongMeng 内核 PTY EOF 检测缺陷，和已知的 epoll dup+DEL 泄漏、epoll_pwait2 超时失效是同一类"这个内核在 PTY/epoll 边界条件上不可靠"的现象，未继续深挖，超出本轮范围）。最终用的是更稳的方案：`proc.exited` 之后轮询，要求"距上次收到数据已静默一段时间"**且**"距退出已过最短下限"两个条件同时满足才停止等待（下限单独判断是因为最后一批输出到达前本身可能有一段静默期，纯"静默窗口"会在这段静默期里被误判为"已经排空完"而提前退出）。
+
+**改动**（fork commit `42f18aafa8`，纯测试文件，未涉及 bun 二进制，未走 tap PR）：`test/cli/install/bun-security-scanner-matrix-runner.ts` 的 `hasTTY` 分支里，`proc.exited` 后加一段 `process.platform === "openharmony"` 才生效的排空轮询（最短 400ms + 静默 150ms 双条件，封顶 3000ms 防真卡死）；同时给 `hasTTY` 用例的 `test()` 调用在 OHOS 上把超时从默认 5000ms 提到 10000ms——第一版只加排空轮询时，全量 720 跑下暴露出一批用例精确卡在 5000ms 超时（单独跑这些用例都很快，只有跑满 720 个测试、系统负载上来后才会踩线），加超时余量后这批全部消失。
+
+**真机验证**（`bun 1.4.0_76`，全量 720 用例顺序跑一遍）：`496 pass/192 fail/20 errors` → `662 pass/26 fail/26 errors`。
+
+**残留 26/720**：和上面这次排空竞态是两回事，特征是——单独跑必过（1.5-4s 内完成），只在全量 720 跑之后才会在某个用例上彻底卡死到超时（不是变慢，是真卡死，超时从 5s 提到 10s 卡住的还是同一批、同一数量）。这个特征和已有的 [[project_ohos_epoll_dup_del_leak]] 记录（`Bun.Terminal` 每次实例化都会泄漏一条 epoll 注册，累积到一定数量后某个新 Terminal 实例会"数据摆在 PTY 主端缓冲区里但 `data()` 回调永远不触发"）完全吻合——720 个用例里 hasTTY 分支占了约五百多个 `Bun.Terminal` 分配，全量跑足以累积到触发阈值，单测隔离跑不会攒够。这是该内核缺陷已知修复方向范围内的事（关闭时不发 `epoll_ctl(DEL)`，靠 close 隐式回收），不在本轮 test 文件修复范围内，留给那条 bug 线跟进。
+
+**教训**：这次严格按"回到失败的测试文件本身，而不是从一个自造复现脚本出发"的路径重新排查，比上一轮（续五）快得多也准得多——上一轮从一个凭空写的 PTY repro 脚本出发，绕了一大圈还得出了错误结论。
