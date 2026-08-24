@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "bun";
 import { beforeAll, describe, expect, it } from "bun:test";
-import { existsSync, readdirSync, readFileSync, statSync } from "fs";
+import { chmodSync, existsSync, readdirSync, readFileSync, renameSync, statSync } from "fs";
 import {
   bunEnv,
   bunExe,
@@ -63,6 +63,36 @@ beforeAll(async () => {
       process.exit(1);
     }
     console.timeEnd("Building node-gyp");
+
+    if (process.platform === "openharmony") {
+      // `bun install` here runs node-gyp's own build, not bun's install/build
+      // pipeline, so nothing signs the resulting .node files (same gap as
+      // test/napi/uv.test.ts) — dlopen then fails with EACCES/Permission denied.
+      const debugDir = join(__dirname, "napi-app/build/Debug");
+      for (const f of readdirSync(debugDir)) {
+        if (!f.endsWith(".node")) continue;
+        const built = join(debugDir, f);
+        const signed = `${built}.signed`;
+        const sign = spawnSync({
+          cmd: [
+            "binary-sign-tool",
+            "sign",
+            "-selfSign",
+            "1",
+            "-inFile",
+            built,
+            "-outFile",
+            signed,
+          ],
+        });
+        if (!sign.success) {
+          console.error(`failed to sign ${built}, bailing out!`);
+          process.exit(1);
+        }
+        renameSync(signed, built);
+        chmodSync(built, 0o755);
+      }
+    }
   }
   // node-gyp rebuild can take a while under a debug/ASAN binary (and the
   // hook may first download an ABI-matching node); default 5s hook timeout
