@@ -4366,3 +4366,22 @@ r70 基线 53 真实失败 → r73 修复 `test-cwd-enoent-improved-message.js` 
 **真实根因（真机插桩，2026-08-24）**：直接用 bun 和 curl 探测发现，测试环境下**任意 outbound TCP connect 到任意 IP:port（含不可路由的 `203.0.113.1` TEST-NET-3 地址）都在个位数毫秒内"连接成功"**——`curl -v` 也复现同一现象（`Established connection` 后卡死收不到数据），排除是 bun 自身 bug，指向本地网络路径上有透明代理/NAT（探测到的源地址 `172.19.0.1` 是私网段）无差别伪造握手成功。`test-net-autoselectfamily.js` 的 happy-eyeballs 测试逻辑依赖「假地址会连接失败」这个前提，在这种网络下必然测不出真实结果，与 bun/OHOS 均无关。
 
 **处置**：这条从「运行时真实失败」改归为「验证环境限制」——不确定是（a）本机固定的网络中间件，还是（b）仅在跑这次诊断用的工具出网路径里才有的沙箱代理伪影；需要在不经过该工具的真实终端会话里复测同一 TCP 探测才能定性。若确认是本机固定现象，`expectations.txt` 该按「本地网络无法验证 happy-eyeballs 失败路径」的理由 quarantine，而不是当作 bun/has_global_ipv6 的锅。
+
+## 最终定案：`vpn-tun` 透明代理伪造 WAN TCP 握手，与 bun/OHOS/工具沙箱均无关（2026-08-24 续）
+
+上条留的两个悬念（本机固定现象 vs 诊断工具沙箱伪影）已用真实终端（`!` 前缀，绕开本会话 Bash 工具自己的出网路径）交叉验证排除：真实终端里裸 `connect()+epoll_wait()+getsockopt(SO_ERROR)+getpeername()` 探针（不含一行 bun/uSockets 代码）复现了完全相同的现象，说明**不是工具沙箱伪影，是本机固定的网络行为**；而真实终端里 `curl` 表面上的"超时"其实是假象——`curl -v` 同样打印了 `Established connection`（说明 curl 在 TCP 层被同一现象骗了），只是它接着等真实 HTTP 响应数据等不到，撞了自己的 `-m 5` 总超时，看起来像"正常超时拒绝"，实际是同一根因的另一种表现形式。
+
+**分场景对照实验（真实终端，`logs/net-connect-probe-2026-08-24/epoll_connect_probe2.c`）钉死了边界**：
+
+| 目标 | `epoll_wait` 事件 | `SO_ERROR` | `getpeername()` | 结论 |
+|---|---|---|---|---|
+| loopback（`127.0.0.1`/`::1`）关闭端口 | `EPOLLERR\|EPOLLHUP` | `111 ECONNREFUSED` | 失败（`ENOTCONN`）| ✅ 正确 |
+| 局域网主机（`172.16.105.2`）关闭端口 | `EPOLLERR\|EPOLLHUP`，真实 17ms 往返 | `111 ECONNREFUSED` | 失败 | ✅ 正确 |
+| 局域网主机真实开放端口（`:22`）| 纯 `EPOLLOUT` | `0` | 成功 | ✅ 正确（真连上了）|
+| 任意 **WAN** 目标（不可路由的 `203.0.113.1`、真实主机关闭端口、IPv6）| 纯 `EPOLLOUT`，**<3ms 返回** | `0` | **成功**（内核判定 ESTABLISHED）| ❌ 假成功 |
+
+只有出公网的连接被无差别伪造成功，loopback/局域网完全正常——`getpeername()` 都判定为 ESTABLISHED，说明这层欺骗发生在 TCP 协议栈之下，任何用户态程序（bun、curl、裸 C）都无法从 socket API 分辨真假。
+
+**根因坐实**：`/proc/net/route` + `/proc/net/dev` 显示本机有一个活跃的 `vpn-tun` 接口（累计收发均 ~1.37GB，非闲置），承载 `172.19.0.0/30` 隧道子网——和之前 curl 探测到的伪连接源地址 `172.19.0.1` 精确对应。这是标准的 TUN 模式透明代理客户端行为：本地进程接管出公网的 SYN、立即在本地完成"握手"给调用方一个真实可用的已连接 socket，再由代理自己决定怎么处理/转发实际流量——目标可达就正常代理，不可达就悬空。
+
+**最终归类**：`test-net-autoselectfamily.js` 的失败、以及此前「SIGTERM×2（`google.com` 不可达）」的两个测试（`test-http(s)-get-can-use-Agent.ts`），大概率是**同一个根因**——都不是"连不上被拒绝"，而是"被本机 VPN 客户端假装连上了，然后永远等不到真实响应"。三者都改归为**验证环境限制**（本机 VPN/透明代理客户端伪造 TCP 握手），与 bun 代码、OHOS 平台、`has_global_ipv6` 均无关；GitHub Actions CI runner 没有这个 VPN 客户端，这几个测试在 CI 环境应该能正常通过。`has_global_ipv6` 的 ULA 修复（r75）本身仍然有效、予以保留，只是和这几个失败无关。**不建议在 bun 侧做任何"绕过 VPN 检测/更保守判定 connect 成功"的规避——那是治标不治本，真实原因是本机测试环境本身带了一个会干扰网络语义的透明代理，应该在跑这类网络测试前临时关掉它，而不是让 bun 去猜测/防御一个用户自己开的代理。**
