@@ -4412,3 +4412,22 @@ r70 基线「原生绑定/签名」之外，「source-lints 6 个」里此前定
 `test/js/node/fs/fs.test.ts` 里 `"surfaces EFBIG when RLIMIT_FSIZE truncates a write"`（第 3989 行附近）此前用 `sh -c 'ulimit -f 2048; ...'`——根因已在本轮早前定位：OHOS 的 `/bin/sh` 是 toybox，其 `ulimit -f` 内建是静默 no-op，`RLIMIT_FSIZE` 从未真正生效，写入永远不截断，测试永远看不到 `EFBIG`。真机验证过 `bash -c 'ulimit -f 2048'` 能正常生效（`ulimit -f` 读回 `2048`）。改动：`process.platform === "openharmony"` 时把 shell 从 `sh` 换成 `bash`（本机自带），其余平台不变。真机复测该用例转绿，全文件 `501 pass / 0 fail / 19 skip` 无回归。fork commit `f88b6bedcf`，纯测试文件改动不涉及 bun 二进制，未走 tap PR。
 
 **留档**：同文件里更早的 `"writeFileSync when the write fails partway"` describe 块（约第 841 行）目前整块 `skipIf(!isLinux || process.platform === "openharmony")`，注释给的是另一套（本会话未复核）归因（"OHOS 的 RLIMIT_FSIZE 强制执行和主线 Linux 不同，越界写会得到 code: none 而非 EFBIG"）。鉴于这轮查明的真相是"toybox sh 的 ulimit -f 根本没生效"，这条注释的归因很可能同样是误诊，该块本次未动，值得下一轮用同样的 `bash -c` 方案复核一遍是否也能转绿。
+
+## `bun-security-scanner-matrix` 192/720 失败：WaiterThread 假设已证伪，根因待重查（2026-08-24 续五）
+
+上一轮把 192/720 失败（`advisories: warn` 用真实 `Bun.Terminal` 的用例）归因为 `src/spawn/process.rs` 的 `WaiterThread::loop_()` 里 `wait4(pid, WNOHANG)` 在 PTY 场景下提前虚报子进程已退出（`Ok(r.pid==pid, status=0)` 但子进程实际仍存活）。这个结论**是错的**，记录下来避免下一轮重复踩坑：
+
+**误判是怎么发生的**：早前用 `BUN_DEBUG_WAITER_THREAD=1` 调试构建（`bun-probe` 诊断 formula，走 tap draft PR #422 + GitHub CI 编译，绕开本机容器锁冲突）跑 PTY 复现脚本，日志里 `[data event] "n"`（terminal.write 后的回显）和 `wait4() Ok r.pid=X status=0x0 matched=true` 这两行紧挨着打印，据此判断"wait4 在 terminal.write 后几毫秒内就虚报退出"——但从未给这两行打过真实时间戳，纯粹是**把日志文本行相邻误读成了时间上紧邻**。用同一个子进程脚本去掉 `terminal:` 换成普通 pipe stdio 跑对照组，同样是两行紧挨着打印但整体 wall time 精确落在真实的 3126ms，这时才意识到问题。
+
+**证伪过程**：基于"提前虚报"假设设计了一个 `kill(pid, 0)` 二次确认的候选修复（wait4 匹配后，只有 `kill(pid,0)` 也返回 `ESRCH` 才真正采信，否则当噪声继续轮询），叠加到同一个调试分支重新走 CI 编译出 `bun-probe` probe2。用 `date +%s%3N` 显式量了 wall-clock 时间做严格 A/B 对照（同一台设备、同一复现脚本、各跑 3 次）：
+
+| 版本 | 3 次 wall time |
+|---|---|
+| probe1（原始假设代码，无修复） | 3535ms / 3174ms / 3167ms |
+| probe2（加 `kill(pid,0)` 确认） | 3666ms / 3172ms / 3154ms |
+
+两组统计上没有差异，且都精确落在子进程真实的 ~3000ms 退出时刻附近——`wait4()` 从头到尾没有提前虚报过，`kill(pid,0)` 补丁修的是不存在的 bug。`WaiterThread::loop_()` 的轮询本身是对的：日志里两次 `matched=false` 后为什么直接跳到几秒后的 `matched=true`、中间没有更多轮询打印，原因未查（大概率是 SIGCHLD 驱动的睡眠等待，而非忙轮询），但这不影响"退出判定本身是及时且正确的"这个结论。
+
+**已清理**：draft PR #422（关闭，带证伪说明）、tap 分支 `diag-bun-probe-terminal-race`（本地+远端已删）、fork 分支 `debug/waiter-thread-terminal-race`（本地+远端已删）、本机 `bun-probe` keg 已卸载。
+
+**现状**：`bun-security-scanner-matrix-without-node-modules.test.ts` 192/720 失败的真实根因**依然未知**，需要下一轮重新从这个测试文件本身出发排查（而不是从一个自造的 PTY 最小复现脚本出发），并且这次要对任何"提前/延迟"类时序结论强制打时间戳，不能只看日志打印顺序。
