@@ -4568,3 +4568,17 @@ r70 基线「原生绑定/签名」之外，「source-lints 6 个」里此前定
 **A/B 直接验证**：用 `-t` 过滤单独跑 `readyState`/`close()` 那几个用例（脱离另外 ~113 个用例的并发压力），**全部一次性干净通过**（`6 pass/0 fail`，几百毫秒内完成）。同一份测试代码，唯一变量是"是否跟另外 113 个并发 WebSocket server+client 一起挤在同一进程里跑"，结果从"稳定通过"变成"稳定有 2-8 个超时"——这本身就是"功能逻辑正确、纯粹是并发资源争抢"的直接证据，不需要额外插桩：真实起 100+ 个 `Bun.serve` + 客户端连接对本机这种资源受限的沙箱设备是不小的压力，而 `readyState`/`close()` 这几个用例恰好是文件里少数几个**没有**标 `.concurrent` 的，被大批并发用例挤占调度窗口时最容易撞满 10s 默认超时。
 
 **改动**：新增 `test/expectations.txt` 条目 `[ OPENHARMONY ] test/js/bun/websocket/websocket-server.test.ts [ Flaky ]`，对齐既有的 `terminal.test.ts`/`repl.test.ts` 处理方式（多数用例正常、少数用例在并发/平台压力下不稳定，quarantine 整文件而非试图拆分或改测试逻辑）。之所以这条选择 quarantine 而不是像 `node-net.test.ts #13126` 那样只记录不 quarantine：11 轮里从未出现过 0-fail 的干净跑法（`node-net.test.ts` 是单个用例 100% 确定性失败但其余 82 个用例 100% 稳定；这条是"每轮都会有若干个不确定是哪几个"的真并发抖动，会持续污染 CI 红/绿信号），且失败范围明确、有直接 A/B 证据支撑，quarantine 风险低。
+
+## `next-build.test.ts`：quarantine 理由是陈旧的，真实拦截点是 `bun:internal-for-testing`（2026-08-25 续十六）
+
+复查这条历史台账时发现同一个测试文件在不同轮次留下了**互相矛盾**的失败签名记录：早期几轮记的是"tarball 完整性校验失败"（网络类）、"turbo.createProject not supported by wasm bindings"、"Expected: 0, Received: 1"（未细查），line 375 那轮明确记过"顶层 `import ... from bun:internal-for-testing` ENOENT，release 构建没这个内部模块"，但当前 `test/expectations.txt:212` 挂的理由却是"next-swc unsupported platform openharmony/arm64"——跟 line 375 那轮的结论对不上。
+
+**真机重跑坐实**：`bun test test/integration/next-pages/test/next-build.test.ts`，159ms 内确定性失败：
+
+```
+error: ENOENT reading "bun:internal-for-testing"
+```
+
+单独用 `bun -e` 测 `import("bun:internal-for-testing")` 同样 `ENOENT`——这是当前 release 构建里就没有的内部模块（跟本会话早前复核 `run-crash-handler.test.ts` 时确认的是同一个已知大类）。因为这是文件顶层 `import` 语句，**代码根本没机会跑到任何 next-swc 相关路径**——`next-swc unsupported platform` 这个理由描述的是这个 import 语句失败之后才会触达的更深一层，现在的构建连那一层都够不着，理由已经过时。`dev-server.test.ts`/`dev-server-ssr-100.test.ts` 顶部同样有这行 import，真机复测同样 100% 确定性 `ENOENT`，是同一簇。
+
+**改动**：更新 `test/expectations.txt` 这 3 条的理由为 `bun:internal-for-testing ENOENT in release build`，保留原有 `[ Skip ]` quarantine（结论不变，behind-the-import 的 next-swc 是否真的不支持这台平台目前无法验证，也不重要——反正到不了那一步）。

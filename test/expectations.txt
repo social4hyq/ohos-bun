@@ -205,11 +205,16 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # Both class D. Keeping quarantine.
 [ OPENHARMONY ] test/cli/install/bun-upgrade.test.ts [ Skip ] # OHOS has no bun release binary for upgrade download + staging dir recreation differs
 
-# next-pages: next-swc has no openharmony-arm64 binary; all 3 tests fail at
-# "unsupported platforms openharmony/arm64". Class D. Keeping quarantine.
-[ OPENHARMONY ] test/integration/next-pages/test/dev-server.test.ts [ Skip ] # next-swc unsupported platform openharmony/arm64 + puppeteer install fails
-[ OPENHARMONY ] test/integration/next-pages/test/dev-server-ssr-100.test.ts [ Skip ] # next-swc unsupported platform openharmony/arm64
-[ OPENHARMONY ] test/integration/next-pages/test/next-build.test.ts [ Skip ] # next-swc unsupported platform openharmony/arm64
+# next-pages: all 3 files import `bun:internal-for-testing` at module top
+# level, which doesn't exist in a release build (ENOENT, deterministic,
+# fails before any next-swc/puppeteer code runs) -- re-verified 2026-08-25,
+# corrects the earlier "next-swc unsupported platform" reason recorded here,
+# which described a deeper layer these files can no longer even reach.
+# Whether next-swc itself would also block them is unverified (can't get
+# past the import). Class D either way. Keeping quarantine.
+[ OPENHARMONY ] test/integration/next-pages/test/dev-server.test.ts [ Skip ] # bun:internal-for-testing ENOENT in release build (blocks before next-swc/puppeteer ever run)
+[ OPENHARMONY ] test/integration/next-pages/test/dev-server-ssr-100.test.ts [ Skip ] # bun:internal-for-testing ENOENT in release build (blocks before next-swc ever runs)
+[ OPENHARMONY ] test/integration/next-pages/test/next-build.test.ts [ Skip ] # bun:internal-for-testing ENOENT in release build (blocks before next-swc ever runs)
 
 # --- cli/install migration: network-dependent tests ---
 # "bun pm migrate -f" and "bun install --lockfile-only" resolve from npm registry;
