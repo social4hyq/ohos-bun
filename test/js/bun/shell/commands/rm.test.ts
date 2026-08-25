@@ -28,6 +28,14 @@ describe.concurrent("bunshell rm", () => {
   TestBuilder.command`echo ${packagejson()} > package.json; ${BUN} install --linker hoisted &> ${DEV_NULL}; rm -rf node_modules/`
     .ensureTempDir()
     .doesNotExist("node_modules")
+    // Installs a real, sizeable dependency tree (esbuild/eslint/react/...)
+    // over the network. `setDefaultTimeout` in `beforeAll` below doesn't
+    // reach this test: `runAsTest` calls `test()` synchronously at module
+    // load, before any `beforeAll` hook has run, so it's registered with
+    // whatever the ambient default timeout was at that point (observed:
+    // the bun:test 5000ms default, not the 5-minute one `beforeAll` sets
+    // later). Set it explicitly here instead of relying on that ordering.
+    .timeout(60_000)
     .runAsTest("node_modules");
 
   test("force", async () => {
