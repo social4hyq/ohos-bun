@@ -4349,6 +4349,8 @@ r70 基线「平台/沙箱 5（deleted-cwd×2）」里 `test-cwd-enoent-improved
 
 **范围说明**：`run-crash-handler.test.ts` 的「cwd deleted before startup」是**另一套机制**（bun 启动时 cwd 检测走 `run_command.rs` 的 OHOS `$HOME` 回退，非 `process.cwd()`），且 standalone 跑撞 `ENOENT reading "bun:internal-for-testing"`（release 构建缺内部测试模块，已知大类），与本次修复无关，仍留失败列。
 
+> **2026-08-25 更正**：上面这条"另一套机制、未覆盖"的判断本身没错，但当时只是搁置、没有深挖是哪套机制。同一天晚些时候（见「deleted-cwd 启动期检测三连修」节）已经把这套"另一套机制"（`bun install`/`bun test` 启动期 cwd 解析，三处独立调用点）挖到底并修复、r80 真机验证。这条测试文件本身依然因为 `bun:internal-for-testing` 在 release 构建缺失而跑不起来（和 OHOS/cwd 都无关，已知大类，未变），但它想验证的**行为**——`bun install`/`bun test`/`bun -e` 在 cwd 被删除时的正确表现——已经用手工复现的方式独立验证过并确认修复。此条不再是"未覆盖"状态。
+
 关联记忆：`[[project_ohos_readlink_proc_cwd_enoent]]`。
 
 ## 通过率更新（r73 后）
