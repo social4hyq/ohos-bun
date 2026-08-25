@@ -284,8 +284,15 @@ pub mod fs {
                     let mut buf = bun_paths::PathBuffer::default();
                     // Let getcwd failures (e.g. ENOENT on deleted cwd) propagate so
                     // callers emit a clean error instead of running JS from an
-                    // indeterminate environment (BUG-01).
-                    DirnameStore::instance().append_slice(bun_core::getcwd(&mut buf)?.as_bytes())?
+                    // indeterminate environment (BUG-01). `getcwd_honest` (not
+                    // plain `getcwd`): on OHOS, ohos-compat-shim's getcwd()
+                    // interceptor silently substitutes $HOME for a deleted cwd
+                    // instead of failing, which defeats this propagation and
+                    // was observed running `bun test`/`bun install` inside the
+                    // real $HOME instead of erroring — this call site wants the
+                    // genuine failure, not the shim's robustness fallback.
+                    DirnameStore::instance()
+                        .append_slice(bun_core::getcwd_honest(&mut buf)?.as_bytes())?
                 }
             };
             // Seed the lower-tier `bun_paths::fs::FileSystem` singleton with the

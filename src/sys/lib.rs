@@ -2671,9 +2671,13 @@ mod posix_impl {
 
     /// `process.cwd()` entry point: like `getcwd`, but surfaces a rmdir'd cwd
     /// as ENOENT (Node's uv_cwd() contract) instead of the ohos-compat-shim's
-    /// `$HOME` fallback. Narrow to `process.cwd()` only — bun's other getcwd
-    /// callers (install, resolver, lockfile) rely on the shim's `$HOME`
-    /// fallback for robustness.
+    /// `$HOME` fallback. Narrow to `process.cwd()` only — this crate's own
+    /// getcwd callers (npm install manifest paths, lockfile) rely on the
+    /// shim's `$HOME` fallback for robustness. `bun_core::getcwd_or_exe_dir`
+    /// and `bun_core::getcwd_honest` are the equivalent narrow overrides for
+    /// startup's tolerant/strict cwd resolution respectively — resolver's
+    /// top-level-dir init explicitly wants a genuine failure to propagate
+    /// (see its own BUG-01 comment), not the shim's fallback.
     #[cfg(target_env = "ohos")]
     pub fn process_cwd(buf: &mut [u8]) -> Maybe<usize> {
         let result = getcwd(buf);

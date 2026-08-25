@@ -4097,6 +4097,22 @@ pub fn getcwd(buf: &mut PathBuffer) -> crate::CrateResult<&ZStr> {
     Ok(ZStr::from_buf(&buf.0, len))
 }
 
+/// Like [`getcwd`], but on OHOS honestly surfaces a deleted cwd as
+/// [`crate::CrateError::CurrentWorkingDirectoryUnlinked`] instead of the
+/// ohos-compat-shim's silent `$HOME` substitution. Unlike
+/// [`getcwd_or_exe_dir`] (which tolerates an unreachable cwd and keeps
+/// going), this is for callers that want a genuine failure to propagate —
+/// e.g. `FileSystem`'s top-level-dir init, which documents (BUG-01) that
+/// swallowing this error runs JS from an indeterminate environment.
+pub fn getcwd_honest(buf: &mut PathBuffer) -> crate::CrateResult<&ZStr> {
+    let len = getcwd_len(buf)?;
+    #[cfg(target_env = "ohos")]
+    if cwd_is_deleted_ohos() {
+        return Err(crate::CrateError::CurrentWorkingDirectoryUnlinked);
+    }
+    Ok(ZStr::from_buf(&buf.0, len))
+}
+
 /// `getcwd` tolerating an unreachable cwd (e.g. deleted while we run): falls
 /// back to the executable's directory like Node's `Environment::GetCwd`, so
 /// startup proceeds and `process.cwd()` surfaces the real error later.
