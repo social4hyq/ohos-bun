@@ -4534,3 +4534,9 @@ r70 基线「原生绑定/签名」之外，「source-lints 6 个」里此前定
 **顺手排查到一个无关的偶发失败，已修复**：同文件的 `bunshell rm > node_modules` 用例（`echo <package.json> > package.json; bun install; rm -rf node_modules/`，装一批真实 npm 大包如 esbuild/eslint/react）跑全文件时撞了 5000ms 超时。单独隔离跑该用例只要 2.76s，说明操作本身不慢，问题在超时值——`beforeAll` 里的 `setDefaultTimeout(1000*60*5)` 对这条用例根本没生效：`TestBuilder.runAsTest()` 在 `describe.concurrent` 回调里同步调用 `test(name, fn, this._timeout)`，这发生在模块加载阶段，早于任何 `beforeAll` 钩子真正执行的时刻，所以这条测试注册时拿到的是当时的环境默认超时（bun:test 内建 5000ms），不是 `beforeAll` 稍后设的 5 分钟——是新发现的通用测试写法问题，不分平台，只是网络快的环境里通常撞不到才没暴露。
 
 **改动**（fork commit `24729eb2dd`，纯测试文件，未涉及 bun 二进制，未走 tap PR）：不再依赖 `beforeAll`/注册时序这个不确定关系，直接在这条 `TestBuilder` 链上用其自带的 `.timeout(60_000)` 显式指定超时。真机复测全文件两轮（`describe.concurrent` 9 个用例并发跑）均 9/9 全过，此前偶发超时的 `node_modules` 用例不再复现。
+
+## `serve-file-slice-read-error.test.ts`：复核确认结构性不可测，补进 expectations.txt（2026-08-25 续十二）
+
+复查历史留档"沙箱拒 ptrace（既知无 ptrace 通路）"——这条和今天前几条不同，之前的诊断已经查到底、是真的无法从 bun 侧解决，不是隐藏的可修 bug。`bun 1.4.0_80` 真机重跑，报错签名和历史记录完全一致：`TRACEME: Permission denied`（`PTRACE_TRACEME` 被沙箱 seccomp 拒绝，EPERM）+ `SETOPTIONS: No such process`（子进程因 TRACEME 失败已退出，父进程后续操作 ESRCH）。测试自身的源码注释也已经写明了第二层原因——bun 的 `read()` 走的是裸系统调用（rustix linux_raw backend），连 `ohos-trace-shim` 这类 LD_PRELOAD 方案都拦不到，所以就算不用 ptrace 也没有可行的替代注入手段。两层限制都不是 bun 代码问题，是本机沙箱能力边界，无法修复。
+
+**改动**（fork commit `aa2156f48f`）：确认这条此前一直没有正式进 `test/expectations.txt` 的 OPENHARMONY 隔离名单（只在文档里散记过），这次补上，和其余"结构性不可测"类条目走同一套机制。
