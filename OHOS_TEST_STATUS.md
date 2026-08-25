@@ -4469,3 +4469,17 @@ r70 基线「原生绑定/签名」之外，「source-lints 6 个」里此前定
 失败用例本身在两轮之间不是同一批（如 run1 的 0129 在 run2 不再出现，出现了新的 0159），进一步证实这是"泄漏累积到某个阈值后随机命中某个 Terminal 实例"的概率性 bug，不是与具体测试内容绑定的确定性失败。
 
 **结论**：修复已落地合并，是真实改善，予以保留；残余 ~18-21/720（约 2.5-3%）留档，下一轮如需继续深挖，方向是找 `close_fd == false`（暂停轮询不关 fd）路径是否也有 Terminal 会走到、或者 `register_with_fd_impl` 里 CTL_ADD（首次注册，非 rearm）路径本身是否也有相关的边界条件。
+
+## 残余泄漏源已精确定位：方案 C（合并 read/write 注册）待投入（2026-08-25 续八）
+
+复查 3 天前（2026-08-21）已归档的调查（`logs/triage-2026-08-20/ROOT-CAUSE-2026-08-21.md`）后，找到了残余 ~18-21/720 的真实触发点——这份文档当时已经把根因和候选方案摸到底，只是这轮一开始动手修复前没先完整读过，导致修复范围没覆盖全。
+
+**残余触发点**：`src/io/PipeWriter.rs:147`，写端 buffer 清空时**主动提前退订**（`poll.unregister(crate::Loop::get(), true)`）——这是修另一个 HongMeng 已知 bug（ONESHOT+EPOLLOUT 在该内核上会无限重触发，不主动退订会导致 100% CPU 空转）留下的既有代码，和这次的 close 时序修复完全无关，本次也**没有改它**（改了就会复活那个 CPU 空转 bug）。问题是：这条主动退订走的是原来未跳过 DEL 的 `unregister()`，而且**发生在会话进行中，任意一次写 buffer 排空都会触发，远早于 Terminal 真正 close 的时刻**——同样会因为 read_fd/write_fd 共享同一个 dup 出来的 open file description 而把读端的 epoll 条目提前弄坏。这次落地的修复（PR #427）只覆盖了"最终关闭"这一条路径，没覆盖"写端空闲期间反复退订"这条路径，残余失败率因此没有清零。
+
+**已确认排除的"简单"修复**（均已在 3 天前的调查里真机证伪，不必重查）：
+- **方案 B'（用 `MOD(events=0)` 卸武装代替 DEL）**：`disarmed-hup-delivery.out` 证伪——HUP/ERR 不受 events 掩码限制，卸武装后 slave 端关闭时 HUP 照样会投递到已"卸武装"的条目，派发到逻辑上已注销的 FilePoll，属于 UAF 风险，不能用。
+- **方案 B"（完全推迟到 close 才 DEL，即把这次的修复范围直接扩大到写端提前退订这条路径也跳过 DEL）**：会复活 `PipeWriter.rs:147` 本来要防的 100% CPU EPOLLOUT 空转，不能用。
+
+**真正干净的修复是方案 C**：Terminal 的 `read_fd`/`write_fd` 不再各自独立注册，合并成一条同时挂 `EPOLLIN|EPOLLOUT` 的注册，从根上消除"同一 open file description 上有两条独立 epoll 注册"这个触发前提。`register_with_fd_impl` 里其实已经有"同一个 FilePoll 对象兼管两个方向时合并进一次 CTL_MOD"的逻辑（`posix_event_loop.rs` 644-662 行附近，"if the other direction is already registered on this poll, preserve it in the CTL_MOD mask"）——问题是这个合并只在**同一个 FilePoll 实例**内生效，而 Terminal 目前是让 reader（`PosixBufferedReader`）和 writer（`PosixStreamingWriter`）各自创建、各自持有一个独立的 `FilePoll`（`handle: PollOrFd` 字段），两者互不知道对方存在。
+
+**方案 C 的真实工作量**：`PosixBufferedReader`/`PosixStreamingWriter` 是 bun-io 里被**所有** pipe/socket/subprocess stdio 共用的通用组件，目前没有"共享一个外部 FilePoll"的能力。要实现方案 C，要么（a）给 bun-io 核心新增一种共享 FilePoll 的模式——影响面覆盖 bun 全部 I/O，不只 Terminal；要么（b）Terminal 完全绕开这两个通用组件自己的 poll 生命周期，自建一个同时分发可读/可写事件的调度层，但仍要复用它们的缓冲/解析逻辑（目前这块和各自的 poll 生命周期耦合较紧）。两条路都不是"改一个调用点"量级，是要新增一种目前不存在的能力，且（a）路线的影响面覆盖 bun 全部 I/O 而不只是这个使用面很窄的 `Bun.Terminal` API。经和用户确认，本轮到此为止，不在今天投入实现，留给专门的后续 session。
