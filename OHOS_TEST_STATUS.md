@@ -4540,3 +4540,13 @@ r70 基线「原生绑定/签名」之外，「source-lints 6 个」里此前定
 复查历史留档"沙箱拒 ptrace（既知无 ptrace 通路）"——这条和今天前几条不同，之前的诊断已经查到底、是真的无法从 bun 侧解决，不是隐藏的可修 bug。`bun 1.4.0_80` 真机重跑，报错签名和历史记录完全一致：`TRACEME: Permission denied`（`PTRACE_TRACEME` 被沙箱 seccomp 拒绝，EPERM）+ `SETOPTIONS: No such process`（子进程因 TRACEME 失败已退出，父进程后续操作 ESRCH）。测试自身的源码注释也已经写明了第二层原因——bun 的 `read()` 走的是裸系统调用（rustix linux_raw backend），连 `ohos-trace-shim` 这类 LD_PRELOAD 方案都拦不到，所以就算不用 ptrace 也没有可行的替代注入手段。两层限制都不是 bun 代码问题，是本机沙箱能力边界，无法修复。
 
 **改动**（fork commit `aa2156f48f`）：确认这条此前一直没有正式进 `test/expectations.txt` 的 OPENHARMONY 隔离名单（只在文档里散记过），这次补上，和其余"结构性不可测"类条目走同一套机制。
+
+## "TLS/keepalive 阈值超时" 4 件套复核：1 条已 quarantine 属实，1 条新 quarantine，2 条查无实据（2026-08-25 续十三）
+
+复查用户点名的 4 个文件（`fetch-tcp-keepalive.test.ts`、`fetch-tls-abortsignal-timeout.test.ts`、`fetch.tls.test.ts`、`bun-serve-static-stress-access-body.test.ts`），四条各自独立复核，结论互不相同——不是同一根因，只是历史上被归到了同一类"超时/阈值"标签下：
+
+**1. `fetch-tcp-keepalive.test.ts`（已 quarantine，属实，无需改动）**：`expectations.txt:260` 早已收录（本轮第一次 grep 组合模式漏检，retry 单独 grep 才捞到，是本会话反复踩过的 grep 工具不可靠老毛病，非文件本身问题）。真机重跑复现：7 个用例里 5 个必现失败（不是偶发），根因和"阈值超时"完全无关——用例读 `/proc/self/net/tcp` 探测内核对 socket 的 keepalive 计时器状态，本机应用沙箱直接 `EACCES` 拒绝这个路径，跟 `netstat`/`ss`/`lsof`/`ptrace` 是同一类"沙箱看不见自己进程网络状态"的限制（见 [[environment_lsof_sandbox_blind]]）。不依赖 `/proc` 的另外 2 个用例（LD_PRELOAD 拦 `setsockopt` 计数那两个）跑得干净。现有 quarantine 理由和这次复核结论完全吻合，未改动。
+
+**2. `fetch-tls-abortsignal-timeout.test.ts`（新增 quarantine，`[ Flaky ]`）**：单独跑 5 轮，`6 pass/0 fail` 全绿；`OHOS_TEST_STATUS.md` 此前只记了个未证实的猜测（"这台环境 TLS 握手延迟可能超出"）。这次用真实并发对照坐实了它：4 个目标文件叠加另一个无关文件一起并发跑，`timeout(0)`/`timeout(1)` 两个子用例失败——实测 `diff` 80.4ms / 96.5ms，超出 `timeout+50ms`（0+50=50、1+51=51）的预算上限。用例本身的预算设得极紧（非 debug 构建只给 50ms 容错），在真机单跑时够用，但扛不住哪怕轻度（4-way）并发下的 CPU 争抢——是环境层面的"并发假象"类问题，不是 bun 逻辑 bug，改动方式对齐既有的 `terminal.test.ts`/`repl.test.ts` 等 `[ Flaky ]` 先例，不改测试源码。
+
+**3. `fetch.tls.test.ts` / `bun-serve-static-stress-access-body.test.ts`（未复现，未改动）**：两个文件各自单独跑、和另外两个目标文件一起 4-way 并发跑、以及分别加压到 4-way（`fetch.tls.test.ts`）/2-way（`bun-serve-static-stress-access-body.test.ts`，每轮本身 55-65s 较重）自我并发跑，全部反复稳定 100% 通过（`fetch.tls.test.ts` 30/30 ×多轮、`bun-serve-static-stress-access-body.test.ts` 12/12 ×多轮），没能触发任何失败。当前 `bun 1.4.0_80` 上查无实据——可能是今天叠加的一批修复（PTY 排空竞态、epoll DEL 部分修复、deleted-cwd 三连修）间接改善了资源争抢窗口，也可能这两条历史记录本身对应的是 20 核满载全量套件跑法下才会暴露的更重争抢强度，本次没有条件复现到那个量级。**未加 quarantine**——没有可稳定复现的失败就不该加，误加会掩盖真问题；如果后续满载全量跑法下再次冒出来，届时再按实际签名单独归档。
