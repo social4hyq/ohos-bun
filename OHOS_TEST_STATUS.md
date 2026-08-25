@@ -4524,3 +4524,11 @@ r70 基线「原生绑定/签名」之外，「source-lints 6 个」里此前定
 - **未确认/下一步要做的**：写侧对等的"现在去 flush 一下缓冲区"触发函数还没定位到——`PipeWriter.rs` 里目前只找到几个更底层的内部函数（`try_write`/`try_write_newly_buffered_data`/`on_writable`），还没找到一个可以像 reader 的 `read()` 那样直接安全调用的对外入口，需要继续往下挖。
 
 **为什么今天不动手实现**：这条路径虽然架构上通，但落地会重写 `Bun.Terminal` **全部** I/O 的调度路径（不只是安全扫描器测试这一个使用面），验证范围会明显超出"跑测试套件比通过率"这个量级——需要专门设计针对 echo、交互式读写往返、close 时序的验证方案，且今天会话已经很长（6 个真实修复、十几轮 CI 构建）。经和用户确认，留给专门的后续 session。
+
+## `shell/commands/rm.test.ts`：PATH_MAX 深路径改测试修复（2026-08-25 续十一）
+
+复查历史留档条目"OHOS 上 unlinkat/openat 逐级 walk 能删掉超 PATH_MAX 的深路径，Linux 期望报错——bun 表现其实更好，只是跟 Linux 断言不一致"，真机复现坐实：`recursive rm reports an entry deeper than PATH_MAX instead of crashing` 用例构造了一个绝对路径超过 1024 字节（非 Linux 平台假设的 PATH_MAX）的深层文件/目录，Linux 上 `rm -rf` 会因单次 open 绝对路径超限而报 `ENAMETOOLONG`（"File name too long"，exitCode 1，目录保留）；OHOS 上因为是逐级 `unlinkat`/`openat`（每一步只处理一个相对分量，不受整条绝对路径长度限制）能成功删掉（exitCode 0，无 stderr，目录已删）——这是真实的平台能力差异，OHOS 表现更好，不是 bug。
+
+**改动**（fork commit `2b6f0cbb79`，纯测试文件，未涉及 bun 二进制，未走 tap PR）：`process.platform === "openharmony"` 时改为断言删除成功（`exitCode: 0, stderr: "", dirKept: false`），其余平台维持原有的 `ENAMETOOLONG` 断言。真机复测该用例转绿；顺带跑了同文件的 `force`/`recursive`/`shell cwd` 等其余用例确认无回归。
+
+**顺手排查到一个无关的偶发失败**：同文件的 `bunshell rm > node_modules` 用例（`echo <package.json> > package.json; bun install; rm -rf node_modules/`，装一批真实 npm 大包如 esbuild/eslint/react）跑全文件时撞了 5000ms 超时（`beforeAll` 里的 `setDefaultTimeout(5min)` 疑似对 `describe.concurrent` + `TestBuilder.runAsTest` 这种注册方式未生效，具体机制未查）；单独隔离跑该用例 2.76s 就过，判定是并发跑整个文件时的网络/资源竞争导致的偶发慢，不是确定性平台 bug，归入既有的"网络依赖类"，未处理。
