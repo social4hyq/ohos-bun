@@ -430,7 +430,7 @@ impl FilePoll {
     }
 
     pub fn deinit_with_vm(&mut self, vm: EventLoopCtx) {
-        self.deinit_possibly_defer(vm, false);
+        self.deinit_possibly_defer(vm, false, false);
     }
 
     pub fn is_registered(&self) -> bool {
