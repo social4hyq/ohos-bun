@@ -4447,3 +4447,25 @@ r70 基线「原生绑定/签名」之外，「source-lints 6 个」里此前定
 **教训**：这次严格按"回到失败的测试文件本身，而不是从一个自造复现脚本出发"的路径重新排查，比上一轮（续五）快得多也准得多——上一轮从一个凭空写的 PTY repro 脚本出发，绕了一大圈还得出了错误结论。
 
 **姊妹文件 `bun-security-scanner-matrix-with-node-modules.test.ts` 同步复测（2026-08-25）**：此文件之前从未进过本文件的基线追踪，但和 `without-node-modules` 共用同一个 `runSecurityScannerTest`/runner，本次的 runner 改动同样生效。全量 720 用例顺序跑：`691 pass/29 fail/29 errors`。29 个失败**全部**是精确卡在新超时上限（10000ms 左右，无一例外），没有任何一个是排空竞态那种"文本丢失"的旧失败模式——说明 runner 修复对两个文件同样有效，`with-node-modules` 这边没有额外的新问题。29/720（约 4%）和 `without-node-modules` 那边的 26/720 是同一个已知 [[project_ohos_epoll_dup_del_leak]] 死实例问题（单独跑必过、只在全量顺序跑后偶发卡死），两个文件加起来又给这条 bug 的因果链多添了一次独立佐证，已回写进那条记忆记录。
+
+## epoll dup+DEL 死实例真机修复：部分见效，未清零（2026-08-25 续七）
+
+针对 `project_ohos_epoll_dup_del_leak` 记录的死实例根因，实现了修复并真机验证。
+
+**修复内容**（`src/io/{posix_event_loop,pipes,lib,windows_event_loop}.rs`，fork commit `83eca8d6c8`，tap PR [#427](https://github.com/social4hyq/homebrew-core/pull/427) 已合并，r76→r77）：`PollOrFd::close_impl` 在即将 `close(fd)` 时（`close_fd == true`），改为跳过显式 `EPOLL_CTL_DEL`——反正 `close()` 本身就会隐式清掉这条 epoll 注册（epoll(7) 标准语义），显式 DEL 在正常情况下只是"皮带+背带"式冗余，但在这台内核上会对共享同一 open file description 的另一条注册（`Bun.Terminal` 的 `read_fd`/`write_fd` 互为 `dup()`）造成永久性损坏。改动加在 `FilePoll::unregister_with_fd_impl` 里，只对 linux/android 生效，只在"确实要关 fd"的路径生效（暂停轮询但不关 fd 的路径仍走原来的显式 DEL），覆盖所有走这条共享 close 路径的调用方（pipe/socket/subprocess stdio/Terminal），不只是 Terminal。macOS/FreeBSD（kqueue）不受影响。
+
+首次推送触碰到一处遗漏调用点（`deinit_with_vm` 的 3 参数版本忘改），CI 报 `error[E0061]`，第二次推送修复后 CI 全绿（`build (bun) / build` 18m45s，`brew test gate` 通过）。
+
+**真机验证**（`bun 1.4.0_77`，`bun-security-scanner-matrix-without-node-modules.test.ts` 全量 720 用例，顺序跑两轮独立复测）：
+
+| | pass | fail |
+|---|---|---|
+| 修复前 | 662 | 26 |
+| 修复后 run1 | 667 | 21 |
+| 修复后 run2 | 670 | 18 |
+
+两轮独立复测同向下降（26→21→18），不是噪声，是真实、可重复的改善（约 25-30% 降幅）。但**没有清零**——说明这条修复堵住了已知的显式-DEL 泄漏路径，但还存在至少一条未识别的额外泄漏源。已排除的候选：Terminal 的 epoll 一次性轮询走 rearm 用的是 `EPOLL_CTL_MOD`（改事件掩码），不是 DEL+ADD 重新注册的循环，中途 rearm 不会触碰 DEL 语义,所以不是"运行期中途重注册也踩坑"这个假设。真正的残余泄漏源尚未定位。
+
+失败用例本身在两轮之间不是同一批（如 run1 的 0129 在 run2 不再出现，出现了新的 0159），进一步证实这是"泄漏累积到某个阈值后随机命中某个 Terminal 实例"的概率性 bug，不是与具体测试内容绑定的确定性失败。
+
+**结论**：修复已落地合并，是真实改善，予以保留；残余 ~18-21/720（约 2.5-3%）留档，下一轮如需继续深挖，方向是找 `close_fd == false`（暂停轮询不关 fd）路径是否也有 Terminal 会走到、或者 `register_with_fd_impl` 里 CTL_ADD（首次注册，非 rearm）路径本身是否也有相关的边界条件。
