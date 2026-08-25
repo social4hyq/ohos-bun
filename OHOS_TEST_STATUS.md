@@ -4509,3 +4509,16 @@ r70 基线「原生绑定/签名」之外，「source-lints 6 个」里此前定
 - 正常（未删除）cwd 下 `bun install`/`bun -e`/`bun test` 均验证无回归
 
 **方法论**：三处修复是靠"改一处、真机测三个场景、没全绿就继续挖"一步步逼出来的，不是一次性读代码读全的——`bun install` 中途一度"看似修好"，其实只是命中了另一条独立路径，如果没有坚持对`bun test` 也做实测，会误判"已完全修复"。
+
+## 姊妹文件复测 + 方案 C 具体设计确认可行（2026-08-25 续十）
+
+`bun-security-scanner-matrix-with-node-modules.test.ts` 在叠加了今天全部修复（PTY 排空竞态 + epoll DEL 部分修复 + deleted-cwd 三连修）的 `bun 1.4.0_80` 上复测：`707 pass/13 fail`（r77 基线是 `691/29`）。13 个失败全部还是同一个"精确卡在 10000ms 超时、exit 143"的已知 epoll 死实例签名，没有出现和今天 cwd 修复相关的新失败——三轮 cwd 改动无回归。29→13 的下降幅度和 `without-node-modules` 文件此前两轮独立复测（26→21→18）的同向波动一致，是这个已知概率性 bug 本身的运行间噪声，不代表 epoll 那条线又有新进展（`PipeWriter.rs:147` 那条残余泄漏源今天没有再动）。
+
+**方案 C 可行性确认，具体到函数级但未实现**：延续"续八"里的思路，进一步确认了一条**只改 Terminal.rs、不碰 bun-io 共享代码**的实现路径——
+
+- Terminal 不再 dup 出 `read_fd`/`write_fd`，改成在**未 dup 的 master fd** 上直接维护一条同时挂 `EPOLLIN|EPOLLOUT` 的组合 `FilePoll` 注册（Terminal 自己持有，不经 `PosixBufferedReader`/`PosixStreamingWriter` 各自的 `.watch()`/`.register_poll()`）；
+- `PosixBufferedReader`/`PosixStreamingWriter` 的 `handle` 字段保持在非轮询的 `PollOrFd::Fd(fd)` 状态（已确认这是合法状态，`start(fd, is_pollable)` 的 `is_pollable=false` 路径本来就会把 handle 设成这个值）；
+- 已确认 `PosixBufferedReader::read(this: *mut Self)`（`PipeReader.rs:638`）**不依赖** `self.handle` 处于 `Poll` 态才能跑——它只是取 fd 做读+解析，纯粹是"现在去读一下"的动作，轮询只是决定"什么时候调它"的触发机制，不是调用前提。这意味着 Terminal 收到组合 poll 的 Readable 事件时可以直接调这个函数触发读取。
+- **未确认/下一步要做的**：写侧对等的"现在去 flush 一下缓冲区"触发函数还没定位到——`PipeWriter.rs` 里目前只找到几个更底层的内部函数（`try_write`/`try_write_newly_buffered_data`/`on_writable`），还没找到一个可以像 reader 的 `read()` 那样直接安全调用的对外入口，需要继续往下挖。
+
+**为什么今天不动手实现**：这条路径虽然架构上通，但落地会重写 `Bun.Terminal` **全部** I/O 的调度路径（不只是安全扫描器测试这一个使用面），验证范围会明显超出"跑测试套件比通过率"这个量级——需要专门设计针对 echo、交互式读写往返、close 时序的验证方案，且今天会话已经很长（6 个真实修复、十几轮 CI 构建）。经和用户确认，留给专门的后续 session。
