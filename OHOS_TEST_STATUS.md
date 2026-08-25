@@ -4483,3 +4483,29 @@ r70 基线「原生绑定/签名」之外，「source-lints 6 个」里此前定
 **真正干净的修复是方案 C**：Terminal 的 `read_fd`/`write_fd` 不再各自独立注册，合并成一条同时挂 `EPOLLIN|EPOLLOUT` 的注册，从根上消除"同一 open file description 上有两条独立 epoll 注册"这个触发前提。`register_with_fd_impl` 里其实已经有"同一个 FilePoll 对象兼管两个方向时合并进一次 CTL_MOD"的逻辑（`posix_event_loop.rs` 644-662 行附近，"if the other direction is already registered on this poll, preserve it in the CTL_MOD mask"）——问题是这个合并只在**同一个 FilePoll 实例**内生效，而 Terminal 目前是让 reader（`PosixBufferedReader`）和 writer（`PosixStreamingWriter`）各自创建、各自持有一个独立的 `FilePoll`（`handle: PollOrFd` 字段），两者互不知道对方存在。
 
 **方案 C 的真实工作量**：`PosixBufferedReader`/`PosixStreamingWriter` 是 bun-io 里被**所有** pipe/socket/subprocess stdio 共用的通用组件，目前没有"共享一个外部 FilePoll"的能力。要实现方案 C，要么（a）给 bun-io 核心新增一种共享 FilePoll 的模式——影响面覆盖 bun 全部 I/O，不只 Terminal；要么（b）Terminal 完全绕开这两个通用组件自己的 poll 生命周期，自建一个同时分发可读/可写事件的调度层，但仍要复用它们的缓冲/解析逻辑（目前这块和各自的 poll 生命周期耦合较紧）。两条路都不是"改一个调用点"量级，是要新增一种目前不存在的能力，且（a）路线的影响面覆盖 bun 全部 I/O 而不只是这个使用面很窄的 `Bun.Terminal` API。经和用户确认，本轮到此为止，不在今天投入实现，留给专门的后续 session。
+
+## deleted-cwd 启动期检测三连修：`bun install`/`bun test` 静默误入 `$HOME`（2026-08-25 续九）
+
+复查 `run-crash-handler.test.ts`「cwd deleted before startup」这条历史留档条目时，发现该文件本身在我们的 release-only 构建上从未能跑起来——顶层 `import { crash_handler } from "bun:internal-for-testing"` 直接 `ENOENT`（真机探测确认这个模块在 release 构建里就是不存在，是个和 OHOS、和 cwd 逻辑本身都无关的"已知大类"问题，非本轮修复目标），两条子测试从未被真正执行过。绕开这个坏文件，手工按测试逻辑直接跑三个子场景，发现其中两个是真实的、此前从未验证过的 OHOS bug：
+
+- `bun install`：报"找不到 package.json"而非"cwd 被删除"提示
+- `bun test`：**静默扫描真实 `$HOME`**，撞上无关目录 `撞上 Cannot read file ".../playwright": EMFILE`
+- `bun -e`：本来就正常（走的是另一套"允许继续跑"的 exe-dir 回退逻辑）
+
+**根因**：upstream 设计里，cwd 被删除时 `getcwd()` 应该真实失败（ENOENT），错误层层往上传，最终转成"The current working directory was deleted"友好提示（`crash_handler/lib.rs` 的 `CurrentWorkingDirectoryUnlinked` 分支）。但 OHOS 上 `ohos-compat-shim` 的 `getcwd()` 拦截会把删除的 cwd 悄悄伪装成成功返回 `$HOME`（r73 那次修复里给 `process.cwd()` 单独开的绕过口子，注意这跟本轮无关），导致这条错误传播链从起点就断了——bun 以为自己正常拿到了 cwd（其实是 `$HOME`），后续该扫哪就扫哪，该报什么错就报什么错，就是不知道真正出了什么问题。
+
+**三个独立触发点，逐一真机验证排查出来**（不是同一个函数调用三次，是三处各自独立解析 cwd 的代码）：
+
+1. **`bun_core::util::getcwd_or_exe_dir()`**（fork commit `8195eaf638`，tap PR #428，r77→r78）：`-e`/`--cron` 这类"允许 cwd 不存在、启动后再报错"场景用的回退函数，本来就该在真删除时回退到 exe-dir（可执行文件所在目录），而不是 shim 给的 `$HOME`。这条最先修，但修完真机验证 `bun install`/`bun test` 两个都**没有**变好——因为它们根本不走这个函数。
+2. **`bun_resolver::FileSystem::init_with_force()`**（`src/resolver/lib.rs`，fork commit `0881033534`，tap PR #429，r78→r79）：没传 `--cwd` 时，这里原本调用裸 `getcwd()?`，代码自己的注释写得很清楚——"Let getcwd failures propagate so callers emit a clean error instead of running JS from an indeterminate environment (BUG-01)"，是 upstream 明确想要"真失败就真报错"的地方。修完真机验证：`bun install` 转对了，`bun test` **依然**没变。
+3. **`Arguments.rs` 的 `absolute_working_dir` 预解析**（fork commit `61dbc3a9d7`，tap PR #430，r79→r80）：命令行参数解析阶段、`FileSystem::init` 还没跑之前，就先用裸 `getcwd()?` 把 `absolute_working_dir` 定下来了，`install`/`test`/`build` 等"非 run/auto"命令全走这条分支。`bun install` 之所以在第 2 步就修好，是因为它另有独立路径命中了 `FileSystem::init` 的 `None` 分支；`bun test` 走的是这里预解析好的值，直接绕过了第 2 步的修复，一直到这一步才真正堵上。
+
+**新增的统一入口**：`bun_core::util::getcwd_honest()`——复用 `getcwd_or_exe_dir` 里已有的诚实校验（`readlink("/proc/self/cwd")` 绕过 shim），语义是"检测到真删除就返回 `CurrentWorkingDirectoryUnlinked`"（不像 `getcwd_or_exe_dir` 那样容忍着继续跑）。三处调用点里的第 2、3 处都改调这个新函数；第 1 处（`getcwd_or_exe_dir` 自己）内联了同一份校验逻辑（不能反向复用，因为 `bun_resolver`/`bun_sys` 都依赖 `bun_core`，不能反过来）。裸 `getcwd()`/`bun_sys::getcwd()` 本身完全没动——install/resolver/lockfile 其余场景依赖 shim 的 `$HOME` 兜底健壮性，这条 r73 定下的窄范围原则继续保持；顺手订正了 r73 遗留的一句不准确注释（当时笼统说"resolver 依赖 shim 兜底"，这轮证实至少对 `top_level_dir` 这处调用点不成立）。
+
+**真机验证**（`bun 1.4.0_80`，删除态 cwd 下）：
+- `bun install`：`error: The current working directory was deleted, so that command didn't work. Please cd into a different directory and try again.`，exit 1 ✓
+- `bun test`：同上提示，exit 1 ✓
+- `bun -e`：`console.log(1)` 正常打印，exit 0，无回归 ✓
+- 正常（未删除）cwd 下 `bun install`/`bun -e`/`bun test` 均验证无回归
+
+**方法论**：三处修复是靠"改一处、真机测三个场景、没全绿就继续挖"一步步逼出来的，不是一次性读代码读全的——`bun install` 中途一度"看似修好"，其实只是命中了另一条独立路径，如果没有坚持对`bun test` 也做实测，会误判"已完全修复"。
