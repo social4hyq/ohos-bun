@@ -4531,4 +4531,6 @@ r70 基线「原生绑定/签名」之外，「source-lints 6 个」里此前定
 
 **改动**（fork commit `2b6f0cbb79`，纯测试文件，未涉及 bun 二进制，未走 tap PR）：`process.platform === "openharmony"` 时改为断言删除成功（`exitCode: 0, stderr: "", dirKept: false`），其余平台维持原有的 `ENAMETOOLONG` 断言。真机复测该用例转绿；顺带跑了同文件的 `force`/`recursive`/`shell cwd` 等其余用例确认无回归。
 
-**顺手排查到一个无关的偶发失败**：同文件的 `bunshell rm > node_modules` 用例（`echo <package.json> > package.json; bun install; rm -rf node_modules/`，装一批真实 npm 大包如 esbuild/eslint/react）跑全文件时撞了 5000ms 超时（`beforeAll` 里的 `setDefaultTimeout(5min)` 疑似对 `describe.concurrent` + `TestBuilder.runAsTest` 这种注册方式未生效，具体机制未查）；单独隔离跑该用例 2.76s 就过，判定是并发跑整个文件时的网络/资源竞争导致的偶发慢，不是确定性平台 bug，归入既有的"网络依赖类"，未处理。
+**顺手排查到一个无关的偶发失败，已修复**：同文件的 `bunshell rm > node_modules` 用例（`echo <package.json> > package.json; bun install; rm -rf node_modules/`，装一批真实 npm 大包如 esbuild/eslint/react）跑全文件时撞了 5000ms 超时。单独隔离跑该用例只要 2.76s，说明操作本身不慢，问题在超时值——`beforeAll` 里的 `setDefaultTimeout(1000*60*5)` 对这条用例根本没生效：`TestBuilder.runAsTest()` 在 `describe.concurrent` 回调里同步调用 `test(name, fn, this._timeout)`，这发生在模块加载阶段，早于任何 `beforeAll` 钩子真正执行的时刻，所以这条测试注册时拿到的是当时的环境默认超时（bun:test 内建 5000ms），不是 `beforeAll` 稍后设的 5 分钟——是新发现的通用测试写法问题，不分平台，只是网络快的环境里通常撞不到才没暴露。
+
+**改动**（fork commit `24729eb2dd`，纯测试文件，未涉及 bun 二进制，未走 tap PR）：不再依赖 `beforeAll`/注册时序这个不确定关系，直接在这条 `TestBuilder` 链上用其自带的 `.timeout(60_000)` 显式指定超时。真机复测全文件两轮（`describe.concurrent` 9 个用例并发跑）均 9/9 全过，此前偶发超时的 `node_modules` 用例不再复现。
