@@ -4582,3 +4582,32 @@ error: ENOENT reading "bun:internal-for-testing"
 单独用 `bun -e` 测 `import("bun:internal-for-testing")` 同样 `ENOENT`——这是当前 release 构建里就没有的内部模块（跟本会话早前复核 `run-crash-handler.test.ts` 时确认的是同一个已知大类）。因为这是文件顶层 `import` 语句，**代码根本没机会跑到任何 next-swc 相关路径**——`next-swc unsupported platform` 这个理由描述的是这个 import 语句失败之后才会触达的更深一层，现在的构建连那一层都够不着，理由已经过时。`dev-server.test.ts`/`dev-server-ssr-100.test.ts` 顶部同样有这行 import，真机复测同样 100% 确定性 `ENOENT`，是同一簇。
 
 **改动**：更新 `test/expectations.txt` 这 3 条的理由为 `bun:internal-for-testing ENOENT in release build`，保留原有 `[ Skip ]` quarantine（结论不变，behind-the-import 的 next-swc 是否真的不支持这台平台目前无法验证，也不重要——反正到不了那一步）。
+
+## `js/node/cluster/test-docs-http-server.ts`：root-caused 到一个真实、可移植的 bun IPC 缺口（不是 OHOS 限制），未修复（2026-08-25 续十七）
+
+复查历史台账"20-way IPC，跟 fork/IPC 开销问题气质相似，但没验证过具体机制，需要专门开一轮"——这次真机深挖到底，找到了精确机制，比历史记录严重得多，而且**根因跟 OHOS 平台本身无关**，是 bun 的 `cluster`/子进程 IPC 通道在 Node 兼容性上的一个真实缺口。
+
+**现象比历史记录严重**：历史记录是 18/20（少 2 个）；这轮真机连跑（`bun test/js/node/cluster/test-docs-http-server.ts`）稳定复现 **8-11/20**（少一半左右）。20 个 worker 全部 fork/listen/exit 干净（`started`/`died` 各 20 条），丢的只是主进程收到的 `"hello"` IPC 消息计数。
+
+**逐步定位（4 层репro，从"跟原文件行为一致"一路简化到最小可复现）**：
+
+1. 把测试文件的 `import { isBroken, isWindows } from "harness"` 换成本地 stub 直接跑（脱离 bun:test 框架），失败率明显下降但没消失（A/B 交替跑 4 轮：原版 4/4 失败，去掉 harness 的副本 1/4 失败）——说明 `harness` 模块的导入开销（拉一堆 node 内置模块、做能力探测）会让主进程在 fork 循环之后变慢/变忙，加大丢消息概率，但不是唯一变量。
+2. 把 worker 端 `process.send("hello"); server.close(); process.disconnect();` 改成等 `process.send` 的回调后再 close/disconnect（`process.send("hello", () => { server.close(); process.disconnect(); })`），20-way 并发下连跑 5 次 **20/20 全过**——证实这是 `send()` 尚未真正把消息交给 IPC 传输层、`disconnect()` 就把通道拆了的竞态。
+3. 但同一份"不等回调"的裸 repro（无 harness、`.listen(8000,...)`、numCPUs=20）单独反复跑 3 次却是 **20/20 全过**——说明"send 后立刻 disconnect"本身不是必然丢，需要叠加"主进程恰好在忙"的条件。
+4. **最小确定性 repro**（`numCPUs=1`，无并发因素，纯粹测时序）：主进程 `cluster.fork()` 之后先 `await` 几个 `setImmediate`/`setTimeout` 再注册 `cluster.on("message", ...)`，模拟"监听器注册晚于消息到达"这个窗口——**bun 5/5 消息丢失（`got=false`），同一份脚本 node 5/5 收到（`got=true`）**。这是干净的、跟 OHOS 无关的运行时行为差异，Windows/macOS/Linux 上用同一份脚本大概率复现同样的差异。
+
+**根因**：读 `src/js/internal/cluster/primary.ts:119-121`——
+
+```ts
+worker.on("message", function (message, handle) {
+  cluster.emit("message", this, message, handle);
+});
+```
+
+这个 `worker.on("message", ...)` 转发器在 `cluster.fork()` 内部就同步挂好了，问题不在这层。问题在于它转发目标是 `cluster.emit("message", ...)`——如果用户代码这时候还没调用 `cluster.on("message", ...)`（`cluster` 是个普通 `EventEmitter`），`emit()` 对零监听者就是纯 no-op，消息数据直接消失，不会被缓冲或重放。**Node.js 不是这样**：Node 的 IPC 通道对早到消息有缓冲机制（配合 `newListener` 钩子，在第一次 `.on('message', ...)` 时把缓冲的消息补发），所以哪怕监听器注册晚了也不丢。bun 这几层（`cluster.emit`、更底层的 `Subprocess`/`ChildProcess` "message" emit，`src/runtime/ipc.rs` 的 `handle_ipc_message`）都没有实现这个"监听器挂载前先缓冲"的语义。
+
+**为什么在 OHOS 上更容易暴露、历史记录里丢得比这次少**：`cluster.fork()` 调用之间有真实的进程创建系统调用开销，`expectations.txt` 里已经记过"OHOS spawn overhead: fork+exit_group 2-3x slower than vfork"——20 次 `cluster.fork()` 循环本身在这台设备上就比在更快的机器上慢得多，给了先 fork 出来的 worker 更大的"抢跑"窗口，在主进程还在忙着 fork 后面几个 worker、或者 `cluster.on("message", ...)` 还没排到执行的间隙，先跑完的 worker 已经把 `"hello"` 发过去、被 `cluster.emit` 扔进了没人听的空气里。这解释了"count 一直在变、幅度不固定"这个历史"摇摆"表现——不是随机噪音，是这个窗口大小本身就随主进程当时的忙碌程度浮动。
+
+**为什么不是 OHOS 限制、而是真实 bug**：4 层 repro 里第 4 层完全没有并发、没有 OHOS 特有 API、没有依赖任何平台差异，纯粹是"消息到达 vs 监听器注册"的时序，跟 node 对照后行为不同即坐实。这条不应该被当成"环境限制"记录，也不建议进 `expectations.txt`（那个机制是给平台限制用的，这条本质是 bun 通用 IPC 实现缺口，quarantine 会把它错误归类成"OHOS 特有、不可修"）。
+
+**未修复**：定位到位置但没有动手改——`cluster.emit`/底层 IPC message 路径要实现 Node 那套"零监听者时缓冲、`newListener` 触发补发"语义，影响面覆盖所有 `cluster`/`child_process` IPC 使用方（不只是这一个测试文件），需要仔细设计缓冲队列的生命周期（何时清空、要不要有上限、`disconnect()`/`close` 时未消费的缓冲消息怎么处理）和回归验证范围，量级和今天"续八/续十"的 epoll Option C 属于同一类——本轮到此为止，留给专门的后续 session。复现脚本留档在 `/data/storage/el2/base/tmp/claude-20020101/.../scratchpad/`（`cluster-minimal-drop.mjs` 是最小确定性 repro，5 行核心逻辑）。
