@@ -185,11 +185,17 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # inside the GC-level branch — so under the real runner (not a bare `bun test`)
 # the module has always been reachable. Full real-machine reruns via
 # `node scripts/runner.node.mjs --ignore-expectations=OPENHARMONY` confirmed
-# every file below now passes; entries removed. See OHOS_TEST_TODO.md
+# every file below now passes; entries removed. See OHOS_TEST_STATUS.md
 # ("陈旧 quarantine 确认") for the evidence trail. `test/js/node/fs/fs-oom.test.ts`
-# carried the same (wrong) label but is NOT in this list — it fails for an
-# unrelated, still-real reason (memfd_create + readFileSync EACCES vs the
-# expected ENOMEM; see OHOS_TEST_TODO.md T22) and keeps its own entry below.
+# carried the same (wrong) label and was originally thought to still fail for
+# an unrelated real reason (memfd_create + readFileSync EACCES vs the
+# expected ENOMEM; see OHOS_TEST_STATUS.md T22) — but T22's own fix
+# (be38b72d9, readFileSync now tolerates EACCES/EPERM on fstat instead of
+# propagating it) fixed that too. Re-verified 2026-08-25 with the same env
+# vars the real runner sets (BUN_FEATURE_FLAG_INTERNAL_FOR_TESTING=1,
+# BUN_GARBAGE_COLLECTOR_LEVEL=1): 13 pass / 2 skip / 0 fail, 3/3 stable.
+# No quarantine entry for this file (there never should have been one below
+# this comment — the comment predated the fix and was just never updated).
 
 # bun-pack: the "bun:internal-for-testing unavailable" quarantine was
 # disproven 2026-07-26. Re-verified 2026-07-30 against r42: 76 pass / 0 fail.

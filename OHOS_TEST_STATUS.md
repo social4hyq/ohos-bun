@@ -4610,4 +4610,14 @@ worker.on("message", function (message, handle) {
 
 **为什么不是 OHOS 限制、而是真实 bug**：4 层 repro 里第 4 层完全没有并发、没有 OHOS 特有 API、没有依赖任何平台差异，纯粹是"消息到达 vs 监听器注册"的时序，跟 node 对照后行为不同即坐实。这条不应该被当成"环境限制"记录，也不建议进 `expectations.txt`（那个机制是给平台限制用的，这条本质是 bun 通用 IPC 实现缺口，quarantine 会把它错误归类成"OHOS 特有、不可修"）。
 
-**未修复**：定位到位置但没有动手改——`cluster.emit`/底层 IPC message 路径要实现 Node 那套"零监听者时缓冲、`newListener` 触发补发"语义，影响面覆盖所有 `cluster`/`child_process` IPC 使用方（不只是这一个测试文件），需要仔细设计缓冲队列的生命周期（何时清空、要不要有上限、`disconnect()`/`close` 时未消费的缓冲消息怎么处理）和回归验证范围，量级和今天"续八/续十"的 epoll Option C 属于同一类——本轮到此为止，留给专门的后续 session。复现脚本留档在 `/data/storage/el2/base/tmp/claude-20020101/.../scratchpad/`（`cluster-minimal-drop.mjs` 是最小确定性 repro，5 行核心逻辑）。
+**未修复**：定位到位置但没有动手改——`cluster.emit`/底层 IPC message 路径要实现 Node 那套"零监听者时缓冲、`newListener` 触发补发"语义，影响面覆盖所有 `cluster`/`child_process` IPC 使用方（不只是这一个测试文件），需要仔细设计缓冲队列的生命周期（何时清空、要不要有上限、`disconnect()`/`close` 时未消费的缓冲消息怎么处理）和回归验证范围，量级和今天"续八/续十"的 epoll Option C 属于同一类——本轮到此为止，留给专门的后续 session（用户已确认）。复现脚本留档在 `/data/storage/el2/base/tmp/claude-20020101/.../scratchpad/`（`cluster-minimal-drop.mjs` 是最小确定性 repro，5 行核心逻辑）。
+
+## `fs-oom.test.ts`：T22 的修复其实已经生效，expectations.txt 里一条陈旧注释在误导（2026-08-25 续十八）
+
+复查 T22（`memfd_create` 的 fd 上 `fstat` 被沙箱拒绝那条）时发现文档自相矛盾：T22 正文明确记过修复已落地并验证（`be38b72d9`，`readFileSync` 遇到 fstat 返回 EACCES/EPERM 时退化成"大小未知"而不是直接抛错，验证结果"0 fail / 11 pass，3/3 稳定"），但 `test/expectations.txt:189-192` 的注释仍然写着"fs-oom.test.ts 因为一个无关的真实原因继续失败，保留自己的 quarantine 条目"——而且这条注释引用的文件名是 `OHOS_TEST_TODO.md`（这个文件不存在，是改名前的旧称，早该是 `OHOS_TEST_STATUS.md`）。
+
+**核对 `expectations.txt` 全文**：注释说"keeps its own entry below"，但全文档搜索确认压根没有对应的 `[ OPENHARMONY ] test/js/node/fs/fs-oom.test.ts ...` 行——quarantine 早就没了，只是这段解释性注释在修复落地后没跟着删/改，一直留着一句过时的话。
+
+**真机复核**：裸 `bun test test/js/node/fs/fs-oom.test.ts` 确实 100% 失败（`ENOENT reading "bun:internal-for-testing"`）——但这和 fs-oom 本身无关，是这一整簇文件共有的已知现象（真实 runner 的 `scripts/runner.node.mjs` 会设 `BUN_FEATURE_FLAG_INTERNAL_FOR_TESTING=1`+`BUN_GARBAGE_COLLECTOR_LEVEL=1`，裸 `bun test` 不会）。带上这两个环境变量重跑，连跑 3 轮：**13 pass / 2 skip / 0 fail，全绿**。T22 的修复确实是有效的、稳定的。
+
+**改动**：更新 `expectations.txt:189-192` 那段注释，去掉"fs-oom 仍在失败、保留 quarantine"的过时说法，改记今天真机复核的实际结果（13 pass/2 skip/0 fail，3/3 稳定），顺手把文件名引用从不存在的 `OHOS_TEST_TODO.md` 改成 `OHOS_TEST_STATUS.md`。没有代码改动——T22 的修复本身早就是对的，只是这句解释性文字没跟上。
