@@ -406,6 +406,15 @@ describe("spawn()", () => {
       expect(await getChildEnv({})).toMatchObject({});
       expect(await getChildEnv(undefined)).not.toStrictEqual({});
       expect(await getChildEnv(null)).not.toStrictEqual({});
+    } else if (process.platform === "openharmony") {
+      // ohos-compat-shim backfills TMPDIR in the child when the given env
+      // doesn't already set it (the sandbox's real /tmp is read-only, so
+      // spawned bun processes need a writable default). Same shape as the
+      // Windows case above: an explicit env without TMPDIR always gains one.
+      expect(await getChildEnv({ TEST: "test" })).toMatchObject({ TEST: "test" });
+      expect(await getChildEnv({})).toMatchObject({});
+      expect(await getChildEnv(undefined)).toStrictEqual(process.env);
+      expect(await getChildEnv(null)).toStrictEqual(process.env);
     } else {
       expect(await getChildEnv({ TEST: "test" })).toStrictEqual({ TEST: "test" });
       expect(await getChildEnv({})).toStrictEqual({});

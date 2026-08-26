@@ -4621,3 +4621,9 @@ worker.on("message", function (message, handle) {
 **真机复核**：裸 `bun test test/js/node/fs/fs-oom.test.ts` 确实 100% 失败（`ENOENT reading "bun:internal-for-testing"`）——但这和 fs-oom 本身无关，是这一整簇文件共有的已知现象（真实 runner 的 `scripts/runner.node.mjs` 会设 `BUN_FEATURE_FLAG_INTERNAL_FOR_TESTING=1`+`BUN_GARBAGE_COLLECTOR_LEVEL=1`，裸 `bun test` 不会）。带上这两个环境变量重跑，连跑 3 轮：**13 pass / 2 skip / 0 fail，全绿**。T22 的修复确实是有效的、稳定的。
 
 **改动**：更新 `expectations.txt:189-192` 那段注释，去掉"fs-oom 仍在失败、保留 quarantine"的过时说法，改记今天真机复核的实际结果（13 pass/2 skip/0 fail，3/3 稳定），顺手把文件名引用从不存在的 `OHOS_TEST_TODO.md` 改成 `OHOS_TEST_STATUS.md`。没有代码改动——T22 的修复本身早就是对的，只是这句解释性文字没跟上。
+
+## `child_process.test.ts`：`should allow us to set env` 补齐 OHOS 分支，对齐已有的 Windows 先例（2026-08-25 续十九）
+
+复查历史留档"63 pass/1 fail，唯一失败归因=内嵌 shim 的有意适配，处置建议 expectations OPENHARMONY 隔离，未动手"——真机复核先坐实归因依然成立：`getChildEnv({TEST:"test"})`/`getChildEnv({})` 两种"显式给 env 但不含 TMPDIR"的场景，子进程里都会多出一个 `TMPDIR: "/data/storage/el2/base/cache"`（`ohos_compat_shim.c` 的 `ohos_shim_init_tmpdir` 构造函数在 `getenv("TMPDIR")` 为空时回填默认值，对接本机真实 `/tmp` 只读沙盒——这是有意适配，不是 bug）；单独探测 `getChildEnv(undefined)`/`getChildEnv(null)`（继承完整父进程 env，父进程自己的 `TMPDIR` 已经是真实值 `/data/storage/el2/base/tmp`）确认这两种场景**不会**触发回填，跟 `process.env` 严格相等，不受影响。
+
+**没有走 quarantine，改成对齐既有 Windows 分支**：这个测试文件本来就已经因为同一类问题（"某些平台总会多出几个环境变量，严格相等断言不成立"）给 Windows 单独开了 `if (isWindows) {...} else {...}` 分支（`toMatchObject` 代替 `toStrictEqual`），OHOS 现在这条是完全同构的场景，直接照抄 Windows 分支的宽松度加一个 `else if (process.platform === "openharmony")` 分支即可，比 quarantine 整个 69 用例的文件（其余 63-64 个都在正常跑）更贴合这个文件自己已有的处理方式。真机复测：单独跑该用例 3/3 干净通过；全文件回归 2 轮 **64 pass/4 skip/1 todo/0 fail**，历史记录过的另一条 "stdio passthrough 90s 超时" 这次两轮都没有复现（timeout 预算此前已加宽到位）。改动是纯测试文件（无 bun 二进制改动，未走 tap PR）。
