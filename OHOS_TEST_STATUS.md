@@ -4627,3 +4627,11 @@ worker.on("message", function (message, handle) {
 复查历史留档"63 pass/1 fail，唯一失败归因=内嵌 shim 的有意适配，处置建议 expectations OPENHARMONY 隔离，未动手"——真机复核先坐实归因依然成立：`getChildEnv({TEST:"test"})`/`getChildEnv({})` 两种"显式给 env 但不含 TMPDIR"的场景，子进程里都会多出一个 `TMPDIR: "/data/storage/el2/base/cache"`（`ohos_compat_shim.c` 的 `ohos_shim_init_tmpdir` 构造函数在 `getenv("TMPDIR")` 为空时回填默认值，对接本机真实 `/tmp` 只读沙盒——这是有意适配，不是 bug）；单独探测 `getChildEnv(undefined)`/`getChildEnv(null)`（继承完整父进程 env，父进程自己的 `TMPDIR` 已经是真实值 `/data/storage/el2/base/tmp`）确认这两种场景**不会**触发回填，跟 `process.env` 严格相等，不受影响。
 
 **没有走 quarantine，改成对齐既有 Windows 分支**：这个测试文件本来就已经因为同一类问题（"某些平台总会多出几个环境变量，严格相等断言不成立"）给 Windows 单独开了 `if (isWindows) {...} else {...}` 分支（`toMatchObject` 代替 `toStrictEqual`），OHOS 现在这条是完全同构的场景，直接照抄 Windows 分支的宽松度加一个 `else if (process.platform === "openharmony")` 分支即可，比 quarantine 整个 69 用例的文件（其余 63-64 个都在正常跑）更贴合这个文件自己已有的处理方式。真机复测：单独跑该用例 3/3 干净通过；全文件回归 2 轮 **64 pass/4 skip/1 todo/0 fail**，历史记录过的另一条 "stdio passthrough 90s 超时" 这次两轮都没有复现（timeout 预算此前已加宽到位）。改动是纯测试文件（无 bun 二进制改动，未走 tap PR）。
+
+## `spawn.test.ts`：台账里的 "gcTick 时序" 一条本轮未复现（2026-08-25 续二十）
+
+复查 r59 台账汇总表里"53 个真实失败"分类清单中的 "spawn gcTick 时序 1"——这条从未展开成独立小节，只在汇总表里留了个桶名，没有具体断言/子用例名。全文件（`test/js/bun/spawn/spawn.test.ts`，148 个用例，含"should not hang"那个 16×100 次排列组合真实子进程压力测试块）真机连跑 **3 轮，全部 139 pass/9 skip/0 fail**，没有任何失败，也没有在输出里看到任何跟计时相关的报错——9 个 skip 都是已知原因（`Uint8Array` stdout 相关、`BUN_FEATURE_FLAG_FORCE_WAITER_THREAD`、uid/gid 等），跟"gcTick"或"时序"都对不上。
+
+**过程插曲**：第一轮跑的时候撞上设备当时内存/进程数真实紧张（`free -m` 一度只剩 ~500MB 可用、swap 用到 12.5GB/50GB，连 `ps`/`zsh` 自身都间歇性 `ENOMEM`/`EPERM` spawn 失败）——事后用 `ps -eo pid,rss,comm` 排查确认不是这次测试残留的僵尸进程堆积（没看到成堆的 bun/shell 残留），而是设备本身当时叠加了两个 `opencode2` 会话 + WPS/输入法等一堆 HarmonyOS 系统 HAP + 一个 VPN 代理客户端的正常多任务底噪，这次测试的真实子进程压力峰值把它推过了临界点；测试进程退出后 swap 迅速回落，不是泄漏。跟 gcTick 这条本身无关，记录在案供以后遇到类似"连 ps 都跑不动"时参考。
+
+**未加 quarantine**：3 轮全绿，没有可复现的失败可以归档；跟今天早些时候 `fetch.tls.test.ts`/`bun-serve-static-stress-access-body.test.ts` 是同一类结论——历史记录可能对应的是 20 核满载全量套件跑法下才会暴露的争抢强度（比如真实的 GC 时序确实更容易在系统整体繁忙、调度延迟增大时表现异常），鉴于今天已经真实撞见过一次设备资源紧张，本轮没有条件（也不该在资源边缘状态下）刻意加压复现到那个量级。留给以后满载复现时按实际签名归档。
