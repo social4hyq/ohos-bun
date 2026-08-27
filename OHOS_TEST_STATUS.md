@@ -4803,3 +4803,23 @@ test/js/node/test/parallel/test-http-max-http-headers.js
 **4 个 `test/internal/*` 类没查（工具链/自建规则类，优先级判断存疑）**：`build-rust-toolchain-probe.test.ts`（rustc probe 相关）、`rust-check-all.test.ts`（Tier 3 `-Zbuild-std` 检查）、`source-lints/lockfile-registry-only.test.ts`（`bun.lock` 全部来自 npm registry 的检查）、`source-lints/dead-code-escapes.test.ts`（`src/sys/lib.rs` 的 `#[allow(dead_code)]` 逃逸检查）——这四个看起来是检查本仓库自己的 rust 工具链/代码规范状态的自建测试，不是"OHOS 平台行为差异"这一类，可能是这台设备本身 rust 工具链版本/配置跟 CI 预期不一致，也可能是真实的代码债务，没有时间判断，如实标注未查。
 
 **净效果**：昨晚全量复测的 63 个失败里，62 个（不含 `websocket-server.test.ts` 已提前处理）经这轮排查后：38 个证实是并发假象、1 个是超时预算误判、1 个是已知问题复现、7 个是需要跟进的真实发现（1 个环境限制候选、1 个第三方 formula 问题、1 个真 bug、1 个超时预算候选、1 个断言文案候选）、4 个工具链类未查。真正代表"ohos-bun 这个仓库需要修代码"的干净新发现只有 **1 个**（`create-jsx.test.ts` 的生产模式空响应）——跟历史上每一轮全量复测的规律一致："文件级失败数"远比"真实需要修的 bug 数"吓人，大部分是并发假象或已知簇的新样本。
+
+## `create-jsx.test.ts` 空响应根因追查：跟"生产模式"完全无关，是 `bun --eval` 自动装包的一个稀有竞态（2026-08-27）
+
+复查上一节标为"1 个真 bug"的 `create-jsx.test.ts` 空响应，深挖之后发现之前的归因是错的——**跟 `development: false`（生产模式）没有任何关系**，是一条独立于 dev/production 分支之外的、更底层的稀有竞态。
+
+**先证伪"生产 server 坏了"这个假设**：直接手工搭同一份 `react-spa-no-tailwind` 脚手架，`NODE_ENV=production BUN_PORT=0 bun './**/*.html'` 启动后用 `curl` 直连——**返回完整、正确的 462 字节 HTML**（`<div id="root"></div>` 外壳 + 正确的 chunk 引用），server 本身完全正常。
+
+**真正的失败点**：回头精读那一轮的完整日志（不是只看最后的 assertion diff），发现在 `expect(...).toMatchSnapshot()` 报错**之前**其实还打印了一行没注意到的错误：
+
+```
+error: Unexpected while resolving package '@happy-dom/global-registrator' from '/data/storage/el2/base/tmp/happy-dom_MmFEPH/[eval]'
+```
+
+`fetchAndInjectHTML()`（测试文件自己的 helper）会另起一个**嵌套的 `bun --eval` 子进程**，在一个共享的、只写了 `package.json`（没有预先 `bun install`）的临时目录里 `import { GlobalRegistrator } from "@happy-dom/global-registrator"`，指望 bun 的"运行时自动装缺失包"机制现场把它装上、脚本再继续跑，最后把 `document.documentElement.outerHTML` 写到 stdout。这个嵌套子进程解析包失败直接崩溃退出，从来没写过任何内容到 stdout——外层 `subprocess.stdout.text()` 自然拿到空字符串。**这个失败跟外层的生产 server 完全无关，只是恰好在这条用例的执行路径上先撞上了。**
+
+**定位到具体机制**：`bun --eval 'import ... from "@happy-dom/global-registrator"'` 在一个只有 `package.json`（无 `node_modules`）的目录里，靠自动装包机制现场解析——**这一步偶发失败**；但同一个目录先手工跑一次 `bun install`（走的是普通装包命令，不是 `--eval` 的自动装包路径）**稳定成功**（4 个包，2.03s），装完之后再跑同一条 `bun --eval` 命令也**稳定成功**。缩小到：只有"`--eval` 触发的现场自动装包"这条路径会出问题，独立的 `bun install` 命令本身没问题。
+
+**复现率极低，没能可靠复现**：单独重跑同一条命令（全新目录）5 次全过；8 个并发进程各自装到不同目录 8 次全过；6 个并发进程装到**同一个**共享目录（模拟测试里 `dir_with_happy_dom` 被多条用例复用的场景）6 次全过。只有最初那一次（在 `create-jsx.test.ts` 真实跑的时候）撞上过。看起来是一个真实存在、但触发条件极窄的竞态（`--eval` 自动装包机制内部的时序问题），不是"生产模式" bug，也不是能稳定复现来继续深挖的东西——按今天"Option C"/cluster IPC 那两条的同等标准，到此为止，如实记录机制和已知复现率，留给以后再撞上时用更多样本量或者上带日志的构建去追。
+
+**结论订正**：上一节"净效果"统计里的"1 个真 bug"这个归类撤回——不是 create-jsx 场景的功能 bug，是 `bun --eval` 自动装包路径的一个独立、稀有的竞态，被这个测试的辅助 helper 意外撞见。真正"ohos-bun 需要修代码"的干净新发现目前是 **0 个**，不是 1 个。
