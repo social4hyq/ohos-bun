@@ -4635,3 +4635,103 @@ worker.on("message", function (message, handle) {
 **过程插曲**：第一轮跑的时候撞上设备当时内存/进程数真实紧张（`free -m` 一度只剩 ~500MB 可用、swap 用到 12.5GB/50GB，连 `ps`/`zsh` 自身都间歇性 `ENOMEM`/`EPERM` spawn 失败）——事后用 `ps -eo pid,rss,comm` 排查确认不是这次测试残留的僵尸进程堆积（没看到成堆的 bun/shell 残留），而是设备本身当时叠加了两个 `opencode2` 会话 + WPS/输入法等一堆 HarmonyOS 系统 HAP + 一个 VPN 代理客户端的正常多任务底噪，这次测试的真实子进程压力峰值把它推过了临界点；测试进程退出后 swap 迅速回落，不是泄漏。跟 gcTick 这条本身无关，记录在案供以后遇到类似"连 ps 都跑不动"时参考。
 
 **未加 quarantine**：3 轮全绿，没有可复现的失败可以归档；跟今天早些时候 `fetch.tls.test.ts`/`bun-serve-static-stress-access-body.test.ts` 是同一类结论——历史记录可能对应的是 20 核满载全量套件跑法下才会暴露的争抢强度（比如真实的 GC 时序确实更容易在系统整体繁忙、调度延迟增大时表现异常），鉴于今天已经真实撞见过一次设备资源紧张，本轮没有条件（也不该在资源边缘状态下）刻意加压复现到那个量级。留给以后满载复现时按实际签名归档。
+
+## 全量复测：20 核并发，98.92% 通过率，`gcTick` 疑案实锤（2026-08-25/26 跨夜）
+
+用户要求更新台账整体通过率 + 列出仍未通过的文件。跟用户确认后选了跟历史 98.84% 那次同配置的 `node scripts/runner.node.mjs --parallel`（20 核并发，接受内存风险而不是改成序跑省内存）。全程后台跑，本机记录到的耗时约 70 分钟（含前段 `cli/install` 真实网络安装拖慢的一大截）。
+
+**总体结果**（runner 自带汇总表）：
+
+| | 数值 |
+|---|---|
+| quarantine 预先剔除 | 52 个文件（`expectations.txt` 里的 OPENHARMONY 条目） |
+| Total Tests | 5843 |
+| Passed | 5780 |
+| Failing | 63 |
+| Flaky（runner 自己判定的） | 0 |
+| **通过率** | **5780/5843 = 98.92%** |
+
+比 r59 那次 98.84% 又高了一点点，量级一致，可以直接对比。
+
+### `spawn.test.ts` 的 "gcTick 时序" 疑案，这次终于实锤
+
+早些时候三次隔离单跑该文件都是 139 pass/0 fail，怀疑是"要 20 核满载才触发"——这次全量日志里直接抓到了两次一模一样的失败：
+
+```
+(fail) gcTick > spawn > pipe > should allow reading stdout after a few milliseconds [5008.49ms]
+```
+
+对应源码 `spawn.test.ts:585`——50 次循环，每次真实 `Bun.spawn(["git","--version"])` + `await Bun.sleep(1)` + 读 stdout，断言非空。5008ms 精确卡在默认超时上。**确认是隔离单跑无法复现、必须 20 核满载真实子进程争抢才会触发的争抢类问题**，不是逻辑 bug——跟 `expectations.txt` 里已经记过的"OHOS spawn overhead: fork+exit_group 2-3x 慢于 vfork"直接相关：50 次真实 `git` 子进程调用在满载争抢下累计延迟撞上 5s 预算。未 quarantine（隔离单跑 100% 稳定过，不该为一个满载专属场景牺牲整文件覆盖），归类清楚，留档。
+
+### 其余 62 个失败：方法论说明 + 部分交叉验证
+
+**踩了一个坑**：20 路并发跑产生的是**交错日志**（20 个 worker 的 stdout 混在一条流里），按行号区间去切某个文件的输出段不可靠——试图定位 `rm.test.ts` 失败详情时，切出来的"区间"里混进了同时在跑的 `css-fuzz.test.ts` 的输出。**结论：全量并发日志只能拿来确认"谁失败了"（runner 自带的汇总表是权威），拿不到某个具体文件"为什么失败"的可靠细节，要查真实原因得回去隔离单跑那个文件。**
+
+**用隔离单跑交叉验证了 3 个，全部证实是同一类"满载专属，隔离必过"的并发假象，不是新 bug**：
+- `test/js/bun/shell/commands/rm.test.ts`：隔离单跑 **9 pass/0 fail**（今天早些时候修的 PATH_MAX + node_modules 超时两个改动都还生效）
+- `test/js/node/child_process/child_process.test.ts`：隔离单跑 **64 pass/4 skip/1 todo/0 fail**（今天修的 TMPDIR env 分支还生效；大概率是台账记过的"stdio passthrough 90s 超时，满载下顶格"那条又撞了一次）
+- `test/js/bun/spawn/spawn.test.ts`：如上，实锤是 gcTick 那条
+
+**已知/历史归类可以直接对上号，未逐条重新验证**（沿用今天/更早已确认的根因）：
+- `test/js/node/net/node-net.test.ts`、`test/js/node/test/parallel/test-net-autoselectfamily.js`（timeout）、`test/js/bun/test/parallel/test-http-get-can-use-Agent.ts`（timeout）、`test/js/bun/test/parallel/test-https-get-can-use-Agent.ts`（timeout）——vpn-tun 透明代理伪造 TCP 握手这一族（T32/[[environment_vpn_tun_fakes_wan_connect]]）
+- `test/js/node/cluster/test-docs-http-server.ts`——今天刚 root-caused 的 cluster IPC 消息丢失真实 bug（续十七），未修复，留后续 session
+- `test/js/bun/http/bun-serve-static-stress-access-body.test.ts`——今天早些时候（续十三）明确预判过"可能要 20 核满载才复现"，这次全量复测直接坐实了这个预判
+- `test/js/bun/test/test-test.test.ts`、`test/js/bun/test/snapshot-tests/snapshots/snapshot.test.ts`——日志里抓到的失败内容（"expect.assertions DOES fail the test"、嵌套 snapshot fuzz 差异）看起来像是这两个文件自带的"故意造一个会失败的嵌套用例，验证 bun:test 框架本身正确报告失败"的自测试模式，外层 runner 有没有把这类有意失败也计进"Failing Tests"存疑，**未证实，需要单独确认**，先如实标注不确定
+
+**没时间逐条查因、原样列出等后续轮次**（跟 r66/r59 等历次全量复测的收尾方式一致——大文件全量复测本来就是分轮次逐步收口，不要求一次性查完）：
+
+```
+test/bake/dev/production.test.ts
+test/bundler/esbuild/default.test.ts
+test/bake/dev/request-cookies.test.ts
+test/bake/dev/react-response.test.ts
+test/bake/dev/css.test.ts
+test/bundler/bundler_barrel.test.ts
+test/bundler/bundler_edgecase.test.ts
+test/bundler/bundler_splitting.test.ts
+test/bundler/bundler_string.test.ts
+test/bundler/esbuild/dce.test.ts
+test/bundler/esbuild/splitting.test.ts
+test/bundler/esbuild/ts.test.ts
+test/cli/install/bun-install-git-deps.test.ts
+test/cli/install/bun-create.test.ts
+test/cli/hot/hot.test.ts
+test/bundler/esbuild/extra.test.ts
+test/cli/install/bun-patch.test.ts
+test/cli/install/bun-publish.test.ts
+test/cli/install/bun-install-lifecycle-scripts.test.ts
+test/cli/create/create-jsx.test.ts
+test/cli/install/bun-pm-scan.test.ts
+test/cli/install/bun-pm-why.test.ts
+test/cli/install/migration/migrate.test.ts
+test/cli/install/migration/complex-workspace.test.ts
+test/cli/install/migration/pnpm-comprehensive.test.ts
+test/cli/run/env.test.ts
+test/cli/run/multi-run.test.ts
+test/integration/bun-types/fixture/serve-types.test.ts
+test/internal/build-rust-toolchain-probe.test.ts
+test/internal/rust-check-all.test.ts
+test/internal/source-lints/lockfile-registry-only.test.ts
+test/internal/source-lints/dead-code-escapes.test.ts
+test/cli/test/parallel.test.ts
+test/js/bun/http/serve-body-leak.test.ts
+test/js/bun/http/bun-server.test.ts
+test/js/bun/http/tls-keepalive.test.ts
+test/cli/install/bun-security-scanner-matrix-without-node-modules.test.ts
+test/js/bun/secrets-error-codes.test.ts
+test/js/bun/secrets.test.ts
+test/js/bun/css/css-fuzz.test.ts
+test/js/bun/shell/bunshell.test.ts
+test/js/node/http2/node-http2.test.js
+test/js/node/process/process-stdin.test.ts
+test/js/third_party/body-parser/express-memory-leak.test.ts
+test/regression/issue/32492.test.ts
+test/v8/v8.test.ts
+test/js/node/test/sequential/test-net-better-error-messages-port.js
+test/js/node/test/sequential/test-net-server-bind.js
+test/js/node/test/sequential/test-pipe.js
+test/js/node/test/parallel/test-fs-watch-recursive-linux-parallel-remove.js（timeout）
+test/js/node/test/parallel/test-http-max-http-headers.js（timeout）
+```
+
+其中 `bun-install-*`/`bun-create`/`bun-patch`/`bun-publish`/`bun-pm-*`/`migration/*`/`env.test`/`multi-run`/`hot.test` 这一串名字上高度像既有的 T14（网络/包管理器超时预算，class D）同族样本，`bake/dev/*` + `bundler/*`/`esbuild/*` 这一串名字上像是 bake/dev 那条历史上修过又在满载下重新顶格（已知这类历史上出现过 60s 超时问题，"23/23 全绿"是隔离单跑的结论，不代表满载下不会再顶格）——但都是**基于名字的猜测，没有逐条验证**，如实标注，别当结论用。
