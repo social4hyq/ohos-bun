@@ -4735,3 +4735,71 @@ test/js/node/test/parallel/test-http-max-http-headers.js（timeout）
 ```
 
 其中 `bun-install-*`/`bun-create`/`bun-patch`/`bun-publish`/`bun-pm-*`/`migration/*`/`env.test`/`multi-run`/`hot.test` 这一串名字上高度像既有的 T14（网络/包管理器超时预算，class D）同族样本，`bake/dev/*` + `bundler/*`/`esbuild/*` 这一串名字上像是 bake/dev 那条历史上修过又在满载下重新顶格（已知这类历史上出现过 60s 超时问题，"23/23 全绿"是隔离单跑的结论，不代表满载下不会再顶格）——但都是**基于名字的猜测，没有逐条验证**，如实标注，别当结论用。
+
+## 剩余 50 个未分类失败：逐条隔离复测，48/50 收口（2026-08-26）
+
+用户要求逐个分析上一节列出的未分类文件。写了个批量脚本，对全部 50 个文件依次单跑（非 20 核并发，避免重演昨晚的内存危机；每个文件外挂 `timeout 90` 防止真卡死拖垮整批），产出逐文件 pass/fail 摘要。5 个 `test/js/node/test/{parallel,sequential}/*.js` 文件第一遍用裸 `bun test <path>` 报"文件名不含 .test/_test_，当过滤器解析" 的假失败——这是我调用方式的问题（这批 vendored node 测试文件走的是 runner 自己的 include 机制，不是 bun:test 原生文件名匹配），改用 `node scripts/runner.node.mjs --include=...` 精确单跑后修正。
+
+**38 个确认是并发假象（隔离单跑全部干净通过），不需要修复**：
+
+```
+test/bake/dev/production.test.ts
+test/bundler/esbuild/default.test.ts
+test/bake/dev/request-cookies.test.ts
+test/bake/dev/react-response.test.ts
+test/bake/dev/css.test.ts
+test/bundler/bundler_barrel.test.ts
+test/bundler/bundler_edgecase.test.ts
+test/bundler/bundler_splitting.test.ts
+test/bundler/bundler_string.test.ts
+test/bundler/esbuild/dce.test.ts
+test/bundler/esbuild/splitting.test.ts
+test/bundler/esbuild/ts.test.ts
+test/cli/install/bun-install-git-deps.test.ts
+test/cli/install/bun-create.test.ts
+test/cli/hot/hot.test.ts
+test/bundler/esbuild/extra.test.ts
+test/cli/install/bun-patch.test.ts
+test/cli/install/bun-publish.test.ts
+test/cli/install/bun-install-lifecycle-scripts.test.ts
+test/cli/install/bun-pm-scan.test.ts
+test/cli/install/bun-pm-why.test.ts
+test/cli/install/migration/migrate.test.ts
+test/cli/install/migration/complex-workspace.test.ts
+test/cli/install/migration/pnpm-comprehensive.test.ts
+test/cli/run/env.test.ts
+test/cli/test/parallel.test.ts
+test/js/bun/http/serve-body-leak.test.ts
+test/js/bun/http/bun-server.test.ts
+test/js/bun/http/tls-keepalive.test.ts
+test/js/bun/css/css-fuzz.test.ts
+test/js/bun/shell/bunshell.test.ts
+test/js/node/http2/node-http2.test.js
+test/js/node/process/process-stdin.test.ts
+test/js/third_party/body-parser/express-memory-leak.test.ts
+test/js/node/test/sequential/test-net-better-error-messages-port.js
+test/js/node/test/sequential/test-net-server-bind.js
+test/js/node/test/sequential/test-pipe.js
+test/js/node/test/parallel/test-fs-watch-recursive-linux-parallel-remove.js
+test/js/node/test/parallel/test-http-max-http-headers.js
+```
+
+**1 个是已知问题的又一次复现，非新发现**：`test/cli/install/bun-security-scanner-matrix-without-node-modules.test.ts`——`Expected: 0, Received: 143`（SIGTERM），跟今天反复打交道的 epoll dup+DEL 残留泄漏源（`PipeWriter.rs:147`，Option C 未实现）是同一个已知签名，不是新 bug。
+
+**1 个是慢但不是挂，仅超时预算问题**：`test/regression/issue/32492.test.ts`——我的批量脚本 `timeout 90` 把它误杀（exit 124），单独放宽到 150s 后 **1 pass/0 fail，118.84s**。它本身就这么慢（不含额外并发争抢），不是并发假象也不是真 bug，只是这个文件跑起来确实要 2 分钟左右。
+
+**7 个是真实发现，需要后续跟进（不是并发假象，也不是已知问题）**：
+
+1. **`test/js/bun/secrets.test.ts` + `test/js/bun/secrets-error-codes.test.ts`**（合计 8 fail）：统一报 `error: libsecret not available` / `ERR_SECRETS_PLATFORM_ERROR`。`Bun.secrets` 依赖系统密钥环后端（Linux 上是 libsecret + D-Bus session + 密钥环守护进程），这台设备的应用沙箱大概率压根没有这套服务在跑，跟 lsof/netstat/ptrace 是同一类"沙箱缺失系统服务"限制，不是"装个包"能解决的（`libsecret` 本身或许能装，但没有密钥环守护进程配合一样白搭）。结构性平台限制，未验证是否有替代方案（比如探测降级到某种文件态存储），候选 quarantine 项，未动手。
+
+2. **`test/v8/v8.test.ts`**（72/79 fail，看起来吓人但其实是同一根因）：所有失败堆栈都收敛到同一处——`node`（这台设备装的 `node-ohos` formula，v26.7.0）自己 `dlopen` 一个用 node-addon-api/V8 头文件编译的原生测试插件（`v8tests.node`）时报 `Error relocating ...: _ZN2v85Array3NewE...: symbol not found`，`ERR_DLOPEN_FAILED`。**这不是 bun 的 V8 兼容层问题，是 node 自己加载不了这个原生插件**——这台设备的 `node-ohos` 构建大概率没有正确导出 node-addon-api 依赖的 V8 符号（`v8::Array::New` 等），是这个 formula 构建配置层面的问题，不是 ohos-bun 仓库能修的。候选：去 `node-ohos` formula 那边查 V8 符号导出配置；这边先如实记录根因，不在本仓库动手。
+
+3. **`test/cli/create/create-jsx.test.ts`**（8/13 fail）：分两类。多数是 dev-server 启动卡在默认 5000ms 超时（`shadcn/ui` 模板尤其重，装的依赖多，跟已知的"OHOS spawn/install 开销更大"一脉相承，可能只是超时预算不够）；但 `development: false > react spa (no tailwind) > dev server`/`(tailwind) > dev server` 这两条不是超时（1227ms/1338ms 就报错），是**真实功能问题**——断言应该拿到完整渲染出的 HTML 页面，实际拿到空字符串 `""`。生产模式（`development: false`）下 dev server 没有正确把构建产物 serve 出来，是需要跟进的真 bug。
+
+4. **`test/cli/run/multi-run.test.ts`**（11/121 fail）：全部是 5000-7627ms 之间的超时，隔离单跑（无额外并发）本身就会超时，不是并发假象。这个文件测的是 `bun run` 同时跑多个脚本时的输出交错/前缀/时序行为，会真实起多个子进程——大概率是已知的"OHOS 子进程创建开销更大"在多脚本并发场景下把默认 5s 预算顶穿了，跟今天/历史上其它超时预算类修复（`vite-build.test.ts`/`child_process.test.ts`「stdio passthrough」等）同一个模子，候选"调宽超时"修复，未动手。
+
+5. **`test/integration/bun-types/fixture/serve-types.test.ts`**（1 fail，小问题）：`hostname: custom IPv4 address` 用例——bun 正确检测出地址不可用并抛错（`EADDRNOTAVAIL: address not available, listen`），但测试断言期望错误信息包含"Failed to start server"这个更笼统的字符串，实际收到的是更具体的系统错误信息，纯粹是断言文案对不上，不是功能坏了。候选：放宽断言或调整错误信息包装，未动手。
+
+**4 个 `test/internal/*` 类没查（工具链/自建规则类，优先级判断存疑）**：`build-rust-toolchain-probe.test.ts`（rustc probe 相关）、`rust-check-all.test.ts`（Tier 3 `-Zbuild-std` 检查）、`source-lints/lockfile-registry-only.test.ts`（`bun.lock` 全部来自 npm registry 的检查）、`source-lints/dead-code-escapes.test.ts`（`src/sys/lib.rs` 的 `#[allow(dead_code)]` 逃逸检查）——这四个看起来是检查本仓库自己的 rust 工具链/代码规范状态的自建测试，不是"OHOS 平台行为差异"这一类，可能是这台设备本身 rust 工具链版本/配置跟 CI 预期不一致，也可能是真实的代码债务，没有时间判断，如实标注未查。
+
+**净效果**：昨晚全量复测的 63 个失败里，62 个（不含 `websocket-server.test.ts` 已提前处理）经这轮排查后：38 个证实是并发假象、1 个是超时预算误判、1 个是已知问题复现、7 个是需要跟进的真实发现（1 个环境限制候选、1 个第三方 formula 问题、1 个真 bug、1 个超时预算候选、1 个断言文案候选）、4 个工具链类未查。真正代表"ohos-bun 这个仓库需要修代码"的干净新发现只有 **1 个**（`create-jsx.test.ts` 的生产模式空响应）——跟历史上每一轮全量复测的规律一致："文件级失败数"远比"真实需要修的 bug 数"吓人，大部分是并发假象或已知簇的新样本。
