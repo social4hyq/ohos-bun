@@ -4823,3 +4823,17 @@ error: Unexpected while resolving package '@happy-dom/global-registrator' from '
 **复现率极低，没能可靠复现**：单独重跑同一条命令（全新目录）5 次全过；8 个并发进程各自装到不同目录 8 次全过；6 个并发进程装到**同一个**共享目录（模拟测试里 `dir_with_happy_dom` 被多条用例复用的场景）6 次全过。只有最初那一次（在 `create-jsx.test.ts` 真实跑的时候）撞上过。看起来是一个真实存在、但触发条件极窄的竞态（`--eval` 自动装包机制内部的时序问题），不是"生产模式" bug，也不是能稳定复现来继续深挖的东西——按今天"Option C"/cluster IPC 那两条的同等标准，到此为止，如实记录机制和已知复现率，留给以后再撞上时用更多样本量或者上带日志的构建去追。
 
 **结论订正**：上一节"净效果"统计里的"1 个真 bug"这个归类撤回——不是 create-jsx 场景的功能 bug，是 `bun --eval` 自动装包路径的一个独立、稀有的竞态，被这个测试的辅助 helper 意外撞见。真正"ohos-bun 需要修代码"的干净新发现目前是 **0 个**，不是 1 个。
+
+## `test/internal/*` 4 个工具链测试全部查清并修复（2026-08-27）
+
+复查上一轮标为"没时间判断、如实标注未查"的 4 个 `test/internal/*` 文件——逐个查到底，**4 个全部是真实、合理的问题，且全部已修复**，不是 OHOS 平台限制。
+
+**1. `build-rust-toolchain-probe.test.ts`**：根因追到底——测试故意把 `PATH` 清空成只有一个临时目录（防止真实 rustup 介入），塞进去一个 `#!/bin/sh` 假 `rustc` 脚本，脚本内部用 `printf` 拼输出。用带调试插桩的 `tools.ts` 副本实锤：真机上这个假脚本执行时 `printf: inaccessible or not found`（exit 127）——这台设备的 `/bin/sh` 不把 `printf` 当内置命令，跟大多数 Linux 开发机的 `sh`（dash/bash 通常内置 `printf`）不一样，PATH 一清空就找不到。`findRustLld()` 拿到空输出后正确地判定"rustc 不可用"返回全 `undefined`，这本身没有问题——问题在测试的假脚本依赖了这台设备没有的隐式假设。改用 shell 内置的 `echo`（两行输出拆成两条独立 `echo`，不依赖任何 shell 对 `\n` 转义的差异约定），4/4 真机复测干净通过。
+
+**2. `rust-check-all.test.ts`**："with everything installed and no arguments" 用例断言 Tier 3（需要 `-Zbuild-std`）目标只有 `aarch64-unknown-freebsd` 一个，但这个 fork 的 rust 构建配置早就正确地把 `aarch64-unknown-linux-ohos` 也归类成 Tier 3 了（合理——OHOS 作为 rust target 本来就是树外/Tier 3，没有官方 rust-std 可装，需要 `-Zbuild-std`）。测试的硬编码期望列表没跟上这个 fork 自己的目标矩阵演进，加一行期望即可，3/3 复测通过。
+
+**3. `source-lints/lockfile-registry-only.test.ts`**（这条不是测试问题，是仓库真实状态问题）：这个 lint 检查根/`test/` 的 `bun.lock` 不能含 `github:`/`git+`/tarball 解析，防止某个依赖把 GitHub 拖进每条 PR 检查和每次构建的关键路径。查 `git log` 发现上游 `robobun` 早就精确修过这个问题（commit `7aad3874165`，PR oven-sh/bun#39446）：把 `bun-tracestrings` 从根 `package.json` 挪到独立的 `scripts/ci-remap-server/package.json`（唯一使用方 `scripts/runner.node.mjs` 单独装它，不进根安装）。但这个 fork 当前的根 `package.json:13` 还留着 `"bun-tracestrings": "github:oven-sh/bun.report#912ca63..."`——**大概率是上次合并 upstream main 时冲突解决把这行意外留回来了，等于撤销了上游那次修复**。删掉这个重复条目、重跑 `bun install` 精简 `bun.lock`（少 190 行/1 个包），3/3 复测通过。
+
+**4. `source-lints/dead-code-escapes.test.ts`**：两个文件的 `#[allow(dead_code)]` 计数比登记的清单多 1（`0 → 1`）。逐个读源码确认都是这个 fork 自己已经落地、有据可查的真实修复带来的合理逃逸，不是代码质量问题：`src/runtime/webcore/blob/read_file.rs` 的 `read_loop_state` 模块是 **T24**（OHOS stdio socketpair 并发读循环丢数据修复，`04518175b`）新增的，在 Windows 构建上（走 `ReadFileUV`，从不构造 `ReadFile`）合理地是死代码；`src/sys/lib.rs` 的 `MemfdFlags::older_kernel_flag()` 是 **T22**（memfd fstat EACCES 容错）相关的回退 helper，某些路径上合理未使用。按 lint 报错信息里给的官方指令 `bun ./test/internal/source-lints/dead-code-escapes.test.ts` 重新生成清单文件，diff 干干净净只加了这两条。用真实 runner（`node scripts/runner.node.mjs --include=...`）复测 25/25 全过——顺带发现一个跟本次修复无关的小怪癖：裸 `bun test <path>` 单独跑这个文件时会稳定触发脚本的"重新生成清单"分支而不是断言分支（`typeof describe === "undefined"`，原因未查清，只在这一个文件上观察到），只有走真实 runner 才拿到正常的 pass/fail 计数，不影响修复本身的正确性，记录以防以后再复核这个文件时踩到同样的困惑。
+
+**净效果更正**：4 个 `test/internal/*` 工具链测试全部修复；`create-jsx.test.ts` 撤销误判为 0 个真 bug。仍然开放、未动手的：`cluster/test-docs-http-server.ts`（IPC 消息丢失真 bug）、epoll Option C（残留泄漏源）——这两条昨天已深挖到位，留给专门 session；`secrets*.test.ts`（libsecret 环境限制候选 quarantine）、`v8.test.ts`（属于 `node-ohos` formula，不是这个仓库的问题）、`multi-run.test.ts`（超时预算候选）、`serve-types.test.ts`（断言文案候选）——这四条上一轮记录过具体归因和处置建议，本轮没有回头动手，仍然是开放项。
