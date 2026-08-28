@@ -4837,3 +4837,18 @@ error: Unexpected while resolving package '@happy-dom/global-registrator' from '
 **4. `source-lints/dead-code-escapes.test.ts`**：两个文件的 `#[allow(dead_code)]` 计数比登记的清单多 1（`0 → 1`）。逐个读源码确认都是这个 fork 自己已经落地、有据可查的真实修复带来的合理逃逸，不是代码质量问题：`src/runtime/webcore/blob/read_file.rs` 的 `read_loop_state` 模块是 **T24**（OHOS stdio socketpair 并发读循环丢数据修复，`04518175b`）新增的，在 Windows 构建上（走 `ReadFileUV`，从不构造 `ReadFile`）合理地是死代码；`src/sys/lib.rs` 的 `MemfdFlags::older_kernel_flag()` 是 **T22**（memfd fstat EACCES 容错）相关的回退 helper，某些路径上合理未使用。按 lint 报错信息里给的官方指令 `bun ./test/internal/source-lints/dead-code-escapes.test.ts` 重新生成清单文件，diff 干干净净只加了这两条。用真实 runner（`node scripts/runner.node.mjs --include=...`）复测 25/25 全过——顺带发现一个跟本次修复无关的小怪癖：裸 `bun test <path>` 单独跑这个文件时会稳定触发脚本的"重新生成清单"分支而不是断言分支（`typeof describe === "undefined"`，原因未查清，只在这一个文件上观察到），只有走真实 runner 才拿到正常的 pass/fail 计数，不影响修复本身的正确性，记录以防以后再复核这个文件时踩到同样的困惑。
 
 **净效果更正**：4 个 `test/internal/*` 工具链测试全部修复；`create-jsx.test.ts` 撤销误判为 0 个真 bug。仍然开放、未动手的：`cluster/test-docs-http-server.ts`（IPC 消息丢失真 bug）、epoll Option C（残留泄漏源）——这两条昨天已深挖到位，留给专门 session；`secrets*.test.ts`（libsecret 环境限制候选 quarantine）、`v8.test.ts`（属于 `node-ohos` formula，不是这个仓库的问题）、`multi-run.test.ts`（超时预算候选）、`serve-types.test.ts`（断言文案候选）——这四条上一轮记录过具体归因和处置建议，本轮没有回头动手，仍然是开放项。
+
+## `secrets.test.ts`/`secrets-error-codes.test.ts`：结构性限制坐实，已 quarantine（2026-08-28）
+
+复查上一轮标为"环境限制候选 quarantine"的这条，查清了完整依赖链、确认是真的结构性限制，不是"装个包就能解决"：
+
+`Bun.secrets` 在 Linux/FreeBSD 上（`src/jsc/bindings/SecretsLinux.cpp`）不链接 libsecret，改用 `dlopen` 在运行时动态加载 `libsecret-1.so.0`、`libglib-2.0.so.0`、`libgobject-2.0.so.0` 三个共享库，再通过 D-Bus Secret Service 协议联系一个密钥环守护进程（gnome-keyring 之类）实际存取。逐层查这台设备的现状：
+
+- harmonybrew 搜不到 `libsecret` formula（`glib` 有，`libsecret` 没有）。
+- `dbus-daemon`/`dbus-launch` 已经装了（不知道是谁、什么时候装的），但 `DBUS_SESSION_BUS_ADDRESS` 为空、`/run/dbus`、`/var/run/dbus` 都不存在——没有会话总线在跑。
+- 没有任何密钥环守护进程在跑（自然，连总线都没有）。
+- bun 自己没有 OHOS 专属的 Secrets 后端——`src/jsc/bindings/Secrets*.cpp` 只有 `Darwin`/`Windows`/`Linux`（含 FreeBSD）三份，OHOS 落进 `Linux` 分支，走的正是上面这套 dlopen+D-Bus 逻辑。
+
+跟用户确认处理方式：**即使真把 libsecret 编好、D-Bus session 跑起来、随便起个轻量守护进程凑出一个"能通过测试"的密钥环，那也只是人工搭的、跟这台设备真实 OS 安全存储完全无关的伪环境**——不是真正解决问题，价值存疑。用户选择直接按环境限制 quarantine，不投入这轮 spike；真正的长期正确方案是给 bun 加一个用 OHOS 原生安全存储 API 实现的 Secrets 后端（需要先确认 OHOS 有没有暴露这类 API 给应用），量级上跟 Option C/cluster IPC 是同一档，留给专门 session。
+
+**改动**：`test/expectations.txt` 新增两条 `[ OPENHARMONY ] ... [ Skip ]`。

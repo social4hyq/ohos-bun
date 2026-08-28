@@ -334,6 +334,18 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 [ OPENHARMONY ] test/js/bun/terminal/terminal-spawn.test.ts [ Flaky ] # subprocess-with-terminal 5s timeouts (1+ test)
 [ OPENHARMONY ] test/js/bun/repl/repl.test.ts [ Flaky ] # PTY-based REPL tests 5s timeouts (2-4 tests)
 
+# --- js/bun/secrets: no OS keyring backend in this sandbox ---
+# Bun.secrets on Linux/FreeBSD dlopens libsecret + glib + gobject, then talks
+# to a keyring daemon (gnome-keyring et al.) over a D-Bus session bus. This
+# device has none of that stack: no libsecret formula in harmonybrew, no
+# D-Bus session running (dbus-daemon/dbus-launch are installed but idle, no
+# socket), no keyring daemon. bun also has no OHOS-native Secrets backend
+# (only Darwin/Windows/Linux exist) -- would need real OHOS secure-storage
+# API bindings to do this properly, not a fake desktop keyring stood up just
+# to pass the test. Structural, not fixable in userland. 2026-08-28.
+[ OPENHARMONY ] test/js/bun/secrets.test.ts [ Skip ] # libsecret/D-Bus keyring stack absent from the sandbox
+[ OPENHARMONY ] test/js/bun/secrets-error-codes.test.ts [ Skip ] # libsecret/D-Bus keyring stack absent from the sandbox
+
 # --- js/bun/websocket: file-internal concurrency overload ---
 # ~120 it.concurrent cases in one file, each spinning up a real Bun.serve +
 # client WebSocket pair. The plain (non-.concurrent) "ServerWebSocket >
