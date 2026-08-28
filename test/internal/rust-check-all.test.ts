@@ -128,6 +128,8 @@ describe.skipIf(isWindows)("rust:check-all", () => {
       );
       expect(lines.filter(line => line.startsWith("cargo ") && line.endsWith(cargoBuildStdArg))).toEqual([
         cargoLine("aarch64-unknown-freebsd"),
+        // Also Tier 3, same as freebsd: no rust-std to add, needs -Zbuild-std.
+        cargoLine("aarch64-unknown-linux-ohos"),
       ]);
       expect(exitCode).toBe(0);
     },
