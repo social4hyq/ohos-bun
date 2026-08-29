@@ -377,17 +377,31 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 #
 # astro@5.5.5's own rollup is unblocked (transitively resolves to 4.62.2,
 # which has rollup's official openharmony-arm64 build) and `build()` now
-# genuinely runs to completion, but this surfaces a separate, real flake:
-# `preview({port: 0})` resolves before the HTTP server is actually accepting
-# connections on this device -- 1/4 isolated runs got a clean 4/4 pass, the
-# other 3/4 got ECONNREFUSED on the two direct-fetch() tests specifically
-# (the two node-subprocess-fetch tests never failed) with an unexpectedly
-# fixed port (4321, astro's static default) in the error, not a race on port
-# assignment itself. Consistent with this repo's broader "OHOS process/server
-# startup is slower, timing assumptions that hold upstream don't hold here"
-# theme; needs a real wait-for-ready fix (poll/retry before the first
-# request), not just a resolutions bump -- left as Flaky, not unquarantined.
-[ OPENHARMONY ] test/js/third_party/astro/astro-post.test.js [ Flaky ] # astro's own rollup is fixed (build() runs), but preview({port:0})'s promise resolves before the server actually accepts connections; ~3/4 isolated runs ECONNREFUSED on the two direct-fetch tests, needs a wait-for-ready fix
+# genuinely runs to completion, but this surfaces a separate, real flake on
+# the two direct-fetch() tests (the two node-subprocess-fetch tests never
+# fail). 2026-08-30: deep-dived this with a scratch harness reproducing the
+# exact build()+preview()+fetch() sequence (see OHOS_TEST_STATUS.md for the
+# full writeup) and ruled out every clean hypothesis tried:
+#   - NOT DNS/family selection (T49-style localhost->::1): hardcoding the
+#     origin to the literal 127.0.0.1 still fails identically, 4/4 runs.
+#   - NOT "listen() fires before accept() is ready" at the bun/OHOS level: a
+#     bare http.createServer() + immediate fetch(), run right after the same
+#     heavy astro build(), is 20/20 clean with <1ms latency -- same
+#     http.createServer() primitive astro's node adapter itself uses.
+#   - NOT "just needs to wait longer": a retry loop sometimes succeeds around
+#     +200ms: another run of the identical loop never succeeds even after a
+#     full 1000ms of retries. Not consistent with any fixed or backed-off
+#     wait budget.
+#   - NOT a leftover process squatting the (always-4321, see below) port:
+#     a direct bind probe on 4321 between runs succeeds cleanly.
+# Note: `preview({port: 0})`'s `port` isn't a recognized top-level option for
+# this adapter path (server output + @astrojs/node) -- the actual port always
+# comes from astro.config.mjs's `server.port`, which this fixture never sets,
+# so it's always the schema default 4321, not a race on port assignment.
+# Genuinely unresolved after real investigation, not a "just add a fix"
+# case -- left as Flaky, not unquarantined, until there's appetite to
+# instrument bun's own network stack directly.
+[ OPENHARMONY ] test/js/third_party/astro/astro-post.test.js [ Flaky ] # astro's own rollup is fixed (build() runs), but the two direct-fetch() tests intermittently ECONNREFUSED against the preview server; root cause investigated and NOT DNS/family-selection, NOT a listen-vs-accept race, NOT a fixed wait budget, NOT a leftover port holder -- see OHOS_TEST_STATUS.md 2026-08-30
 # @resvg/resvg-js is fixed at the require()/render() level (community port
 # @ohos-npm-ports/resvg-resvg-js@2.6.2-1 -- migrated 2026-08-29 from the
 # @ohos-ports/resvg-resvg-js@2.6.2-1 build this section originally referenced,

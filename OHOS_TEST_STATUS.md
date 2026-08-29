@@ -4895,3 +4895,27 @@ error: Unexpected while resolving package '@happy-dom/global-registrator' from '
 **净效果**：`test/package.json` 新增 `resolutions`（`@resvg/resvg-js`/`@napi-rs/canvas`/`sharp` 三个指向 `@ohos-ports`）+ `trustedDependencies: ["sharp"]`；`test-integration-rspack.ts` 加 `isOHOS` 分支在 `bun create` 后、`bun install` 前给脚手架工程的 `package.json` 注入 override；`test/expectations.txt` 摘掉 `napi-rs-canvas.test.ts`/`test-integration-rspack.ts` 两条（真通过），`astro-post.test.js`/`resvg/bbox.test.js`/`sharp.test.ts`/`prisma.test.ts` 四条改写成准确的当前根因（原先全部写的是"无 OHOS 二进制"这个过时理由）。commit `f8ec454bb7`。
 
 `docs/ohos-ports-pending-packages.md`（Workspace 仓）同步更新，见该文档。
+
+## `astro-post.test.js` Flaky 深挖：四个假设逐一证伪，真根因未查清（2026-08-30）
+
+上一节把这条标成"Flaky，`preview({port:0})` 的 promise 在 server 真正监听前就 resolve"——用户要求先看这条，深挖之后**这个归因是错的（太简单了）**，按 systematic-debugging 的规矩老实记录：四个假设逐一测试，全部证伪或部分证伪，没查出干净的单一机制。
+
+**先纠正一个前提性误解**：这个 fixture 的 `astro.config.mjs` 是 `output: "server"` + `adapter: node({mode: "standalone"})`，走的根本不是 `astro/dist/core/preview/static-preview-server.js`（vite 的 `preview()`）那条路，而是 `@astrojs/node/dist/standalone.js`——`preview.js`（astro 自己的顶层 `preview()`）把 `settings.config.server.port` 传给 adapter 的 preview 入口，测试传的 `port: 0` 从来就不是这条路径认识的顶层 key，一路被忽略；真正生效的端口来自 `astro.config.mjs` 里 `server.port`，fixture 没设，落到 astro 自己 schema 的默认值 **4321**——即端口从来不是随机分配，是固定值，之前"unexpectedly fixed port"这个观察记对了但没查到这一步的具体机制。
+
+**假设 1（T49 同款：`localhost` DNS 解析成 `::1`，server 只监听 IPv4）**——这个仓库已有 10 个 T49 受害者（`getaddrinfo` ADDRCONFIG 错误过滤 IPv4 loopback），形状很像。**证伪**：把测试的 `origin` 里 `localhost` 硬编码成字面量 `127.0.0.1`（临时改本地副本，跑完复原），连续跑 4 轮，**依然 100% 同样报错**。不是地址族选择问题。
+
+**假设 2（bun/OHOS 上 `listen()` 的 callback 触发早于内核真正开始 accept）**——最初写 Flaky 理由时的猜测。**证伪**：写最小复现——裸 `http.createServer()`（跟 `@astrojs/node/standalone.js` 用的是完全同一个 Node 原语）立即 `fetch()`，独立跑 20 轮、紧跟着真实跑一次同样体量的 `astro build()` 之后再跑 20 轮，**全部 0 失败，延迟 <1ms**。同一个原语在裸用时完全没有这个问题。
+
+**假设 3（只是要多等一会儿，退避重试就行）**——用真实 `build()`+`preview()`+重试循环实测（脚本见下），结果自相矛盾：
+- 一次跑法：10 次 raw connect 重试（每次间隔 `Bun.sleep(20)`，累计约 200ms）全失败后，紧接着做一次真实的 astro POST 请求——**成功**了。
+- 另一次跑法：改用 `fetch()`（而不是 raw connect）本身做重试探针，间隔 `Bun.sleep(50)`，最多 20 次（累计约 1000ms）——**从头到尾一次没成功**。
+
+同一段逻辑、同一台设备、仅仅换了探测方式和间隔节奏，"要等多久"这个数字完全不稳定，没法归纳出一个可靠的固定/退避等待预算。
+
+**副产品（干扰过诊断，单独记一下）**：这台设备上裸 `net.createConnection()` 对 loopback 存在跟这个问题**完全独立**的偶发 `ECONNRESET`——第一轮用 raw net socket 写探针时，一个跟 astro 毫无关系的简单 echo server 也稳定复现 `ECONNRESET`，误导了几轮排查方向；换成 `fetch()` 直接当探针（更贴近真实测试路径）才排除这个干扰拿到可信数据。以后再拿 raw `net.connect` 当"server 是否 ready"的探针，先怀疑这条。
+
+**假设 4（端口被前一轮遗留的僵尸进程占着，listen 表面成功实际是假的）**——`ps -eo pid,rss,comm` 查无残留 bun/node 进程；独立脚本直接 bind 4321 探测，干净成功。排除。
+
+**结论**：真实存在、能稳定复现"有时行有时不行"，但四个自然的假设（DNS/地址族、listen-vs-accept 竞态、固定等待预算、残留进程占端口）逐一测试后**全部证伪或部分证伪**——没有归纳出可以直接动手修的单一机制。跟 epoll Option C、cluster IPC 那两条"查到根因但先搁置"不是一个档次——这条是**连根因都没摸到**，继续往下查大概率要插桩 bun 自己的网络栈源码（`src/bun.js/api/bun/socket.zig` 或等价物）才能看到 accept 队列/epoll 注册的真实时序，超出这轮排查的投入产出比。`test/expectations.txt` 维持 `[ Flaky ]`（不是 unquarantine），理由文案已同步这次的排查证据，供以后有更多样本或愿意插桩时接着查。
+
+诊断脚本（跑完已清理，未提交）：`build()` 一次 + `preview()`（可重复多轮复用同一 dist/）+ 时间戳埋点重试循环，比对 raw `net.connect` vs `fetch()` 两种探针、比对裸 `http.createServer()` vs 真实 astro/adapter server 两种服务端，是定位到"两个假设互相矛盾"这一步的关键方法——单独跑一种探针/一种服务端都会得到看似自洽但实际是假象的结论。
