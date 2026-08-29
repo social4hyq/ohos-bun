@@ -167,6 +167,25 @@ export function nodeExeMatchingAbi(): Promise<string> {
 }
 
 async function findOrDownloadAbiMatchingNode(): Promise<string> {
+  // On OHOS, the default `node` on PATH is built with the system/Alpine GCC
+  // toolchain (GNU libstdc++ ABI) and reports the same NODE_MODULE_VERSION as
+  // `node-ohos` (llvm@21, libc++ __n1 ABI) and as Bun -- the ABI-number check
+  // below can't tell them apart, but a node-gyp addon built under `bun --bun`
+  // (libc++ __n1) fails to dlopen under the GCC-toolchain node with "Error
+  // relocating ...: symbol not found" (the mangled __n1 symbol just isn't
+  // there). node-ohos is the one addons actually load in; prefer it whenever
+  // it's installed, before the generic ABI-number match below picks the
+  // wrong one.
+  if (isOHOS) {
+    try {
+      const prefix = execSync("brew --prefix node-ohos", { encoding: "utf8", timeout: 3000 }).trim();
+      const exe = join(prefix, "bin", "node");
+      if (fs.existsSync(exe)) return exe;
+    } catch {
+      // node-ohos not installed -- fall through to the generic lookup below.
+    }
+  }
+
   const system = nodeExe();
   if (system) {
     const probe = Bun.spawnSync({
