@@ -389,14 +389,24 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # request), not just a resolutions bump -- left as Flaky, not unquarantined.
 [ OPENHARMONY ] test/js/third_party/astro/astro-post.test.js [ Flaky ] # astro's own rollup is fixed (build() runs), but preview({port:0})'s promise resolves before the server actually accepts connections; ~3/4 isolated runs ECONNREFUSED on the two direct-fetch tests, needs a wait-for-ready fix
 # @resvg/resvg-js is fixed at the require()/render() level (community port
-# @ohos-ports/resvg-resvg-js@2.6.2-1, confirmed working PNG output in
-# isolation), but this specific test's hardcoded bbox-after-crop expectation
-# doesn't match bit-for-bit: expects 112.20712208389321, this build's resvg
-# produces 112.20712280273438 (differs at the 6th decimal place, reproducible
-# 100% in isolation, not a concurrency artifact). Almost certainly a
-# different resvg/rust build config in the community fork vs upstream's exact
-# pinned version -- a real output-fidelity gap in this build, not "missing".
-[ OPENHARMONY ] test/js/third_party/resvg/bbox.test.js [ Skip ] # @ohos-ports/resvg-resvg-js@2.6.2-1 renders correctly but this build's bbox-after-crop float output differs from upstream's hardcoded expectation at the 6th decimal place
+# @ohos-npm-ports/resvg-resvg-js@2.6.2-1 -- migrated 2026-08-29 from the
+# @ohos-ports/resvg-resvg-js@2.6.2-1 build this section originally referenced,
+# see test/package.json's resolutions; both are the ohos-ports/ohos-ports and
+# ohos-npm-ports/ohos-npm-ports community repos respectively, byte-identical
+# build.sh recipe, confirmed working PNG output in isolation), but this
+# specific test's hardcoded bbox-after-crop expectation doesn't match
+# bit-for-bit: expects 112.20712208389321, this build's resvg produces
+# 112.20712280273438 (differs at the 6th decimal place, reproducible 100% in
+# isolation, not a concurrency artifact, identical value on both community
+# builds since they share the same build recipe -- confirmed the migration
+# does not change this). Root cause identified: both community builds compile
+# the exact same upstream source with stable rustc 1.98.0 via `brew install
+# rust`, while upstream's own CI pins nightly-2023-12-11 (a toolchain that
+# predates rustc's OHOS-host support and can't be used here) -- a genuine
+# cross-compiler floating-point rounding difference in this SVG's multi-step
+# affine transform + arc-to-bezier math, not a missing feature or an OHOS
+# platform limitation.
+[ OPENHARMONY ] test/js/third_party/resvg/bbox.test.js [ Skip ] # @ohos-npm-ports/resvg-resvg-js@2.6.2-1 renders correctly but this build's bbox-after-crop float output differs from upstream's hardcoded expectation at the 6th decimal place (rustc 1.98.0 vs upstream's pinned nightly-2023-12-11, not a missing-feature gap)
 #
 # sharp has real upstream+community native support in principle
 # (test/package.json resolutions -> npm:@ohos-ports/sharp@0.34.5-beta.5,
