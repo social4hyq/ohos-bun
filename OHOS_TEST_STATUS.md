@@ -4870,3 +4870,28 @@ error: Unexpected while resolving package '@happy-dom/global-registrator' from '
 复查上一轮标为"超时预算候选，未动手"的这条，坐实归因：11 个失败全部是 5.0-7.6s 之间的超时（默认预算 5000ms），隔离单跑（无额外并发争抢）本身就会超时，不是并发假象。这个文件会真实起子进程（部分用例还是 `describe.concurrent` 并发起），跟已经记录过的"OHOS fork/spawn 开销比其他平台更大"是同一根因。
 
 **改动**：`isOHOS` 分支下 `setDefaultTimeout(20_000)`，对齐同目录 `no-orphans.test.ts` 已有的先例（同样是 `setDefaultTimeout` 写在模块顶层、非 OHOS 平台不受影响）。真机验证 3 轮稳定 **120 pass/1 skip/0 fail**（此前 109 pass/1 skip/11 fail）。
+
+## 第三方包 OHOS 适配复核：官方 rollup/esbuild/rolldown 已原生支持，社区 port 逐个真机验收（2026-08-29）
+
+用户要求复核 `test/js/third_party/*`/`test/integration/sharp` 那批"第三方包无 OHOS 原生二进制"quarantine，看新版本上游或 `@ohos-ports`/`@ohos-npm-ports` 是否已适配。查 npm registry 发现 landscape 变了：
+
+**上游官方已原生支持（不需要任何 port）**：`rollup`（`@rollup/rollup-openharmony-arm64`，4.50.0 起）、`esbuild`（`@esbuild/openharmony-arm64`）、`rolldown`（`@rollup/binding-openharmony-arm64`）。`astro@5.5.5` 传递依赖的 `rollup` 在这仓库 `test/bun.lock` 里本来就锁定在 4.62.2（≥4.50.0），只是 lockfile 是非 OHOS 机器生成的，从没记录过 openharmony 变体——真机重新 `bun install` 直接就能拉到，**不需要任何 override**。
+
+**`@ohos-ports` 社区 port 逐个真机验收**（先在独立 scratchpad 沙盒验证功能，再接入仓库真实跑验收测试）：
+
+| 包 | port | 结果 |
+|---|---|---|
+| `@napi-rs/canvas` | `@ohos-ports/napi-rs-canvas@0.1.80-beta.0` | ✅ 真机 3/3 轮稳定通过，`napi-rs-canvas.test.ts` 1/1 pass（与预期 PNG 逐像素比对） |
+| `@rspack/binding` | `@ohos-ports/rspack-binding@1.7.11-beta.0` | ✅ 真机 2/2 轮稳定通过，`test-integration-rspack.ts` 真实 `rsbuild build` 跑通 |
+| `@resvg/resvg-js` | `@ohos-ports/resvg-resvg-js@2.6.2-1`（走完整社区仓 CI 流水线，非 beta） | ⚠️ 能正确渲染 PNG，但 `bbox.test.js` 的裁剪后 bbox 硬编码浮点期望值在小数点后第 6 位对不上（`112.20712208389321` vs `112.20712280273438`），100% 稳定复现——这个 build 跟上游精确 pin 版本的浮点输出有细微差异，是这个 build 自己的输出保真度问题，不是"没适配" |
+| `sharp` | `@ohos-ports/sharp@0.34.5-beta.5` | ⚠️ 独立沙盒里真实 resize/encode/decode 全通过，但接进仓库真实测试后 `require("sharp")` 本身就崩：`lib/utility.js` 无条件读 `format.jp2k.output.alias`，这个 build 编译时没带 JP2K 编解码器，`format.jp2k` 是 `undefined`——是这个 port build 自己的缺陷，不是 OHOS 平台限制。该 port 的 `beta` dist-tag 正在快速迭代（`beta.11`，两天内出了 6 个版本），但比这仓库自己 `bunfig.toml` 的 `minimumReleaseAge`（3 天）新的版本会被成熟度门拦下，等一个过了 3 天窗口的新 beta 再复测 |
+
+**踩坑（过程记录，供以后同类接线参考）**：
+1. `node scripts/runner.node.mjs --include=<path>` 在文件仍处于 `test/expectations.txt` quarantine 状态时会**静默跳过实际内容**，只把两步 `bun install` 前置步骤当"2 个测试"计数出来，容易误判成"文件通过了"——验证未摘 quarantine 前的文件必须带 `--ignore-expectations=OPENHARMONY`。这一课踩了两次：第一次把 resvg 的 skip-artifact 误当真通过写进了给用户的结论，后来复测才发现是假的。
+2. `@rspack/core`（`~1.7.10`）单独 `bun add` 一个覆盖版本的 `@rspack/binding` 不够——`@rspack/core` 内部已经把 `@rspack/binding` 锁死到某个精确版本，必须在 `package.json` 里同时写 `overrides`/`resolutions` 字段才会真正命中嵌套解析，光加 sibling 依赖只会在顶层装一份、内部嵌套那份仍是原版（表现为 "Cannot find native binding"）。
+3. `rspack` 有运行时版本一致性检查：`@rspack/core` 和 `@rspack/binding` 版本必须字面一致，`~1.7.10` 范围会浮动到最新 patch（如 1.7.12），跟 binding 锁定的 1.7.11 对不上直接报错拒绝启动——两个都要精确 pin 到同一版本。
+4. 首次单独跑 `astro-post.test.js` 拿到 4/4 全绿，据此得出"astro 已修复"的结论——**是错的**：连续复测 3 轮全部变成 2/4 fail（`ECONNREFUSED`，`preview({port:0})` 的 promise 在 HTTP server 真正开始监听前就 resolve 了，命中的是这个测试用的两个"直接 `fetch()`"用例，走独立 node 子进程的另外两个用例反而没受影响）——真实结论是 Flaky 不是 Fixed，第一次绿是撞上了窗口期。这是本轮第二次因为"只跑一次就下结论"栽跟头，两次都是复测才发现。
+
+**净效果**：`test/package.json` 新增 `resolutions`（`@resvg/resvg-js`/`@napi-rs/canvas`/`sharp` 三个指向 `@ohos-ports`）+ `trustedDependencies: ["sharp"]`；`test-integration-rspack.ts` 加 `isOHOS` 分支在 `bun create` 后、`bun install` 前给脚手架工程的 `package.json` 注入 override；`test/expectations.txt` 摘掉 `napi-rs-canvas.test.ts`/`test-integration-rspack.ts` 两条（真通过），`astro-post.test.js`/`resvg/bbox.test.js`/`sharp.test.ts`/`prisma.test.ts` 四条改写成准确的当前根因（原先全部写的是"无 OHOS 二进制"这个过时理由）。commit `f8ec454bb7`。
+
+`docs/ohos-ports-pending-packages.md`（Workspace 仓）同步更新，见该文档。
