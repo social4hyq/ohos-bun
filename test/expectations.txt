@@ -366,27 +366,60 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 [ OPENHARMONY ] test/js/bun/spawn/spawn-streaming-stdin.test.ts [ Skip ] # getMaxFD leak check is a false positive (OHOS kernel stale /proc/self/fd entry after close)
 
 # --- js/third_party: packages with prebuilt native bindings, no OHOS target ---
-# These fail at import/require time (native .node/.so binding load), so the
-# whole file genuinely cannot run — not a case of quarantining 1-2 broken
-# cases. Each upstream package only ships prebuilt binaries for a fixed set of
-# platform triples and has no openharmony-arm64 build.
-[ OPENHARMONY ] test/integration/sharp/sharp.test.ts [ Skip ] # sharp has no OHOS prebuilt binary (checked latest 0.35.3: still no openharmony build)
-# astro@5.5.5 pins its own nested rollup@4.37.0 (independent of test/package.json's
-# top-level rollup dep, see below) which predates rollup's openharmony-arm64 binary.
-[ OPENHARMONY ] test/js/third_party/astro/astro-post.test.js [ Skip ] # astro's transitively-pinned rollup has no OHOS build
-[ OPENHARMONY ] test/js/third_party/prisma/prisma.test.ts [ Skip ] # pulls in @napi-rs/canvas native binding, no OHOS build (checked latest 1.0.2: still no openharmony build)
-[ OPENHARMONY ] test/js/third_party/resvg/bbox.test.js [ Skip ] # @resvg/resvg-js has no OHOS prebuilt binary (checked latest 2.6.2: still no openharmony build)
-[ OPENHARMONY ] test/js/third_party/@napi-rs/canvas/napi-rs-canvas.test.ts [ Skip ] # @napi-rs/canvas has no OHOS prebuilt binary (checked latest 1.0.2: still no openharmony build)
-# rspack's WASM fallback also fails: napi-rs's generated *.wasi.cjs hardcodes
-# `preopens: {'/': '/'}` (path.parse(cwd).root is always '/' on POSIX, not
-# configurable), and OHOS's app sandbox refuses to open '/' in ANY mode
-# (verified: fs.openSync("/", "r") itself throws EACCES) — same root cause as
-# the WASI test and bundler_edgecase's root-dir case below, just reached via
-# a different path. bun's installer also treats these packages' "cpu":
-# ["wasm32"] as a real arch restriction and won't install them on arm64
-# without a manual override, so this doesn't even get as far as the sandbox
-# wall on a normal install.
-[ OPENHARMONY ] test/js/bun/test/parallel/test-integration-rspack.ts [ Skip ] # rspack has no OHOS native binding; WASM fallback hits the '/' preopen sandbox wall
+# 2026-08-29 re-check: upstream/community landscape moved since this block was
+# written (checked npm registry: rollup/esbuild/rolldown now ship official
+# openharmony-arm64 builds; @ohos-ports has real-machine-verified community
+# ports for resvg-js/napi-rs-canvas/rspack-binding). canvas and rspack are
+# fully unquarantined below (test/package.json "resolutions" + this rspack
+# test's own OHOS branch, each real-machine verified 2-3x clean). astro,
+# resvg, sharp, and prisma all still hit a real blocker each -- just a
+# different, deeper one than the stale "no OHOS binary" reason on file.
+#
+# astro@5.5.5's own rollup is unblocked (transitively resolves to 4.62.2,
+# which has rollup's official openharmony-arm64 build) and `build()` now
+# genuinely runs to completion, but this surfaces a separate, real flake:
+# `preview({port: 0})` resolves before the HTTP server is actually accepting
+# connections on this device -- 1/4 isolated runs got a clean 4/4 pass, the
+# other 3/4 got ECONNREFUSED on the two direct-fetch() tests specifically
+# (the two node-subprocess-fetch tests never failed) with an unexpectedly
+# fixed port (4321, astro's static default) in the error, not a race on port
+# assignment itself. Consistent with this repo's broader "OHOS process/server
+# startup is slower, timing assumptions that hold upstream don't hold here"
+# theme; needs a real wait-for-ready fix (poll/retry before the first
+# request), not just a resolutions bump -- left as Flaky, not unquarantined.
+[ OPENHARMONY ] test/js/third_party/astro/astro-post.test.js [ Flaky ] # astro's own rollup is fixed (build() runs), but preview({port:0})'s promise resolves before the server actually accepts connections; ~3/4 isolated runs ECONNREFUSED on the two direct-fetch tests, needs a wait-for-ready fix
+# @resvg/resvg-js is fixed at the require()/render() level (community port
+# @ohos-ports/resvg-resvg-js@2.6.2-1, confirmed working PNG output in
+# isolation), but this specific test's hardcoded bbox-after-crop expectation
+# doesn't match bit-for-bit: expects 112.20712208389321, this build's resvg
+# produces 112.20712280273438 (differs at the 6th decimal place, reproducible
+# 100% in isolation, not a concurrency artifact). Almost certainly a
+# different resvg/rust build config in the community fork vs upstream's exact
+# pinned version -- a real output-fidelity gap in this build, not "missing".
+[ OPENHARMONY ] test/js/third_party/resvg/bbox.test.js [ Skip ] # @ohos-ports/resvg-resvg-js@2.6.2-1 renders correctly but this build's bbox-after-crop float output differs from upstream's hardcoded expectation at the 6th decimal place
+#
+# sharp has real upstream+community native support in principle
+# (test/package.json resolutions -> npm:@ohos-ports/sharp@0.34.5-beta.5,
+# confirmed real image work in isolation), but this specific beta build
+# crashes at `require("sharp")` itself: `lib/utility.js` unconditionally reads
+# `format.jp2k.output.alias`, and this build's native binding has no jp2k
+# (JPEG 2000) codec compiled in, so `format.jp2k` is undefined -- a bug in the
+# port's build, not an OHOS platform limitation. The port's `beta` npm dist-tag
+# (0.34.5-beta.11 as of this check) iterates fast and may already fix it, but
+# every beta since -beta.6 is younger than this repo's own
+# `[install].minimumReleaseAge` (3 days) and gets blocked by that gate --
+# recheck once a fixed build clears it.
+[ OPENHARMONY ] test/integration/sharp/sharp.test.ts [ Skip ] # @ohos-ports/sharp@0.34.5-beta.5 crashes at require() time (format.jp2k undefined, missing codec in this beta build) -- not an "OHOS has no binary" case anymore, recheck a newer beta once past the 3-day minimumReleaseAge gate
+# prisma.test.ts's own @napi-rs/canvas import is fixed by the same
+# test/package.json resolutions entry as the standalone canvas test, but that
+# only gets the file as far as an independent, deeper blocker: prisma's own
+# query-engine
+# `.so.node` (`libquery_engine-debian-openssl-1.1.x.so.node`) is a glibc
+# binary (`DT_NEEDED librt.so.1`), and bun/OHOS is musl -- same class of
+# problem as sharp/canvas originally were, but for prisma's engine itself,
+# which has no musl/OHOS build anywhere (upstream or community). Real
+# "port prisma's query engine" work, not a resolutions-only fix.
+[ OPENHARMONY ] test/js/third_party/prisma/prisma.test.ts [ Skip ] # prisma's own query-engine .so.node is glibc-linked, incompatible with musl/OHOS bun (no musl/OHOS build exists); unrelated to @napi-rs/canvas, which is fixed
 
 
 # --- FUSE mount tests: /dev/fuse exists but the OHOS app sandbox denies access
