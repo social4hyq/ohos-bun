@@ -4864,3 +4864,9 @@ error: Unexpected while resolving package '@happy-dom/global-registrator' from '
 **改动**（`test/harness.ts` 的 `nodeExeMatchingAbi()`，纯测试基础设施，未碰 bun 二进制）：`isOHOS` 分支下优先用 `brew --prefix node-ohos` 找 node-ohos 的 node，找不到才落回原有的 ABI 号匹配逻辑（保持其他平台完全不受影响）。真机验证：`v8.test.ts` **79/79 全过**（此前 7/79，72 个失败），2 轮复测稳定；这个 helper 唯一另一个消费者 `napi.test.ts` 175/175 依然全绿，没有引入回归。
 
 **结论订正**：昨天"v8.test.ts 属于 node-ohos formula 问题、不是这仓库的事"这个归因整个撤回——是 ohos-bun 自己测试基础设施的 bug，而且已经修复。
+
+## `multi-run.test.ts`：超时预算候选确认属实，已修复（2026-08-28）
+
+复查上一轮标为"超时预算候选，未动手"的这条，坐实归因：11 个失败全部是 5.0-7.6s 之间的超时（默认预算 5000ms），隔离单跑（无额外并发争抢）本身就会超时，不是并发假象。这个文件会真实起子进程（部分用例还是 `describe.concurrent` 并发起），跟已经记录过的"OHOS fork/spawn 开销比其他平台更大"是同一根因。
+
+**改动**：`isOHOS` 分支下 `setDefaultTimeout(20_000)`，对齐同目录 `no-orphans.test.ts` 已有的先例（同样是 `setDefaultTimeout` 写在模块顶层、非 OHOS 平台不受影响）。真机验证 3 轮稳定 **120 pass/1 skip/0 fail**（此前 109 pass/1 skip/11 fail）。
