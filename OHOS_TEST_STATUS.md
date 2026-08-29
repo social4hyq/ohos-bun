@@ -4852,3 +4852,15 @@ error: Unexpected while resolving package '@happy-dom/global-registrator' from '
 跟用户确认处理方式：**即使真把 libsecret 编好、D-Bus session 跑起来、随便起个轻量守护进程凑出一个"能通过测试"的密钥环，那也只是人工搭的、跟这台设备真实 OS 安全存储完全无关的伪环境**——不是真正解决问题，价值存疑。用户选择直接按环境限制 quarantine，不投入这轮 spike；真正的长期正确方案是给 bun 加一个用 OHOS 原生安全存储 API 实现的 Secrets 后端（需要先确认 OHOS 有没有暴露这类 API 给应用），量级上跟 Option C/cluster IPC 是同一档，留给专门 session。
 
 **改动**：`test/expectations.txt` 新增两条 `[ OPENHARMONY ] ... [ Skip ]`。
+
+## `v8.test.ts`：昨天的归因是错的，不是 `node-ohos` formula 的问题，是测试选错了对照用的 node（2026-08-28）
+
+复查昨天标为"属于 `node-ohos` formula 问题、不是这个仓库能修的"这条——**归因错了，真机深挖到底后是这个仓库自己的测试基础设施选错了 node 二进制，已经修复**。
+
+**先证伪"node-ohos 的 libnode.so 缺符号"这个假设**：`nm -D` 直接查 `node-ohos` 装的 `libnode.so.147`，报错信息里那个"symbol not found"的确切符号（`_ZN2v85Array3NewE...__n18function...`）**确确实实在里面，正常导出**。手工把 `test/v8/v8-module` 的原生插件编出来，直接用 `node-ohos` 的 node `require()` 它——**加载成功**，跟测试用的 build 流程（`bun --bun run node-gyp rebuild`）编出来的产物一模一样，也加载成功。node-ohos 本身完全没问题。
+
+**真正的问题**：`test/harness.ts` 的 `nodeExeMatchingAbi()`——这个 helper 负责给"跟 bun 对照用的真实 node"选一个二进制，选择依据只有一条：`process.versions.modules`（`NODE_MODULE_VERSION` ABI 号）是否跟 bun 自己报的一致。这台设备上默认 `node`（`which node` 找到的那个，`~/.harmonybrew/bin/node`，不是 keg-only 的 `node-ohos`）版本号不同（v26.8.1 vs node-ohos 的 v26.7.0），**但 ABI 号碰巧一样（147）**，所以 `nodeExeMatchingAbi()` 选中了默认 `node`——而默认 `node` formula 是系统/Alpine GCC 工具链构建（GNU libstdc++ ABI），跟 `bun --bun run node-gyp` 编出来的插件（libc++ `__n1` ABI，因为 bun 自己就是 llvm@21/libc++ 构建）**不兼容**——ABI 号相同不代表 C++ 工具链/STL ABI 相同，这正是这个仓库反复记录过的"GNU libstdc++ 不兼容 llvm@21 libc++ `__n1` 插件"那条老问题，只是这次是**测试基础设施自己选错了对照 node**，不是被测代码的问题。手工验证坐实：同一份编译产物，用 `node-ohos` 的 node 加载成功，用默认 `node` 加载——**跟真机测试报错逐字节一致**。
+
+**改动**（`test/harness.ts` 的 `nodeExeMatchingAbi()`，纯测试基础设施，未碰 bun 二进制）：`isOHOS` 分支下优先用 `brew --prefix node-ohos` 找 node-ohos 的 node，找不到才落回原有的 ABI 号匹配逻辑（保持其他平台完全不受影响）。真机验证：`v8.test.ts` **79/79 全过**（此前 7/79，72 个失败），2 轮复测稳定；这个 helper 唯一另一个消费者 `napi.test.ts` 175/175 依然全绿，没有引入回归。
+
+**结论订正**：昨天"v8.test.ts 属于 node-ohos formula 问题、不是这仓库的事"这个归因整个撤回——是 ohos-bun 自己测试基础设施的 bug，而且已经修复。
