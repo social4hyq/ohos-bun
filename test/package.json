@@ -21,6 +21,7 @@
     "@napi-rs/canvas": "0.1.91",
     "@nestjs/common": "11.0.3",
     "@nestjs/core": "11.0.3",
+    "@ohos-npm-ports/prisma-engines": "5.1.1-1",
     "@prisma/client": "5.8.0",
     "@remix-run/node": "2.16.8",
     "@remix-run/react": "2.10.3",

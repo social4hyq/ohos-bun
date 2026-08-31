@@ -4919,3 +4919,19 @@ error: Unexpected while resolving package '@happy-dom/global-registrator' from '
 **结论**：真实存在、能稳定复现"有时行有时不行"，但四个自然的假设（DNS/地址族、listen-vs-accept 竞态、固定等待预算、残留进程占端口）逐一测试后**全部证伪或部分证伪**——没有归纳出可以直接动手修的单一机制。跟 epoll Option C、cluster IPC 那两条"查到根因但先搁置"不是一个档次——这条是**连根因都没摸到**，继续往下查大概率要插桩 bun 自己的网络栈源码（`src/bun.js/api/bun/socket.zig` 或等价物）才能看到 accept 队列/epoll 注册的真实时序，超出这轮排查的投入产出比。`test/expectations.txt` 维持 `[ Flaky ]`（不是 unquarantine），理由文案已同步这次的排查证据，供以后有更多样本或愿意插桩时接着查。
 
 诊断脚本（跑完已清理，未提交）：`build()` 一次 + `preview()`（可重复多轮复用同一 dist/）+ 时间戳埋点重试循环，比对 raw `net.connect` vs `fetch()` 两种探针、比对裸 `http.createServer()` vs 真实 astro/adapter server 两种服务端，是定位到"两个假设互相矛盾"这一步的关键方法——单独跑一种探针/一种服务端都会得到看似自洽但实际是假象的结论。
+
+## `prisma.test.ts`：query-engine 是 glibc 二进制，真根因不是 `@napi-rs/canvas`，源码移植修复（2026-08-31）
+
+上一节的"prisma"quarantine 理由（`libquery_engine-debian-openssl-1.1.x.so.node` 是 glibc 产物、bun/OHOS 是 musl）复核后发现更深一层：`@prisma/get-platform` 的 `getos()` 只认 `os.platform() === "linux"`，这个 fork 上 `process.platform === "openharmony"`，探测逻辑整段被跳过，直接落到硬编码 fallback `debian-openssl-1.1.x`（glibc）——Prisma 官方其实**确实**发布 musl-arm64 引擎目标（`linux-musl-arm64-openssl-{1.1.x,3.0.x}`），探测代码只是从没在这个平台字符串上试过而已。
+
+**先踩了一个坑再纠正方向**：下载官方 `linux-musl-arm64-openssl-3.0.x` 引擎二进制（musl 链接、`ld-musl-aarch64.so.1` interpreter，签名也没问题），加载时报 `Error loading shared library libgcc_s.so.1` + 大量 `_Unwind_*` 符号找不到——官方这条 musl 交叉编译产物本身缺一个这台设备提供不了的运行时库。没有继续在这条路上找 `libgcc_s.so.1` 的替代方案，改走 `ohos-npm-ports` 源码移植路线（这条路线最终验证完全没撞到这个问题，说明缺口在官方交叉编译工具链本身，不是 OHOS 平台的根本限制）。
+
+**移植方案**：`prisma-engines` 仓库在 `prisma@5.1.1` 对应的 pin commit（`6a3747c37ff169c90047725a05a6ef02e32ac97e`）用容器自带 rustc（host triple 本来就是 `aarch64-unknown-linux-ohos`，无需交叉编译）原生构建 `query-engine-node-api`（产出 `libquery_engine.so`）+ `schema-engine-cli`（产出 `schema-engine`），走 `vendored-openssl` feature 现场编译 OpenSSL 1.1.1（设备无 `OPENSSL_DIR`/pkg-config 接线）。6 个 patch：workspace `[patch.crates-io]` 接线（`socket2`/`openssl-src` 两个 vendored crate 补 OHOS target 分支）、3 处 `ambiguous_glob_imports`（E0659，`#![allow]` 压不住，只能显式 `crate::build::{input_types,output_types}::...` 限定路径）+ `PanicInfo`→`PanicHookInfo` 重命名 + `#[allow(dead_code)]`、两个 `build.rs` 的 `git rev-parse HEAD` unwrap panic 改成失败时落回 pin 的 commit hash（CI 容器无 `git`，且这条流水线是纯 tarball 源码没有 `.git/`）。
+
+发布为 `@ohos-npm-ports/prisma-engines@5.1.1-1`（[PR #24](https://github.com/ohos-npm-ports/ohos-npm-ports/pull/24)，2026-08-31 合并，CI 三轮：第一轮 `git rev-parse` panic、第二轮 `binary-sign-tool` 在 CI 容器里因缺 `__h` 命名空间 libc++ 符号 relocate 失败（换成 `hqzing/ohos-bst-light` 的 `selfsign.py`，纯 Python stdlib，本仓库文档化的云端签名默认方案），第三轮全绿）。
+
+**接线**：`test/package.json` 加 `@ohos-npm-ports/prisma-engines` 依赖；`helper.ts` 用 Prisma 自己文档化的 `PRISMA_QUERY_ENGINE_LIBRARY`/`PRISMA_SCHEMA_ENGINE_BINARY` 环境变量直接指向这个包导出的路径，绕过探测而不是修复探测（官方探测就算修对了，官方 musl 二进制本身还是加载不了，绕过是唯一有效路径）；两个 spawn 调用（`generate`/`migrate`）和当前进程自身的 `process.env` 都要设置（`new PrismaClient()` 跑在测试文件自己的进程里，不只是 spawn 出的子进程）。
+
+`prisma.test.ts` 里还有一个独立小问题顺带修：两处"does not leak"内存 soak test（900 万次查询量级）在 CI 上本来就因超时被 `!isCI` 跳过，OHOS 上单次查询开销更高，跑不完预算内还会拖垮查询引擎的 napi 引用计数（中途被超时打断，下一次 teardown 时进程整体 abort，不只是这个用例失败）——扩展成 `!isCI && !isOHOS`，跳过理由是性能预算不够而非正确性问题。
+
+真机验证：3 轮 `bun test js/third_party/prisma/prisma.test.ts` 稳定 **5 pass / 4 skip（postgres，无 secret）/ 0 fail**，135 个 `expect()`，~6.5s/轮。`test/expectations.txt` 摘掉 `prisma.test.ts` 的 quarantine 条目。

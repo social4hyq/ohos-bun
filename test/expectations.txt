@@ -369,11 +369,13 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # 2026-08-29 re-check: upstream/community landscape moved since this block was
 # written (checked npm registry: rollup/esbuild/rolldown now ship official
 # openharmony-arm64 builds; @ohos-ports has real-machine-verified community
-# ports for resvg-js/napi-rs-canvas/rspack-binding). canvas and rspack are
-# fully unquarantined below (test/package.json "resolutions" + this rspack
-# test's own OHOS branch, each real-machine verified 2-3x clean). astro,
-# resvg, sharp, and prisma all still hit a real blocker each -- just a
-# different, deeper one than the stale "no OHOS binary" reason on file.
+# ports for resvg-js/napi-rs-canvas/rspack-binding). canvas, rspack, and
+# prisma are fully unquarantined below (test/package.json "resolutions"/
+# dependencies + this rspack test's own OHOS branch + prisma's own
+# PRISMA_QUERY_ENGINE_LIBRARY/PRISMA_SCHEMA_ENGINE_BINARY env override, each
+# real-machine verified 2-3x clean). astro, resvg, and sharp all still hit a
+# real blocker each -- just a different, deeper one than the stale "no OHOS
+# binary" reason on file.
 #
 # astro@5.5.5's own rollup is unblocked (transitively resolves to 4.62.2,
 # which has rollup's official openharmony-arm64 build) and `build()` now
@@ -434,16 +436,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # `[install].minimumReleaseAge` (3 days) and gets blocked by that gate --
 # recheck once a fixed build clears it.
 [ OPENHARMONY ] test/integration/sharp/sharp.test.ts [ Skip ] # @ohos-ports/sharp@0.34.5-beta.5 crashes at require() time (format.jp2k undefined, missing codec in this beta build) -- not an "OHOS has no binary" case anymore, recheck a newer beta once past the 3-day minimumReleaseAge gate
-# prisma.test.ts's own @napi-rs/canvas import is fixed by the same
-# test/package.json resolutions entry as the standalone canvas test, but that
-# only gets the file as far as an independent, deeper blocker: prisma's own
-# query-engine
-# `.so.node` (`libquery_engine-debian-openssl-1.1.x.so.node`) is a glibc
-# binary (`DT_NEEDED librt.so.1`), and bun/OHOS is musl -- same class of
-# problem as sharp/canvas originally were, but for prisma's engine itself,
-# which has no musl/OHOS build anywhere (upstream or community). Real
-# "port prisma's query engine" work, not a resolutions-only fix.
-[ OPENHARMONY ] test/js/third_party/prisma/prisma.test.ts [ Skip ] # prisma's own query-engine .so.node is glibc-linked, incompatible with musl/OHOS bun (no musl/OHOS build exists); unrelated to @napi-rs/canvas, which is fixed
 
 
 # --- FUSE mount tests: /dev/fuse exists but the OHOS app sandbox denies access

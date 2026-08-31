@@ -1,7 +1,28 @@
 import fs from "fs";
-import { bunEnv, bunExe, isLinux } from "harness";
+import { bunEnv, bunExe, isLinux, isOHOS } from "harness";
 import path from "path";
 const cwd = import.meta.dir;
+
+// @prisma/get-platform's platform detection only special-cases
+// os.platform() === "linux"; on this fork process.platform === "openharmony",
+// so it falls through every branch to a hardcoded glibc default. Bypass
+// detection entirely via Prisma's own documented PRISMA_QUERY_ENGINE_LIBRARY
+// / PRISMA_SCHEMA_ENGINE_BINARY env vars, pointed at the native OHOS build
+// published as @ohos-npm-ports/prisma-engines.
+const OHOS_PRISMA_ENV = isOHOS
+  ? (() => {
+      const engines = require("@ohos-npm-ports/prisma-engines");
+      return {
+        PRISMA_QUERY_ENGINE_LIBRARY: engines.queryEngineLibraryPath,
+        PRISMA_SCHEMA_ENGINE_BINARY: engines.schemaEngineBinaryPath,
+      };
+    })()
+  : {};
+// `new PrismaClient()` in prisma.test.ts itself runs in *this* bun process
+// (not the generate/migrate subprocesses spawned below), so the query engine
+// override also has to land in this process's own env, not just the spawned
+// children's.
+if (isOHOS) Object.assign(process.env, OHOS_PRISMA_ENV);
 
 export async function generateClient(type: string, env: Record<string, string>) {
   generate(type, env);
@@ -33,6 +54,7 @@ export function migrate(type: string, env: Record<string, string>) {
       env: {
         ...bunEnv,
         NODE_ENV: undefined,
+        ...(isOHOS ? OHOS_PRISMA_ENV : {}),
         ...env,
       },
     },
@@ -61,6 +83,7 @@ export function generate(type: string, env: Record<string, string>) {
     env: {
       ...bunEnv,
       NODE_ENV: undefined,
+      ...(isOHOS ? OHOS_PRISMA_ENV : {}),
       ...env,
     },
   });

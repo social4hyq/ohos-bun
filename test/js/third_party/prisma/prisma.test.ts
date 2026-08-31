@@ -1,7 +1,7 @@
 import { createCanvas } from "@napi-rs/canvas";
 import { it as bunIt, test as bunTest, describe, expect } from "bun:test";
 import { appendFile } from "fs/promises";
-import { getSecret, isCI, rss } from "harness";
+import { getSecret, isCI, isOHOS, rss } from "harness";
 import { generate, generateClient } from "./helper.ts";
 import type { PrismaClient } from "./prisma/types.d.ts";
 
@@ -94,7 +94,15 @@ for (const type of ["sqlite", "postgres" /*"mssql", "mongodb"*/]) {
     if (
       type === "sqlite" &&
       // TODO: figure out how to run this in CI without timing out.
-      !isCI
+      // Same reasoning extends to OHOS: this is a 9M-query soak test (not a
+      // correctness check), and per-query overhead here means it doesn't
+      // finish within any test timeout budget worth setting -- times out
+      // mid-flight and takes the query engine down with it (abrupt
+      // cancellation during heavy concurrent load leaves its napi ref
+      // bookkeeping inconsistent, which then aborts the whole process on
+      // the *next* engine teardown, not just this test).
+      !isCI &&
+      !isOHOS
     ) {
       test(
         "does not leak",
@@ -145,7 +153,7 @@ for (const type of ["sqlite", "postgres" /*"mssql", "mongodb"*/]) {
       );
     }
 
-    if (!isCI) {
+    if (!isCI && !isOHOS) {
       test(
         "does not leak",
         async (prisma: PrismaClient, _: number) => {
