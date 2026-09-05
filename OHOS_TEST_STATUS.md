@@ -5061,3 +5061,17 @@ error: Unexpected while resolving package '@happy-dom/global-registrator' from '
 **归因**：`execve(2)` 期间内核对整个线程组做 `check_unsafe_exec`/`de_thread()` 检查（就是本轮 EAGAIN 修复本身要处理的那个窗口），跟 JSC GC 同样要跨线程组做信号握手的 stop-the-world 挂起协议，在 HongMeng 内核上两条独立机制叠加时出问题——大概率是某线程被 GC 挂起信号定位/捕获寄存器现场时，撞上内核因 exec 检查临时扰动的线程状态，导致 GC 侧读到不一致的现场，最终反映成 JIT 代码里对某个不该为空的指针解引用 NULL。这是 PR #401 那类脆弱性的另一个触发源（一个是系统冻结，一个是并发 execve），**不是本轮 EAGAIN 修复引入的新 bug**——重试算法跟上游一致，崩溃点也不在插桩代码附近，是修复生效后测试终于跑到"大量线程存活+高频真实 execve"这个此前从未达到的负载量级才暴露出来的。
 
 **候选修复方向（未实现）**：本轮修复已经引入的 `threads_in_execve`/`execve_generation` 计数器本质就是"execve 是否在途"的现成信号，可以考虑暴露给 WTF 的 GC 挂起协调逻辑，检测到 execve 在途时退避/重试挂起而不是直接发信号——跟这次 pthread_create 的处理思路一致，只是用在 GC 挂起而非线程创建上。这需要新的 bun-webkit patch，触及 GC 正确性核心机制，工作量和风险与 PR #401 相当，**留给专门 session**，本轮不动。详情、复现脚本清单见 [[project_execve_pthread_create_sigsegv]]。
+
+---
+
+## 2026-09-05 追加：上述候选修复方向已实现并真机验证——结果是反面的，已撤回
+
+按上面的候选方向实现了：`WTF::reportExecveBegin()`/`reportExecveEnd()`（bun-webkit，OHOS-only）+ `Thread::suspend()` 检测到 execve 在途时先等（有界 ~100ms 超时），bun 侧 `execve()` 插桩在原有 `threads_in_execve` 计数点位同步调用。patch hunk 用 diff 真实生成（对照 pin 版本 WebKit 源码验证 `git apply`/`patch -p1` 字节级一致，参见硬约束 #5），链接产物用 `nm` 核实 `WTF::reportExecveBegin`/`reportExecveEnd` 符号确实编进了 `libWTF.a`（非"构建成功但 patch 静默 no-op"）。走完整 SOP：[bun-webkit PR #495](https://github.com/social4hyq/homebrew-core/pull/495) 合并 → [bun PR #496](https://github.com/social4hyq/homebrew-core/pull/496) 合并 → 真机 `brew upgrade bun` 到 `1.4.2_1`。
+
+**真机验证结果（反面）**：跑 20 次 `repro.test.ts`，**15/20 崩溃**——比修复前的基线（~3/8≈37%）明显更差（75%）。
+
+**失败归因**：修复策略本身有缺陷——`Thread::suspend()` 的逻辑是"检测到 execve 在途就等它清空，等不到（有界超时）就照常继续"，这个策略隐含假设 execve 调用是稀疏、偶发的。但触发崩溃的这个压力测试恰恰相反：3000 次 execve 几乎背靠背连续调用，中间几乎没有间隙——意味着"等它清空"这个条件在有界轮询窗口内几乎永远等不到真正的空档，每次都是超时后照常继续，**等于完全没有起到保护作用**（和没修复之前一模一样直接开始握手）；而额外引入的轮询等待延迟本身还可能改变了时序，让原本的竞态更容易撞上（15/20 vs 3/8，不太像纯统计噪音）。
+
+**已撤回**：[PR #497](https://github.com/social4hyq/homebrew-core/pull/497)，`bun-webkit.rb`/patch 恢复到 PR #401 时的字节级原始内容，`bun.rb` fork pin 指回撤销 c-bindings.cpp 改动后的 commit。原有的 `pthread_create`/`execve` EAGAIN 修复（PR #492）完全不受影响，未被这次撤回牵连。
+
+**教训（方法论）**：诊断阶段的根因分析（GC 挂起信号协议 vs execve 内核线程组同步冲突，faultlog 5/5 证据链）大概率仍然成立，**但"根因诊断正确"不等于"缓解策略正确"**——设计缓解方案时必须显式考虑目标压力测试的实际负载形状（这里是"高频连续"而非"偶发稀疏"），一个只对稀疏场景有效的"等待清空"策略，用在连续高频场景下会退化成摆设。下一次重新设计修复，方向应该是真正的互斥（execve 尝试期间阻塞/推迟 GC 挂起信号发送本身，而不是挂起方单方面等待），而不是本轮这种单方面轮询等待。真机复测的量化对比（20 次跑量、15/20 vs 3/8）是发现这个问题的关键——如果只跑 1-2 次或者只看"没有立刻崩"就收工，这个负面结果会被完全漏掉。
