@@ -489,15 +489,8 @@ extern "C" int execve(const char* path, char* const argv[], char* const envp[])
         return real_execve()(path, argv, envp);
     threads_in_execve.fetch_add(1, std::memory_order_seq_cst);
     execve_generation.fetch_add(1, std::memory_order_seq_cst);
-    // Also tells WTF's GC thread-suspend handshake (Thread::suspend(), OHOS
-    // branch) that an execve is in flight, so it can wait this window out
-    // before starting its own cross-thread signal handshake -- see
-    // WTF::reportExecveBegin's doc comment (Threading.h) for why the two can
-    // otherwise collide on this kernel.
-    WTF::reportExecveBegin();
     int rc = real_execve()(path, argv, envp);
     // Only reached when execve failed and the old image keeps running.
-    WTF::reportExecveEnd();
     threads_in_execve.fetch_sub(1, std::memory_order_seq_cst);
     return rc;
 }
