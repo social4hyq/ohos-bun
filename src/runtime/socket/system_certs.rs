@@ -16,7 +16,7 @@ use bun_boringssl_sys as boringssl;
 use bun_core::{ZBox, ZStr, env_var, strings};
 use bun_sys::O;
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_env = "ohos")))]
 const WELL_KNOWN_BUNDLES: &[&[u8]] = &[
     b"/etc/ssl/certs/ca-certificates.crt", // Debian/Ubuntu/Gentoo/Arch/NixOS
     b"/etc/pki/tls/certs/ca-bundle.crt",   // Fedora/RHEL 6
@@ -28,7 +28,7 @@ const WELL_KNOWN_BUNDLES: &[&[u8]] = &[
     b"/usr/local/share/ca-certificates/ca-certificates.crt",
 ];
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_env = "ohos")))]
 const WELL_KNOWN_DIRS: &[&[u8]] = &[
     b"/etc/ssl/certs",
     b"/etc/pki/tls/certs",
@@ -49,6 +49,15 @@ const WELL_KNOWN_DIRS: &[&[u8]] = &[
     b"/system/etc/security/cacerts",
     b"/data/misc/user/0/cacerts-added",
 ];
+
+// OHOS has no OpenSSL layout either: one system CA directory, hashed PEM files
+// (c_rehash format `<hash>.0`, usually symlinks). `load_directory` doesn't do
+// hash-indexed lookup — it just PEM-parses every regular file it finds after
+// following links — so the hashed layout needs no special-casing here.
+#[cfg(target_env = "ohos")]
+const WELL_KNOWN_BUNDLES: &[&[u8]] = &[];
+#[cfg(target_env = "ohos")]
+const WELL_KNOWN_DIRS: &[&[u8]] = &[b"/system/etc/security/certificates"];
 
 struct Loader {
     /// One owned `CRYPTO_BUFFER` per distinct certificate, in discovery order.
@@ -224,7 +233,7 @@ extern "C" fn us_load_system_certificates_posix() -> *mut boringssl::X509_LAZY_C
             }
         }
         None => {
-            #[cfg(not(target_os = "android"))]
+            #[cfg(not(any(target_os = "android", target_env = "ohos")))]
             // SAFETY: BoringSSL returns a static NUL-terminated string.
             loader.load_directory(
                 unsafe { ZStr::from_c_ptr(boringssl::X509_get_default_cert_dir()) }.as_bytes(),
