@@ -582,6 +582,8 @@ impl<Parent: PosixBufferedWriterParent> PosixBufferedWriter<Parent> {
 
     /// On POSIX a `MovableIfWindowsFd` never transfers ownership, so callers
     /// pass the plain `Fd` (via `MovableIfWindowsFd::get_posix()` when needed).
+    ///
+    /// On `Err` the writer holds nothing; `fd` is still the caller's to close.
     pub fn start(&mut self, rawfd: Fd, pollable: bool) -> sys::Result<()> {
         let fd = rawfd;
         self.pollable = pollable;
@@ -590,7 +592,8 @@ impl<Parent: PosixBufferedWriterParent> PosixBufferedWriter<Parent> {
             self.handle = PollOrFd::Fd(fd);
             return sys::Result::Ok(());
         }
-        let poll = match self.get_poll() {
+        let existing_poll = self.get_poll();
+        let poll = match existing_poll {
             Some(p) => p,
             None => {
                 let p = self.create_poll(fd);
@@ -602,6 +605,10 @@ impl<Parent: PosixBufferedWriterParent> PosixBufferedWriter<Parent> {
 
         match poll.register_with_fd(loop_, FilePollKind::Writable, fd) {
             sys::Result::Err(err) => {
+                // A poll from an earlier start() still holds that start's fd.
+                if existing_poll.is_none() {
+                    self.handle.close_without_closing_fd();
+                }
                 return sys::Result::Err(err);
             }
             sys::Result::Ok(()) => {
@@ -1097,6 +1104,7 @@ impl<Parent: PosixStreamingWriterParent> PosixStreamingWriter<Parent> {
         );
     }
 
+    /// On `Err` the writer holds nothing; `fd` is still the caller's to close.
     pub fn start(&mut self, fd: Fd, is_pollable: bool) -> sys::Result<()> {
         if !is_pollable {
             self.close();
@@ -1106,7 +1114,8 @@ impl<Parent: PosixStreamingWriterParent> PosixStreamingWriter<Parent> {
 
         // SAFETY: parent BACKREF set via set_parent; outlives this writer.
         let loop_ = unsafe { Parent::event_loop(self.parent()) };
-        let poll = match self.get_poll() {
+        let existing_poll = self.get_poll();
+        let poll = match existing_poll {
             Some(p) => p,
             None => {
                 let p = FilePollRef::init(
@@ -1121,6 +1130,10 @@ impl<Parent: PosixStreamingWriterParent> PosixStreamingWriter<Parent> {
 
         match poll.register_with_fd(loop_.loop_(), FilePollKind::Writable, fd) {
             sys::Result::Err(err) => {
+                // A poll from an earlier start() still holds that start's fd.
+                if existing_poll.is_none() {
+                    self.handle.close_without_closing_fd();
+                }
                 return sys::Result::Err(err);
             }
             sys::Result::Ok(()) => {}
