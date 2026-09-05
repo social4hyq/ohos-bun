@@ -120,6 +120,22 @@ export function elfDebugCompressPostlinkCommand(cfg: Config): string {
 }
 
 /**
+ * macOS-from-Linux cross links resolve compiler-rt builtins from the SDK's
+ * libSystem reexport (libcompiler_rt.tbd), which covers the generic builtins
+ * (__divti3 …) but NOT the x86 `__builtin_cpu_supports` support globals
+ * (___cpu_model / ___cpu_indicator_init / ___cpu_features2) — on native
+ * builds those come from Apple clang's static libclang_rt.osx.a, which the
+ * Linux LLVM toolchain doesn't ship. Compile compiler-rt's own cpu_model
+ * sources (vendored under shims/cpu_model/, Apache-2.0 WITH LLVM-exception)
+ * into the link so the cross binary behaves exactly like the native one.
+ * Tracked in workarounds.ts ("darwin-cross-cpu-model") so it self-obsoletes
+ * if the SDK ever exports these symbols.
+ */
+function needsDarwinCpuModelShim(cfg: Config): boolean {
+  return cfg.darwin && cfg.crossTarget !== undefined && cfg.x64 && cfg.osxSysroot !== undefined;
+}
+
+/**
  * musl + rust-lld: Alpine ships the libc CRT objects (Scrt1.o, crti.o,
  * crtn.o) with ELFCOMPRESS_ZLIB debug sections, but rust-lang/llvm-project
  * builds lld without LLVM_ENABLE_ZLIB so rust-lld errors at input-section
