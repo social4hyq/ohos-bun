@@ -70,6 +70,8 @@ pub enum Error {
     FailedToBindPipe,
     #[error("MissingPackageJSON")]
     MissingPackageJSON,
+    #[error("InstallFailed")]
+    InstallFailed,
     #[error("HTTPForbidden")]
     HTTPForbidden,
     #[error("ExampleNotFound")]
@@ -427,6 +429,7 @@ impl Error {
             Self::FailedToInitPipe => "FailedToInitPipe",
             Self::FailedToBindPipe => "FailedToBindPipe",
             Self::MissingPackageJSON => "MissingPackageJSON",
+            Self::InstallFailed => "InstallFailed",
             Self::HTTPForbidden => "HTTPForbidden",
             Self::ExampleNotFound => "ExampleNotFound",
             Self::GitHubRepositoryNotFound => "GitHubRepositoryNotFound",
