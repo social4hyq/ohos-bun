@@ -4935,3 +4935,11 @@ error: Unexpected while resolving package '@happy-dom/global-registrator' from '
 `prisma.test.ts` 里还有一个独立小问题顺带修：两处"does not leak"内存 soak test（900 万次查询量级）在 CI 上本来就因超时被 `!isCI` 跳过，OHOS 上单次查询开销更高，跑不完预算内还会拖垮查询引擎的 napi 引用计数（中途被超时打断，下一次 teardown 时进程整体 abort，不只是这个用例失败）——扩展成 `!isCI && !isOHOS`，跳过理由是性能预算不够而非正确性问题。
 
 真机验证：3 轮 `bun test js/third_party/prisma/prisma.test.ts` 稳定 **5 pass / 4 skip（postgres，无 secret）/ 0 fail**，135 个 `expect()`，~6.5s/轮。`test/expectations.txt` 摘掉 `prisma.test.ts` 的 quarantine 条目。
+
+## `secrets.test.ts`/`secrets-error-codes.test.ts`：2026-08-28 的"结构性限制"判断需要复核——原生 Asset Store Kit API 真机验证可用（2026-09-03）
+
+上一节（`secrets.test.ts`/`secrets-error-codes.test.ts`：结构性限制坐实，已 quarantine）判断"没有 OHOS 原生安全存储 API，只能走 libsecret+D-Bus 伪环境"这个前提**站不住脚**。`harmonybrew-formula-porting` skill 把 `libsecret` formula 合并进 tap 后（[PR #471](https://github.com/social4hyq/homebrew-core/pull/471)），复测 D-Bus 会话总线现状——依然没有（`DBUS_SESSION_BUS_ADDRESS` 为空、`/run/dbus` 不存在、无密钥环守护进程），libsecret 路线本质没有绕开当初否决的理由。但顺带去查了一下 OHOS 有没有原生安全存储 API，找到了：**Asset Store Kit**（`libasset_ndk.z.so`，`asset/asset_api.h`，`OH_Asset_Add`/`Query`/`Update`/`Remove`），定位跟 libsecret/iOS Keychain 完全对应（专门存密码/token/敏感明文，<1024 字节）。
+
+真机写了个 dlopen 探测程序（普通 `clang` 编译 + `binary-sign-tool self-sign`，**没有声明任何 `ohos.permission.*`**）验证：单进程 Add→Query→Remove 全链路返回 `0` 且内容正确；一个进程写入不清理，另一个独立进程能查到同一条数据（真持久化，不是进程内存态）；把探测程序复制到另一路径、独立重新编译+重新签名（不同签名指纹），依然能读到并删除第一个二进制写入的数据（访问控制不绑定在具体可执行文件/签名指纹上，对 bun 是好消息——升级换二进制不会丢数据）。
+
+**结论**：给 `Bun.secrets` 加一个真正的 OHOS 原生后端是可行的，比伪造 D-Bus/libsecret 环境更优雅也更贴近真实安全模型。**quarantine 状态本轮未改动**——还有几个开放问题没验证清楚（锁屏前可访问性、`IS_PERSISTENT` 权限语义、多用户隔离、访问控制的精确隔离边界——万一是"设备上任何签名二进制都能互相读取"这种更弱的边界，落地前必须先搞清楚），且涉及新增 `SecretsOhos.cpp` + 构建配置接线，跟 Option C（epoll 泄漏）/cluster IPC 是同一档工作量，留给专门 session。完整调研过程、真机测试代码、实现方向草案见 `../../Workspace/docs/bun-secrets-asset-store-feasibility.md`。
