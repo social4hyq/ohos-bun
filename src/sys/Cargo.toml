@@ -15,9 +15,7 @@ bun_opaque.workspace = true
 strum.workspace = true
 bstr.workspace = true
 scopeguard.workspace = true
-const_format.workspace = true
 enum-map.workspace = true
-enumset.workspace = true
 libc.workspace = true
 bitflags.workspace = true
 bun_alloc.workspace = true
@@ -37,7 +35,6 @@ rustix = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 bun_libuv_sys.workspace = true
-bun_output.workspace = true
 
 [target.'cfg(target_env = "ohos")'.dependencies]
 ohos_sign = { path = "../ohos_sign" }
