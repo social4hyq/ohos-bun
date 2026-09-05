@@ -5022,4 +5022,15 @@ error: Unexpected while resolving package '@happy-dom/global-registrator' from '
 
 修法：不用 `--wrap`，改用动态符号插入——在 `c-bindings.cpp` 里为 OHOS 定义同名的全局 `execve`/`pthread_create`（`extern "C"`，非 static），通过 `dlsym(RTLD_NEXT, ...)` 拿到 musl 的真实实现；重试算法（`threads_in_execve`/`execve_generation` 计数器）原样复用上游代码。这正是 `scripts/build/shims/ohos_compat_shim.c` 已经在用的同一套机制（对 `close`/`dup2`/`getcwd`/`splice` 等 18 个 libc 符号做的事），只是放在 `c-bindings.cpp` 而非共享的 shim 文件里（避免污染跟 `ohos-compat-shim` 项目同步的那份文件）。唯一需要注意的坑：`bun-spawn.cpp` 的 `posix_spawn_bun` 在 `CLONE_VM|CLONE_VFORK` 子进程里调用 `execve()`，父进程此时被挂起——如果 `execve` 的替身函数第一次调用时才惰性 `dlsym()`，子进程去抢动态链接器锁可能跟挂起的父进程死锁，所以两个真实函数指针改成在 `bun_initialize_process()` 里提前解析好，不等到第一次调用。
 
-代码改动：`src/jsc/bindings/c-bindings.cpp`（新增 OHOS 分支的 `execve`/`pthread_create` 定义 + eager dlsym 解析）、`scripts/build/flags.ts`（注释更新，功能不变）、`scripts/build/workarounds.ts`（新增 `ohos-pthread-create-execve-interpose` 条目留痕）。真机验证结果见下一次基线/专项复测记录。
+代码改动：`src/jsc/bindings/c-bindings.cpp`（新增 OHOS 分支的 `execve`/`pthread_create` 定义 + eager dlsym 解析）、`scripts/build/flags.ts`（注释更新，功能不变）、`scripts/build/workarounds.ts`（新增 `ohos-pthread-create-execve-interpose` 条目留痕）。已提交 fork（`ec3e87874c`）、开 [homebrew-core PR #492](https://github.com/social4hyq/homebrew-core/pull/492)、CI 绿、已合并（`6aaa36154c`），真机 `brew upgrade bun` 到 `1.4.1_1`。
+
+**真机验证结果**：
+
+- `cli/watch/watch.test.ts`：**3/3 稳定通过**，`pthread_create failed` 字样彻底消失。这条是真实使用路径（`--watch` 热重载），修复完全生效。
+- `js/node/process/process-execve.test.ts` 的目标断言（`failures.txt` 应为空，即"exec 期间没有线程 pthread_create 失败"）**每次都通过**——3 次隔离跑 + 独立复现脚本反复跑了 8 次，`failures.txt` 全部是空的，原始 EAGAIN 症状确认根除。
+
+**但复测过程中发现一个新的、独立的问题**：该测试文件用极端合成压力场景验证这条修复——2 个后台线程各自尝试疯狂调用 `pthread_create`（上限 100 万次）的同时，主线程连续 3000 次对一个非法二进制文件调用 `process.execve()`（每次都因 `ENOEXEC` 快速失败）。用独立复现脚本反复跑这个精确场景 8 次：**3 次进程带 `SIGSEGV`（exit 139）崩溃**，崩溃点在 attempt 1400~1800 之间浮动（不固定），另外 5 次跑满 3000 次正常退出。bun 自带的 crash handler 没有输出任何栈信息（子进程 stderr 里只有进度打印，没有 crash report），怀疑崩溃发生在 crash handler 本身不安全介入的位置（比如信号处理栈已被极端线程创建压力破坏），本机又没有 ptrace/strace 通路，定位手段有限。
+
+**归因判断**：这大概率不是本次修复引入的新 bug——重试算法和上游完全一致（只是换了 `--wrap` 为 `dlsym` 插桩这一层机制），而且触发这个崩溃需要"大量线程创建成功 + 高频真实 execve 并发"这个此前根本达不到的负载量级：**之前的 bug 恰好在负载起来之前就让 spinner 线程提前失败退出了，无意中掩盖了这个更深的问题**。现在修复生效后，测试终于能跑到触发这个竞态所需的强度。真正的根因（HongMeng 内核 `clone`/`execve` 路径下的某种竞态，还是 bun 运行时/JSC 线程登记表在高频 exec+建线程下的一个 race）还没有查清，需要专门立项，可能得靠 `ohos-trace-shim` 或类似手段绕开 ptrace 限制去抓现场。
+
+**结论**：`pthread_create errno 11` 这条原始回归**已彻底修复并已上线**（`watch.test.ts`/`process-execve.test.ts` 的目标断言均已转绿）；`process-execve.test.ts` 整个文件目前**仍然不是 3/3 稳定**，但失败原因已经从"EAGAIN 未重试"变成了一个全新的、间歇性的 `SIGSEGV`——这是本轮验证的意外收获，留作后续专项调查，不在这次 PR 范围内处理。
