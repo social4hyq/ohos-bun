@@ -1340,8 +1340,18 @@ export const linkerFlags: Flag[] = [
     // flight, and __wrap_pthread_create retries the EAGAIN the kernel returns
     // for clone(CLONE_FS) during that window (the --watch reload). Behavioral,
     // not a version pin, so it applies to every Linux libc.
+    //
+    // Excluded on OHOS: lld's --wrap only resolves __real_* against a
+    // symbol definition visible at static-link time. bun-ohos links
+    // dynamically against ld-musl.so (execve/pthread_create live there,
+    // not in any archive being linked), so __real_execve/
+    // __real_pthread_create are left as unresolved dynamic relocations —
+    // the linker only warns, but the musl loader hard-fails at process
+    // start ("Error relocating ...: __real_execve: symbol not found").
+    // OHOS simply doesn't get the --watch-reload EAGAIN retry, same as
+    // before this upstream feature existed.
     flag: ["-Wl,--wrap=execve", "-Wl,--wrap=pthread_create"],
-    when: c => c.linux,
+    when: c => c.linux && !c.ohos,
     desc: "Retry pthread_create EAGAIN caused by an in-flight execve",
   },
   {
