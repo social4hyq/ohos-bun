@@ -1345,11 +1345,14 @@ export const linkerFlags: Flag[] = [
     // symbol definition visible at static-link time. bun-ohos links
     // dynamically against ld-musl.so (execve/pthread_create live there,
     // not in any archive being linked), so __real_execve/
-    // __real_pthread_create are left as unresolved dynamic relocations —
-    // the linker only warns, but the musl loader hard-fails at process
-    // start ("Error relocating ...: __real_execve: symbol not found").
-    // OHOS simply doesn't get the --watch-reload EAGAIN retry, same as
-    // before this upstream feature existed.
+    // __real_pthread_create would be left as unresolved dynamic
+    // relocations — the linker only warns, but the musl loader hard-fails
+    // at process start ("Error relocating ...: __real_execve: symbol not
+    // found"). OHOS still gets this retry, just via a different mechanism
+    // that doesn't need a linker flag: c-bindings.cpp defines plain-named
+    // `execve`/`pthread_create` resolved through dlsym(RTLD_NEXT, ...),
+    // which interpose the same static-link-time references without --wrap
+    // (see the __OHOS__ branch there for why that's sufficient).
     flag: ["-Wl,--wrap=execve", "-Wl,--wrap=pthread_create"],
     when: c => c.linux && !c.ohos,
     desc: "Retry pthread_create EAGAIN caused by an in-flight execve",

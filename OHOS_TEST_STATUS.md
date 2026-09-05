@@ -4966,3 +4966,60 @@ error: Unexpected while resolving package '@happy-dom/global-registrator' from '
 真机写了个 dlopen 探测程序（普通 `clang` 编译 + `binary-sign-tool self-sign`，**没有声明任何 `ohos.permission.*`**）验证：单进程 Add→Query→Remove 全链路返回 `0` 且内容正确；一个进程写入不清理，另一个独立进程能查到同一条数据（真持久化，不是进程内存态）；把探测程序复制到另一路径、独立重新编译+重新签名（不同签名指纹），依然能读到并删除第一个二进制写入的数据（访问控制不绑定在具体可执行文件/签名指纹上，对 bun 是好消息——升级换二进制不会丢数据）。
 
 **结论**：给 `Bun.secrets` 加一个真正的 OHOS 原生后端是可行的，比伪造 D-Bus/libsecret 环境更优雅也更贴近真实安全模型。**quarantine 状态本轮未改动**——还有几个开放问题没验证清楚（锁屏前可访问性、`IS_PERSISTENT` 权限语义、多用户隔离、访问控制的精确隔离边界——万一是"设备上任何签名二进制都能互相读取"这种更弱的边界，落地前必须先搞清楚），且涉及新增 `SecretsOhos.cpp` + 构建配置接线，跟 Option C（epoll 泄漏）/cluster IPC 是同一档工作量，留给专门 session。完整调研过程、真机测试代码、实现方向草案见 `../../Workspace/docs/bun-secrets-asset-store-feasibility.md`。
+
+---
+
+## 2026-09-05 — bun 1.4.1 全量基线（口径①，真机 20 核）
+
+被测二进制：本机 brew `bun 1.4.1`（fork commit `4572ee808b`，即 [PR #490](https://github.com/social4hyq/homebrew-core/pull/490) 合并版本；`bun-webkit` 同步到 `6119947592`，见 [PR #489](https://github.com/social4hyq/homebrew-core/pull/489)）。三级复跑，命令与 2026-08-02（r45）口径①完全一致（`CI=1 BUN_TEST_NO_SECRETS=1 node scripts/runner.node.mjs --exec-path=$(brew --prefix bun)/bin/bun --quiet --parallel --retries=1 --results-json=... --exclude=integration/bun-types --exclude=internal/source-lints --exclude=bake/dev --exclude=js/bun/ffi/cc.test.ts --exclude=regression/issue/20144 --exclude=regression/issue/26249`），产物见 `logs/baseline-2026-09-05*`。
+
+| 阶段 | 通过 | 失败 |
+|---|---|---|
+| 全量 20 核并行 | 5791 / 5844（99.09%） | 53 |
+| 串行复跑剔除并发假象 | +38（含 2 条并集外误入） | 17 |
+| 隔离单跑 ×3 | 13 稳定复现（3/3）、1 flaky（bun-create.test.ts 2/3 pass）、3 全部转绿（serve-body-leak/rm.test.ts/32492，纯批次干扰假阳性） | **13** |
+
+**净通过率（剔除并发/批次假阳性后）**：5844 中 13 个真失败 = **99.78%**。对比 r45（2026-08-02，99.60%）/r52（2026-08-08，98.95%，因上游新增大批测试文件）——本轮文件总数 5844，与 r52 的 5906 接近但略少（部分测试重命名/合并）。
+
+### 13 个稳定失败分类
+
+**A. 新发现——`pthread_create failed: errno 11`（根因已定位，见下方 09-05 追加小节）**：
+- `cli/watch/watch.test.ts`：`--watch` 触发 20 次热重载，每次都在其他线程上报 `pthread_create failed: errno 11`（测试标题本身就叫"a --watch reload does not fail pthread_create on the other threads"——精确命中测试要防的那个症状）
+- `js/node/process/process-execve.test.ts`：`process.execve` 执行期间另两个线程 `pthread_create` 失败，同样是该用例专门要防的症状
+
+> **勘误（同日）**：下面 `js/node/cluster/test-docs-http-server.ts` 最初被归到这一类，**是误判**——逐个检查 3 次隔离单跑的 `logs/baseline-2026-09-05-iso-*.json`，grep `"pthread_create failed"` 命中 0 次，它的失败信号里完全没有这个字符串。cluster 用例挪到新增的 **G 类**，单独列出，不再算这条签名的第三个命中；本条修复的预期收益是 13 个失败里的 **2 个**，不是 3 个。
+
+三者共同点：都在短时间内多次创建线程/进程。交互式 shell 里 `ulimit -u`/`ulimit -a` 显示 unlimited，说明限制点不在常规 rlimit，怀疑是 EL2 沙箱对总线程数的隐性上限，或与本次 bun-webkit `USE_MIMALLOC`/`USE_EXTERNAL_MIMALLOC` 改动后单线程内存开销上升有关（间接把某个线程数上限先撞到）。**此前所有基线轮次均未出现这个签名**，判定为新问题——**根因已查清，见下方追加小节，不再需要专门 session 抓调用点**。
+
+**B. 已知/台账——网络环境假阳性（2）**：
+- `js/node/test/parallel/test-net-autoselectfamily.js`、`js/node/net/node-net.test.ts`：happy-eyeballs 候选地址只剩 1 条、ECONNREFUSED、EACCES/EINVAL 措辞差异——命中已记录的本机 vpn-tun 伪造 WAN 握手（记忆库 `environment_vpn_tun_fakes_wan_connect`）与既有 T21 摇摆条目，非新回归。
+
+**C. 疑似平台限制——node_modules 硬链接失效（2）**：
+- `cli/install/bun-workspaces.test.ts`、`cli/install/bun-workspaces-self-contained.test.ts`：多处 `expect(nlink).toBeGreaterThan(1)` 收到 `1`——cache→node_modules 的 hardlink 未生效，回退成了独立拷贝。两个用例都是上游新增的 `hoistingLimits`/self-contained workspace 覆盖面，需要确认 OHOS 安装器路径是否真的调用了 `linkat`（还是被回退分支直接跳过），以及运行目录（`buntmp-*`，落在 `/data/storage/el2/base/tmp`，非 hmdfs）本身是否支持硬链接。
+
+**D. 新增上游测试、疑似真实链接器问题（1）**：
+- `bundler/compile-elf-segment-layout.test.ts`：`bun build --compile` 产物 PT_LOAD 段在严格 `p_align` 语义下重叠 0xa000 字节（普通 bun 二进制与 compile 出的可执行文件两个子用例都炸）。这是全新的上游测试（此前台账零命中），需要确认是我们 llvm@21 工具链的对齐策略问题，还是上游打包逻辑本身有跨平台 bug。
+
+**E. 单文件、低优先级、需个别复核（4）**：
+- `cli/bun.test.ts`：`$SHELL=pwsh` 补全测试期望 "Could not get current working directory"，实际先命中新的 "PowerShell completions are not yet written" 短路分支——上游行为顺序变化，非 OHOS 专属。
+- `cli/run/run_command.test.ts`：Ctrl+C 杀子进程后 `signalCode` 应为 `"SIGINT"`，收到 `null`。
+- `js/bun/spawn/spawnsync-isolated-event-loop.test.ts`：GC 完成时机与主循环 keep-alive 计数的内部断言收到 `"DRIFT {...}"` 而非 `"OK"`——全新测试，疑似上游 GC/事件循环时序改动带来的新覆盖面。
+- `js/node/tls/test-use-system-ca.test.ts`：仅 "SSL_CERT_FILE can be a pipe"（`/dev/stdin`）子用例失败，6/7 通过——疑似 OHOS 从管道读取证书文件的路径问题，与本轮 `system_certs.rs` 的 OHOS `WELL_KNOWN_DIRS` 改动本身无关（那是路径列表，不是读取方式）。
+- `js/bun/shell/bunshell.test.ts`：431/517 通过，3 fail，具体断言被 runner 的 stdoutPreview 截断，需要单独跑不截断输出定位。
+
+**F. 批次干扰假阳性（不计入失败，仅记录）**：`js/bun/http/serve-body-leak.test.ts`、`js/bun/shell/commands/rm.test.ts`、`regression/issue/32492.test.ts` 在 53 文件串行批次里失败，完全隔离单跑 3/3 全过——与具体测试内容无关的批次内状态泄漏（端口/临时文件残留之类），历史多轮都有同类现象，不新增 quarantine。
+
+**G. 独立问题，与 A 类无关（1，从 A 类勘误移入）**：
+- `js/node/cluster/test-docs-http-server.ts`：`cluster.fork()` 20 个 worker（=本机 `numCPUs()`），只有 11 个存活，其余启动后立刻死亡；`AssertionError: 11 !== 20`，日志里没有任何 `pthread_create failed` 字样。最初被错归进 A 类（跨文件同一签名），已勘误移出，需要单独 triage（`cluster.fork()` 内部走的是 `execFile`/`posix_spawn` 还是别的机制，是否踩到与 A 类不同的另一个资源上限）。
+
+**后续**：A 类根因已定位（见下方 09-05 追加小节），修复实现中；C/D 类需要各自一轮真机隔离调试；B 类维持现状不处理；E/G 类留待下次连带 triage。本轮**未新增 expectations.txt 条目**——13 个失败均未达到"确认为 OHOS 平台限制/上游缺陷"的分类置信度，暂不 quarantine，避免把可能的真回归掩盖掉。
+
+---
+
+### 09-05 追加：A 类根因定位 + 修复（`pthread_create errno 11`）
+
+根因：上游 [`ceef54734d`](https://github.com/oven-sh/bun/pull/40978)（本次 1.4.1 合并带入）修的是一个真实的 Linux 内核竞态——进程内有线程在 `execve(2)` 中途时，内核会让该进程所有其他线程的 `clone(CLONE_FS)`（即 `pthread_create`）返回 `EAGAIN`（`fs/exec.c check_unsafe_exec`、`kernel/fork.c copy_fs`）。上游修法是链接期 `-Wl,--wrap=execve -Wl,--wrap=pthread_create` + `c-bindings.cpp` 里的重试逻辑。这次合并时因为 bun-ohos 动态链接 `ld-musl.so`、`lld` 的 `--wrap` 需要 `__real_execve`/`__real_pthread_create` 在静态链接期可见（共享对象做不到，链接器只警告、musl loader 会在进程启动时硬失败），我把这段代码整体排除了 OHOS（`#if OS(LINUX) && !defined(__OHOS__)`）——这解决了当时的链接错误，但代价是 OHOS 完全没拿到这条重试保护，而 HongMeng 内核走的也是同一段 Linux `fork.c`/`exec.c` 代码，同样的竞态照样发生，就是这两个文件失败的直接原因。
+
+修法：不用 `--wrap`，改用动态符号插入——在 `c-bindings.cpp` 里为 OHOS 定义同名的全局 `execve`/`pthread_create`（`extern "C"`，非 static），通过 `dlsym(RTLD_NEXT, ...)` 拿到 musl 的真实实现；重试算法（`threads_in_execve`/`execve_generation` 计数器）原样复用上游代码。这正是 `scripts/build/shims/ohos_compat_shim.c` 已经在用的同一套机制（对 `close`/`dup2`/`getcwd`/`splice` 等 18 个 libc 符号做的事），只是放在 `c-bindings.cpp` 而非共享的 shim 文件里（避免污染跟 `ohos-compat-shim` 项目同步的那份文件）。唯一需要注意的坑：`bun-spawn.cpp` 的 `posix_spawn_bun` 在 `CLONE_VM|CLONE_VFORK` 子进程里调用 `execve()`，父进程此时被挂起——如果 `execve` 的替身函数第一次调用时才惰性 `dlsym()`，子进程去抢动态链接器锁可能跟挂起的父进程死锁，所以两个真实函数指针改成在 `bun_initialize_process()` 里提前解析好，不等到第一次调用。
+
+代码改动：`src/jsc/bindings/c-bindings.cpp`（新增 OHOS 分支的 `execve`/`pthread_create` 定义 + eager dlsym 解析）、`scripts/build/flags.ts`（注释更新，功能不变）、`scripts/build/workarounds.ts`（新增 `ohos-pthread-create-execve-interpose` 条目留痕）。真机验证结果见下一次基线/专项复测记录。
