@@ -1846,6 +1846,29 @@ while out_fds_to_wait_for[0] != Fd::INVALID || out_fds_to_wait_for[1] != Fd::INV
 
 **复现脚本**（`/data/storage/el2/base/tmp/`）：`mpvar.js`（四路对照）、`mpvar2.js`（onmessage × close 四格）、`mpcount.js`（port 数扫描）、`mpplateau.js` / `mpwplateau.js`（趋平检验）、`mpvm.js`（堆大小 × 退出路径）、`mpthreads.js`、`mpmaps.js`、`mpnode.mjs`（node 对照）。
 
+### 2026-09-05 复测：症状消失，判定为已被上游修复吸收
+
+bun 1.4.0 → 1.4.1 常规版本同步（合并 442 个上游 commit）里，`bun-webkit` 的
+`scripts/build/deps/webkit.ts` 新增了 `USE_MIMALLOC`/`USE_EXTERNAL_MIMALLOC`
+cmake 开关（"Match the prebuilt: JSC allocates through Bun's mimalloc, not
+libpas"），让 JSC 内部分配（此前 T35 定位的主因 `[anon:WKFastMalloc]`，占
+~0.95MB/worker）改走 mimalloc 而不是 WebKit 自带的 libpas/bmalloc。这**不是**
+2026-08-23 重启诊断锁定的候选①（`scripts/build/deps/mimalloc.ts` 的
+`MI_MALLOC_OVERRIDE`，条件仍是 `cfg.linux && !cfg.asan`，`cfg.linux`/`cfg.ohos`
+互斥、对 OHOS 恒为 false，这个开关本身**没有**在这次改动。两者是不同机制：
+webkit.ts 那个管 JSC 自身分配走谁，mimalloc.ts 那个管整进程 malloc 是否被
+mimalloc 接管），纯属常规同步的副作用，事先没预料到会影响 T35。
+
+**复测**（真机 1.4.1 / fork commit `4572ee808b`）：
+
+- `message-port-context-destroy-leak.test.ts` 单测：7/7 次通过（`--ignore-expectations=OPENHARMONY` 直跑 5 次 + `bun test` 直跑 2 次），0 fail。
+- 空 worker（N=0）× 40 轮，重复 3 次：per-worker 0.147 / 0.119 / 0.115MB；样本序列显示前 5 轮快速爬升到 ~65MB 后**趋平**，不是历史记录的"全程线性、不收敛"。
+- 空 worker × 80 轮（1 次）：前 10 轮爬升到 ~65MB，后 70 轮几乎不动（~0.02MB/worker），进一步排除"更长窗口才显形的慢泄漏"。
+
+四次独立测量口径一致：**原先 0.85–1.8MB/worker 的线性不收敛特征消失，变成一次性初始化开销 + 趋平**。判定 T35 主因已被这次 WebKit 分配器改动带走。剩余 ~0.1MB 级别的一次性摊销不再追。
+
+**处置**：`expectations.txt` 里的 OPENHARMONY 隔离条目已摘除（见下方 diff）；T35 从"上游缺陷/fork delta，挂起"改判为**已解决**。2026-08-23 重启诊断产出的两条 tap draft PR（#404 MallocCallTracker webkit 诊断构建、#407 叠加的 bun 诊断构建）建议关闭——它们落后 main 286 个 commit，且诊断目标已经不需要了（无需再重编 WebKit 开分配器自省）。
+
 ---
 
 ### T36 — `splice()` 写入管道不唤醒 poll/epoll 等待者，轮询型消费端永久死锁（平台缺陷 class B，**已由 shim 0.2.3 修复**）
