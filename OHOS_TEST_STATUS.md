@@ -5047,3 +5047,17 @@ error: Unexpected while resolving package '@happy-dom/global-registrator' from '
 - 基本 smoke：`bun --version` → 1.4.2，`process.platform`/`process.arch` 正确，`2**32` 求值正常。
 - `cli/watch/watch.test.ts`：3/3 稳定通过。
 - `process-execve.test.ts` 独立复现脚本：本轮跑正常完成（`attempts:3000`、`failures.txt` 空、exit 0），未复现上面记录的间歇性 `SIGSEGV`——但那个问题本就是间歇性的（历史 3/8 概率），**单次未复现不代表已修复或已消失**，仍按未解决记录，见 [[project_execve_pthread_create_sigsegv]]。
+
+---
+
+## 2026-09-05 追加：process-execve 间歇性 SIGSEGV 根因定位（查到强证据，未修复）
+
+查 `/data/log/faultlog/faultlogger/`（OHOS DFX faultlogger，本机不需要 ptrace 就能拿全线程栈+寄存器+maps，用法见 [[project_claude_embedded_bun_crash_diagnosis]]）找到 5 份跟复现时间窗完全吻合的 `cppcrash` 记录，全部是 `SIGSEGV(SEGV_MAPERR)@0`（NULL 指针解引用），崩溃线程栈顶都在 `[anon:JSJITCode]`；虽然二进制 stripped 没有符号名，但**关键地址（如 `0x28cccbc`）在多份日志间高度重复**，说明是同一条稳定路径而非随机内存损坏。
+
+**决定性线索**：5 份日志无一例外，"其它线程"列表里都能找到一个名叫 `s Signal Sender`（截断，即 JSC GC 的 stop-the-world 线程挂起协调线程）卡在 `sem_timedwait`——这正是 [[project_webkit_suspend_handshake_freeze]]（PR #401）修过的同一套信号驱动挂起/恢复握手机制（`ThreadingPOSIX.cpp`）。
+
+**排除性实验锁定触发边界**：新写的 `repro3.test.ts` 把真实 `process.execve()` 换成等价开销的 `throw/catch`（其余完全同构：2 线程狂建线程 + 3000 次主循环），跑 6 次 **0 崩溃**。结合此前已确认"纯建线程压力不崩"，说明触发条件精确是：**JSC GC 信号挂起协议 + 真实内核 `execve(2)` 调用（哪怕最终 ENOEXEC 失败）同时发生**。
+
+**归因**：`execve(2)` 期间内核对整个线程组做 `check_unsafe_exec`/`de_thread()` 检查（就是本轮 EAGAIN 修复本身要处理的那个窗口），跟 JSC GC 同样要跨线程组做信号握手的 stop-the-world 挂起协议，在 HongMeng 内核上两条独立机制叠加时出问题——大概率是某线程被 GC 挂起信号定位/捕获寄存器现场时，撞上内核因 exec 检查临时扰动的线程状态，导致 GC 侧读到不一致的现场，最终反映成 JIT 代码里对某个不该为空的指针解引用 NULL。这是 PR #401 那类脆弱性的另一个触发源（一个是系统冻结，一个是并发 execve），**不是本轮 EAGAIN 修复引入的新 bug**——重试算法跟上游一致，崩溃点也不在插桩代码附近，是修复生效后测试终于跑到"大量线程存活+高频真实 execve"这个此前从未达到的负载量级才暴露出来的。
+
+**候选修复方向（未实现）**：本轮修复已经引入的 `threads_in_execve`/`execve_generation` 计数器本质就是"execve 是否在途"的现成信号，可以考虑暴露给 WTF 的 GC 挂起协调逻辑，检测到 execve 在途时退避/重试挂起而不是直接发信号——跟这次 pthread_create 的处理思路一致，只是用在 GC 挂起而非线程创建上。这需要新的 bun-webkit patch，触及 GC 正确性核心机制，工作量和风险与 PR #401 相当，**留给专门 session**，本轮不动。详情、复现脚本清单见 [[project_execve_pthread_create_sigsegv]]。
