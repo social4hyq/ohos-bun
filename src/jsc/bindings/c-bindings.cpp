@@ -371,8 +371,14 @@ extern "C" void on_before_reload_process_posix()
     sigprocmask(SIG_SETMASK, &signal_set, nullptr);
 }
 
-#if OS(LINUX)
+#if OS(LINUX) && !defined(__OHOS__)
 // Linked in with -Wl,--wrap=execve -Wl,--wrap=pthread_create (scripts/build/flags.ts).
+// Excluded on OHOS: bun-ohos links dynamically against ld-musl.so, and lld's
+// --wrap can't resolve __real_execve/__real_pthread_create against a symbol
+// that only exists in a shared object — see scripts/build/flags.ts's `when`
+// clause for this same flag (kept in lockstep: both must gate on !ohos, or
+// this file's __wrap_execve/__wrap_pthread_create end up either undefined or
+// dangling depending on which side omits it).
 // While a thread is inside execve(2), until de_thread() has killed the other threads or the
 // exec has failed, the kernel fails every clone(CLONE_FS) in the process with EAGAIN
 // (fs/exec.c check_unsafe_exec, kernel/fork.c copy_fs). WTF::Thread::create aborts on a
@@ -418,7 +424,7 @@ extern "C" int __wrap_pthread_create(pthread_t* thread, const pthread_attr_t* at
         usleep(1000);
     }
 }
-#endif // OS(LINUX)
+#endif // OS(LINUX) && !defined(__OHOS__)
 
 #endif // !OS(WINDOWS)
 
