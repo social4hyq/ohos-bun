@@ -5034,3 +5034,16 @@ error: Unexpected while resolving package '@happy-dom/global-registrator' from '
 **归因判断**：这大概率不是本次修复引入的新 bug——重试算法和上游完全一致（只是换了 `--wrap` 为 `dlsym` 插桩这一层机制），而且触发这个崩溃需要"大量线程创建成功 + 高频真实 execve 并发"这个此前根本达不到的负载量级：**之前的 bug 恰好在负载起来之前就让 spinner 线程提前失败退出了，无意中掩盖了这个更深的问题**。现在修复生效后，测试终于能跑到触发这个竞态所需的强度。真正的根因（HongMeng 内核 `clone`/`execve` 路径下的某种竞态，还是 bun 运行时/JSC 线程登记表在高频 exec+建线程下的一个 race）还没有查清，需要专门立项，可能得靠 `ohos-trace-shim` 或类似手段绕开 ptrace 限制去抓现场。
 
 **结论**：`pthread_create errno 11` 这条原始回归**已彻底修复并已上线**（`watch.test.ts`/`process-execve.test.ts` 的目标断言均已转绿）；`process-execve.test.ts` 整个文件目前**仍然不是 3/3 稳定**，但失败原因已经从"EAGAIN 未重试"变成了一个全新的、间歇性的 `SIGSEGV`——这是本轮验证的意外收获，留作后续专项调查，不在这次 PR 范围内处理。
+
+---
+
+## 2026-09-05 追加：bun 1.4.2 同步
+
+上游发布 `bun-v1.4.2`（12 个提交，相对 1.4.1 改动量很小）。合并到 `ohos-aarch64`（`cc254527800d`）**零冲突**——对照 [[project_bun_1_4_1_merge_regressions]] 记录的四种静默丢代码模式逐一核对：这次 merge 涉及的文件里，历史上真正带 OHOS 专属代码的几个（`js_bun_spawn_bindings.rs`、`PipeWriter.rs`、`pipes.rs`、`Terminal.rs`、`bun.lockb.rs`）标记全部完好，其余文件本来就没有 OHOS 代码（merge 前后都是 0 命中，不是丢了）。`rust-toolchain.toml` 无变化。
+
+`WEBKIT_VERSION` 从 `6119947592` 变为 `2e2aa2290f`（唯一实质性 webkit.ts 改动是新增一个 `ENABLE_ASSERTS` 开关，只在 `cfg.assertions && cfg.release` 同时成立时生效，本 formula 的非 assertions release 构建恒为 false，cmake 参数不用改）。按 SOP 顺序锁：先开 [bun-webkit PR #493](https://github.com/social4hyq/homebrew-core/pull/493)（已合并 `dad272d0a7`），再开 [bun PR #494](https://github.com/social4hyq/homebrew-core/pull/494)（已合并 `c943066a95`）。全程按用户指示走 GitHub CI 构建，未使用本地容器（当时远程构建容器 sshd 无响应）。
+
+真机验证（`brew upgrade bun` → `1.4.2`）：
+- 基本 smoke：`bun --version` → 1.4.2，`process.platform`/`process.arch` 正确，`2**32` 求值正常。
+- `cli/watch/watch.test.ts`：3/3 稳定通过。
+- `process-execve.test.ts` 独立复现脚本：本轮跑正常完成（`attempts:3000`、`failures.txt` 空、exit 0），未复现上面记录的间歇性 `SIGSEGV`——但那个问题本就是间歇性的（历史 3/8 概率），**单次未复现不代表已修复或已消失**，仍按未解决记录，见 [[project_execve_pthread_create_sigsegv]]。
