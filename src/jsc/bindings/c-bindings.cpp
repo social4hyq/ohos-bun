@@ -725,7 +725,9 @@ extern "C" void bun_initialize_process()
     // To avoid breaking --watch, we skip stdin, stdout, stderr and IPC.
     bun_close_range(4, ~0U, CLOSE_RANGE_CLOEXEC);
 
+#if !defined(__OHOS__)
     execve_counting_pid = getpid();
+#endif
 #endif
 
 #if OS(LINUX) || OS(DARWIN) || OS(FREEBSD)
