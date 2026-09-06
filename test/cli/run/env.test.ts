@@ -9,6 +9,7 @@ import {
   isASAN,
   isDebug,
   isLinux,
+  isOHOS,
   isWindows,
   tempDir,
   tempDirWithFiles,
@@ -441,8 +442,9 @@ test.concurrent(
     expect(stdout).toBe("OK");
   },
   // The spawned debug+ASAN child alone needs ~8s for this; the default 5s
-  // budget only fits release-ish builds.
-  isDebug ? 90_000 : 5_000,
+  // budget only fits release-ish builds. OHOS real hardware occasionally
+  // clears 5s by only tens of ms under test.concurrent CPU contention.
+  isDebug ? 90_000 : isOHOS ? 15_000 : 5_000,
 );
 
 test.concurrent(".env space edgecase (issue #411)", async () => {
