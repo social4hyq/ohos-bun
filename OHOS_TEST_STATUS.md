@@ -5134,3 +5134,46 @@ error: Unexpected while resolving package '@happy-dom/global-registrator' from '
 - 验证：`9 skip, 0 fail`（CI 模式下全部按预期跳过），3/3 稳定。
 
 **最终验证**：5 个测试各自隔离 3/3 全绿；全量 `bundler/` 目录 105 个文件跑过一遍，只剩已知无关的 `compile-elf-segment-layout.test.ts`。改动全部落在 `test/` 目录（`test/package.json`、`test/bundler/bundler_bytecode_portable.test.ts`、两个子目录独立 `package.json`/`bun.lock`），不涉及 bun 运行时代码、formula、CI 配置，**未提交**（用户未要求提交，留待后续决定是否连带下次 upstream 同步一起处理）。
+
+> **更正（同日）**：上面说"未提交"是写这段时的状态，之后用户要求 commit，已分两个 commit 落在 `ohos-aarch64`（`5a85b9cf6a` 代码 + `b8d777b45e` 本节文档），尚未 push 到 `origin`。
+
+---
+
+## 2026-09-06 追加：`regression/issue/32492.test.ts` 真实卡死，不是阈值问题
+
+上一节记录该测试从"批次假阳性"变成"稳定复现"（单次隔离跑 `slowestMs` 12141ms 超过 9000ms 阈值），用户问是否加大阈值即可。**判定：不能加阈值**——测试文件自己的注释写明了设计意图：
+
+```
+// The regression is a fixed 10s idle-futex timeout, so a stalled build always
+// exceeds 10s regardless of machine speed. A healthy build is well under a
+// second; keep the threshold high so 24-way oversubscription on a slow ASAN
+// shard can't trip it, while staying comfortably below the 10s floor.
+const STALL_MS = 9000;
+```
+
+这个测试要抓的回归特征是"卡死后固定 ~10 秒 idle-futex 超时"，健康构建应"远低于 1 秒"。阈值 9000ms 是刻意卡在 10 秒地板线下面一点，为的就是对这个特定故障模式敏感。加大阈值等于把真实卡死的检测能力废掉。
+
+**追加复测（3 次独立 `bun test` 全跑）结果比基线那一次严重得多**：
+
+| 跑次 | 结果 |
+|---|---|
+| 1 | 整个测试卡满 **120008ms 外层超时**（16 轮×24 并发构建没能在 2 分钟预算内跑完，不是单轮慢） |
+| 2 | 同样卡满 **120010ms 外层超时** |
+| 3 | 部分完成后某轮撞线 `Received: 9408`（超过 9000 阈值，但还没到 10 秒地板线） |
+
+3 次里 2 次是彻底卡死（超过测试自身 120s 超时预算），比基线记录的单轮 12141ms 更严重——怀疑一旦某一轮真的撞上这个 idle-futex 卡死，worker pool 的状态会连环带坏后续轮次，导致整个预算被耗光。复测时检查过设备本身状态正常（`ps aux`/shell 响应正常，不是资源耗尽的假象，跟本次会话早前那次 ENOMEM 级联是两回事）。
+
+**判定**：大概率是 [[project_epoll_pwait2_timeout_ignored]]、[[project_execve_pthread_create_sigsegv]] 同一类"HongMeng 内核 futex/同步原语与 Linux 语义有细微偏差"问题在 bun 自己 worker pool 关闭路径上的又一次体现，真实、可复现、比基线单次观察更严重。**只记录，不在本轮深挖根因**（用户指示先记录，后续专项 session 处理）；不加阈值、不改测试。
+
+---
+
+## 2026-09-06 追加：3 个新 flaky 项逐一深挖
+
+**`cli/run/env.test.ts`（已修复）**：唯一失败点是 `.env with 50000 entries`，5000ms 超时里实测卡在 5021.90ms——只超了 22ms。测试自己已有 `isDebug ? 90_000 : 5_000` 的分支（注释写明"debug+ASAN 子进程本身就要 ~8s，5s 预算只适合 release 构建"），这次只是把同样的道理再往前走一步：真机（release 构建）在 `test.concurrent` 并发争抢 CPU 时偶尔也压不住 5s 线。改成 `isDebug ? 90_000 : isOHOS ? 15_000 : 5_000`（`test/cli/run/env.test.ts`，`isOHOS` 补进 harness import），3/3 稳定通过。这是延续既有"OHOS 真机需要更宽松超时预算"惯例（vite-build/napi/spawn 等测试已有先例），不是绕过真实 bug。
+
+**`cli/install/migration/complex-workspace.test.ts`（非 bug，环境死局，判定不处理）**：失败信息是 `git failed with exit code 128` / `git@gitlab.com: Permission denied (publickey)`。查源码：`test/cli/install/migration/complex-workspace/package.json` 里 `"public-install-test": "gitlab:dylan-conway/public-install-test"`——bun 的 `gitlab:` 简写会走 `git@gitlab.com:...` **SSH** 协议克隆，即使目标仓库是 public 的也需要配好 SSH key 才能过（这是 git/npm 生态里常见的坑，不是 OHOS 专属问题，任何没配 gitlab SSH key 的机器上跑这条都会一样炸）。归类到既有"外网/registry 环境死局"一类（同 09-05 台账记录的那批 ConnectionRefused/manifest 下载失败），不是产品 bug，也不是本轮改动引入的，无法在这台机器上修，不处理。
+
+**`cli/install/bun-security-scanner-matrix-without-node-modules.test.ts`（未修复，深挖到具体代码路径，留给专项 session）**：3 次隔离跑里出现两种独立症状，都发生在一个跑几百种 `(scanner) × (linker) × (registry) × (lockfile 状态) × ...` 组合的巨型矩阵测试里（编号如 0483/0128/0379），从未见过全量失败，只是矩阵里偶发几个组合命中：
+
+1. **10 秒超时被 SIGTERM 杀（`Got: 143`）**：`bun remove`/`bun install` 子进程挂起直到 harness 强杀。触发时机（`bun remove`/`bun install` 都出现过）和症状（父进程等一个已经 spawn 出去的 bun 子进程，等不到它退出）跟上面 `regression/issue/32492.test.ts` 的 worker-pool 卡死高度相似——都是"spawn 子进程 + 事件循环等待完成"这个模式在 HongMeng 上偶发卡死，怀疑是同一类根因的另一次命中，建议以后专项排查时两个一起看。
+2. **`error: security scanner failed: ENOENT`**（"Security scanner installed successfully" 打印之后）：顺着 Rust 源码追到具体路径——`src/install/PackageManager/security_scanner.rs` 的 `SecurityScanSubprocess::spawn_posix()`（约 1073-1101 行）用 `spawn::spawn_process(&spawn_options, ...)` 拉起一个新 bun 子进程去跑扫描器代码，`spawn_options.cwd` 直接设成 `FileSystem::instance().top_level_dir()`；这个调用的返回值经 `.map_err(|e| e.to_zig_err())?` 传播成顶层 `crate::Error`，其 `.name()` 直接渲染原始 errno 符号名（`src/sys/Error.rs` 用 strum 做的 `ENOENT`/`EACCES` 等映射）——即这个 "ENOENT" **一定来自 `spawn_process` 这次系统调用本身失败**，不是上层某个更抽象的错误类型顺手叫 ENOENT。已排除一个候选：`bun_core::self_exe_path()`（`src/bun_core/util.rs`，同一条调用链上用来算 argv[0] 的那个 `readlink /proc/self/exe` 封装）失败时只会映射成泛化的 `Unexpected`，不会渲染出字面 "ENOENT"，所以不是它。**当前最可能的假设**：`spawn_process` 调用瞬间，`top_level_dir()` 指向的目录碰巧不存在（矩阵测试高频创建/清理 `scanner-matrix_*` 临时目录，可能存在目录已删但字符串缓存未更新的窗口期），导致 POSIX spawn 带着一个不存在的 cwd 直接 ENOENT——这和已修复的 [[project_ohos_readlink_proc_cwd_enoent]]（`/proc/self/cwd` 在 OHOS 上对已删除目录的语义跟 Linux 不一致）是同一大类"目录消失时机"问题，但这次是 spawn 时的 cwd 参数而不是 readlink 调用本身，需要进一步确认。**未修复**：只出现在几百种组合里的 1 种、且不是每次都复现，静态读代码到这一步就是不加真机插桩（`eprintln!` + 重新走 formula 构建）验证不下去了，留给专项 session（连同上面第 1 点的 32492 关联一起查，很可能是同一个 futex/事件循环根因表现在两个不同的 spawn-and-wait 调用点上）。
