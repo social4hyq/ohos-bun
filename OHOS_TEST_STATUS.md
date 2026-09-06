@@ -5075,3 +5075,62 @@ error: Unexpected while resolving package '@happy-dom/global-registrator' from '
 **已撤回**：[bun-webkit PR #497](https://github.com/social4hyq/homebrew-core/pull/497) 合并 → [bun PR #499](https://github.com/social4hyq/homebrew-core/pull/499) 合并，`bun-webkit.rb`/patch 恢复到 PR #401 时的字节级原始内容，`bun.rb` fork pin 指回撤销 c-bindings.cpp 改动后的 commit。中途踩了一次自己定的顺序锁——第一次把两个 formula 的撤回塞进同一个 PR（[已关闭的 PR #497 初版]），CI 矩阵并行构建时 `bun` 的 build job 抢先去拉还没发布的新 `bun-webkit` bottle，404 失败；拆成两个独立 PR、按 webkit 先合并再开 bun PR 的顺序重新走才过。两次撤回都直接把 bottle 块指回各自 formula 在 #495/#496 之前就已经发布过的、内容字节级一致的旧 bottle（`bun-webkit-v2e2aa2290f-r1`、`bun-v1.4.2-r1`），不用等一轮从头开始的全新构建。真机 `brew reinstall` 后 `nm` 核实 `reportExecveBegin`/`reportExecveEnd` 符号已从 `libWTF.a` 消失，`cli/watch/watch.test.ts` 3/3 依然通过——原有的 `pthread_create`/`execve` EAGAIN 修复（PR #492）完全不受影响，未被这次撤回牵连。
 
 **教训（方法论）**：诊断阶段的根因分析（GC 挂起信号协议 vs execve 内核线程组同步冲突，faultlog 5/5 证据链）大概率仍然成立，**但"根因诊断正确"不等于"缓解策略正确"**——设计缓解方案时必须显式考虑目标压力测试的实际负载形状（这里是"高频连续"而非"偶发稀疏"），一个只对稀疏场景有效的"等待清空"策略，用在连续高频场景下会退化成摆设。下一次重新设计修复，方向应该是真正的互斥（execve 尝试期间阻塞/推迟 GC 挂起信号发送本身，而不是挂起方单方面等待），而不是本轮这种单方面轮询等待。真机复测的量化对比（20 次跑量、15/20 vs 3/8）是发现这个问题的关键——如果只跑 1-2 次或者只看"没有立刻崩"就收工，这个负面结果会被完全漏掉。
+
+---
+
+## 2026-09-06 — bun 1.4.2 全量基线（口径①，真机 20 核）
+
+被测二进制：本机 brew `bun 1.4.2`（fork commit `9cc023c27e`，即两次撤回 `bun-webkit`/`bun` PR #497/#499 合并之后的最终态，`bun-webkit` 固定在 `2e2aa2290f`）。三级复跑，命令与历次口径①完全一致（`CI=1 BUN_TEST_NO_SECRETS=1 node scripts/runner.node.mjs --exec-path=<bun> --quiet --parallel --retries=1 --results-json=... --exclude=integration/bun-types --exclude=internal/source-lints --exclude=bake/dev --exclude=js/bun/ffi/cc.test.ts --exclude=regression/issue/20144 --exclude=regression/issue/26249`），产物见 `logs/baseline-2026-09-06/`。
+
+| 阶段 | 通过 | 失败 |
+|---|---|---|
+| 全量 20 核并行 | 5792 / 5844（99.11%） | 52 |
+| 串行复跑剔除并发假象 | +33（并发/批次假阳性） | 19 |
+| 隔离单跑 ×3 | 15 稳定复现（3/3）、4 flaky（1-2/3 fail） | **19（15 稳定 + 4 flaky）** |
+
+**净通过率**：只算 3/3 稳定复现的真失败，5844 中 15 个 = **99.74%**；连 flaky 一起算作"未通过"，5844 中 19 个 = 99.68%。对比 09-05（1.4.1，13 个稳定失败，99.78%）——同量级，未见明显整体回归。
+
+**方法论踩坑（本轮新增）**：串行复跑阶段中途，真机突然**系统级 fork/spawn 资源耗尽**（`fork failed: out of memory` → 升级到 `ENOMEM: not enough memory, posix_spawn` 连 zsh 自身都起不来），把从 `spawn.test.ts` 开始往后的 27 个文件的结果全部污染成级联 `spawn error`（不是真失败，是资源耗尽的副作用）。`/proc/meminfo` 显示 `MemAvailable` 仍有 ~12GB，不是内存不足，怀疑是这批高并发 fork 测试（`spawn.test.ts`/`cluster`/多个 `test-net-*`）产生的残留/僵尸子进程顶满了 hishell app 的 pids cgroup（`/proc/self/cgroup` 确认走 `2:pids:/100/com.huawei.hmos.hishell/app_14433`）。用户重启了终端 app 后恢复，重新隔离跑了这 27 个被污染的文件拿到干净结果。**教训：串行/隔离复测如果中途遇到 `spawn error`/`ENOMEM` 级联，不能直接采信那批结果为"真失败"，必须重启环境后重新拿干净数据**（新增记忆 [[feedback_serial_rerun_enomem_cascade]]）。
+
+另外命中一次**真实的 zsh 分词陷阱**（[[environment_bash_tool_runs_zsh]] 已有记录，本次是新的具体表现）：用 `INCLUDES=$(...多个 --include=...)` 拼出的变量，在裸 zsh 里 unquoted 展开**不做单词分割**（不像 bash），52 个 `--include=` 全部粘成一个字符串塞给了第一个 flag，导致 runner 实际匹配 0 个文件却不报错、直接 "End"——排查时必须用 `bash -c '...'` 包一层让 bash 的分词语义生效。
+
+### 与 09-05（1.4.1，13 个稳定失败）对比
+
+**沿用未变（9 个，非新回归）**：`cli/bun.test.ts`（pwsh 补全分支顺序）、`cli/install/bun-workspaces.test.ts`/`bun-workspaces-self-contained.test.ts`（硬链接失效）、`cli/run/run_command.test.ts`（Ctrl+C signalCode）、`js/bun/shell/bunshell.test.ts`（3 个断言，需单独定位）、`bundler/compile-elf-segment-layout.test.ts`（PT_LOAD 对齐)、`js/node/net/node-net.test.ts`/`js/node/test/parallel/test-net-autoselectfamily.js`（vpn-tun 网络假阳性）、`js/node/tls/test-use-system-ca.test.ts`（stdin 管道读证书）。
+
+**本轮未复现、判定已消失/仍是 flaky 本质（3 个）**：`js/bun/spawn/spawnsync-isolated-event-loop.test.ts`（GC 时序漂移，09-05 是稳定 E 类，本轮 3/3 全过）、`js/node/cluster/test-docs-http-server.ts`（G 类 worker 存活数不足，本轮 3/3 全过）、`bun-create.test.ts`（09-05 记录的 flaky，本轮完整基线里干脆没进入过失败列表）——三者均未做任何代码改动，纯粹体现"这几个用例本身就是环境敏感/flaky"，不代表已修复。
+
+**process-execve.test.ts**：从 09-05 记录的"目标断言已修复、但整文件仍间歇 SIGSEGV"状态延续，本轮隔离 3 次里 1 次失败（`stdout` 收到空字符串而非 `"attempts:3000"`，符合已知崩溃特征、日志里无 `pthread_create failed` 字样），与 [[project_execve_pthread_create_sigsegv]] 记录的根因一致，仍是那个已知未修复的 GC 挂起/execve 竞态，非新问题。
+
+**新增失败面（本轮新发现，6 个稳定 + 3 个 flaky）**：
+- **third_party 原生绑定缺口（4 个稳定）**：`js/third_party/@napi-rs/canvas/napi-rs-canvas.test.ts`、`js/third_party/prisma/prisma.test.ts`（均报 "Cannot find native binding"）、`js/third_party/esbuild/esbuild-child_process.test.ts`（"Unsupported platform: openharmony arm64 LE"）、`js/third_party/rollup-v4/rollup-v4.test.ts`（"current platform openharmony...not yet supported by the native Rollup build"）、`js/third_party/vitest/vitest.test.ts`（同类 "Startup Error"）——这些是 bun 自己 vendor 测试套件里直接装**真实上游 npm 包**（不经过我们工作区的 `@ohos-npm-ports` override 机制），装到的都是缺 OHOS 原生二进制的官方包，属于既有生态缺口（[[reference_ohos_ecosystem_compat]]）在这批 vendor smoke test 上的体现，不是 bun 运行时/工具链回归。09-05 基线没命中这批文件，怀疑是本地 vendor 测试的 node_modules/`.bun` 缓存状态差异（比如首次全新装 vs 复用旧缓存）导致这次真的触发了网络安装，需要确认是否该给 vendor.json 配置补 OHOS 覆盖或直接归入既有生态缺口分类跳过。
+- **flaky 新面孔（3 个）**：`cli/install/bun-security-scanner-matrix-without-node-modules.test.ts`（2/3 fail）、`cli/install/migration/complex-workspace.test.ts`（1/3 fail）、`cli/run/env.test.ts`（1/3 fail）——三者均未深挖，具体断言待后续单独复现。
+- **regression/issue/32492.test.ts** 性质发生变化：09-05 判定为"批次干扰假阳性，隔离 3/3 全过"（F 类），本轮**隔离 3/3 全部失败**（"concurrent bun build does not stall on worker-pool shutdown"，`slowestMs` 收到 12141ms 超过 9000ms 阈值）——从"假阳性"变成"稳定复现"，值得关注是否为真实的性能回归或测试阈值在这台设备上偏紧，需要专门复核（未在本轮深挖）。
+
+**后续**：本轮只做基线测量，未修复任何新发现项；third_party 缺口、32492 性质变化、3 个新 flaky 项均记录待查，不阻塞发布判断（都不是这次 revert 或 1.4.2 同步引入的功能回归迹象，更像既有生态缺口 + 环境噪音）。
+
+---
+
+## 2026-09-06 追加：5 个 third_party 原生绑定缺口逐一修复
+
+对上一节记录的 5 个 `js/third_party/*` 失败逐一查明根因并修复，**均在 `ohos-bun` fork 的 `test/` 目录内**（bun 自己 vendor 的测试套件里钉的依赖版本，不涉及 bun 运行时/c-bindings.cpp/formula，未提交、未开 PR）：
+
+**esbuild / rollup / vitest（3 个，纯版本钉死问题，不需要任何 port）**：
+- 查证：esbuild 官方 `@esbuild/openharmony-arm64`（WASM 产物）从 **0.26.0** 起就有原生支持（最新 0.28.2）；rollup 官方 `@rollup/rollup-openharmony-arm64` 从 **4.60.0** 起有（最新 4.63.1）；vitest 本身纯 JS，失败根源是它间接依赖的 vite→rollup 版本落后。
+- 三个测试各自钉的版本都远早于这两个阈值：`test/js/third_party/esbuild/package.json` 钉 `esbuild@0.17.11`（独立安装根，有自己的 `bun.lock`）；顶层 `test/package.json` 钉 `rollup@4.4.1`/`esbuild@0.18.6`；`vitest.test.ts` 走顶层依赖，实际卡在 vite@6.2.3 内嵌的 `rollup@^4.30.1`/`esbuild@^0.25.0` 范围解析出的落后版本。
+- 修复：esbuild 两处钉版本升到 `0.28.2`；顶层 `rollup` 升到 `4.63.1`；顶层 `package.json` 新增 `"resolutions": {"rollup": "4.63.1", "esbuild": "0.28.2"}`（bun 支持的强制版本覆盖，把 vite 内嵌的旧 rollup/esbuild 一并压到新版本，不用等 vite 自己升级依赖范围）。
+- 副作用：`bundler/bundler_bytecode_portable.test.ts` 的 `"bun build --bytecode libraries.js"` 快照哈希随之变化（文件顶部注释原文写明："bumping one of them moves its hash on every platform at once, which is the 'update the snapshot' case above"——**这正是该测试自己文档化的、版本升级导致的预期结果**，不是平台间序列化分歧那种坏情形），用 `bun test bundler/bundler_bytecode_portable.test.ts --update-snapshots` 更新，逐库单独哈希（lodash/acorn/react-dom/svelte/undici/happy-dom/immutable）全部不变，只有合并 bundle 的哈希变了，符合预期。跑过一次全量 `bundler/` 目录（105 个文件）确认只剩既有的 `compile-elf-segment-layout.test.ts` 失败，无新增回归。
+
+**@napi-rs/canvas（1 个，真实生态缺口，走 override 而非重新 port）**：
+- 查证：canvas 依赖预编译 **Skia**（Google C++ 图形库），`build.rs` 需要 `SKIA_DIR`/`SKIA_LIB_DIR` 指向静态库；Skia 官方无 OHOS 构建目标，需从源码用其自有的 `gn`/`ninja` 体系交叉构建——评估后判定工作量和失败风险都远超本轮合理范围（可能数小时起步，且字体/GPU 后端可能撞到 OHOS 缺失的系统调用）。
+- 原计划是排除 `@ohos-ports`、走 npm-porting skill 自建 `@ohos-npm-ports` port，但确认 Skia 构建代价后，用户改为直接复用现成的 `@ohos-ports/napi-rs-canvas@0.1.80-beta.0`（这次例外，不代表放弃"优先 @ohos-npm-ports"的一般原则）。
+- 有意思的旁证：该 npm 包的 maintainers 列表里包含 `social4hyq`（本工作区用户的账号），且本机 `.bun` store 缓存里已经有一份 2026-09-05 16:53 编译好的 `skia.openharmony-arm64.node`——大概率是用户自己团队早先已经做过这个 Skia OHOS 移植，只是发在了 `@ohos-ports` 而非 `@ohos-npm-ports` scope，尚未同步过去。
+- 接入方式：`package.json` 依赖值改写成 bun 支持的别名语法 `"@napi-rs/canvas": "npm:@ohos-ports/napi-rs-canvas@0.1.80-beta.0"`（顶层 `test/package.json` 和 `test/js/third_party/prisma/package.json` 各自独立安装根都要改）。注意该包的 `optionalDependencies` 里列的 `@napi-rs/canvas-openharmony-arm64` 在 npm 上其实是 404（从未真正发布），但不影响使用——真正的 `.node` 二进制是直接内嵌在主包 tarball 里的（`js-binding.js` 里 openharmony 分支优先 `require('./skia.openharmony-arm64.node')`，只有它失败才会退回那个不存在的可选包），是一次性验证清楚的，不是待修的坑。
+
+**prisma（1 个，排查后发现根本不需要动引擎，纯粹是 canvas 的连带问题）**：
+- 用户要求先查清楚新架构（WASM query compiler vs 原生引擎）再决定构建范围。查证 `@prisma/query-compiler-wasm`（最新 tag，随 prisma 8.x 一起发布）确认是纯 WASM 产物（`os`/`cpu` 均为 `undefined`，按数据库连接器分子包，无任何平台专属二进制）——现代 prisma（driver adapters + query compiler 架构）理论上完全不需要原生引擎。
+- 但这一步调查最终**没有用上**：读 `prisma.test.ts` 源码发现，真正调用 prisma 引擎（不管原生还是 WASM）的逻辑全部包在 `describe.skipIf(isCI)` 里，而 `harness.ts` 里 `isCI = process.env.CI !== undefined`——咱们 runner 的标准调用方式一律带 `CI=1`，所以这个测试在我们的基线里**从来没有真正跑到 prisma 引擎那一步**。真正在模块顶层无条件执行、炸掉整个文件的是第 1 行 `import { createCanvas } from "@napi-rs/canvas"`——这份测试自己目录下有独立的 `package.json`（钉的是更老的 `@napi-rs/canvas@0.1.47`），和顶层是完全同一个 canvas 缺口，与 prisma 本身无关。
+- 修复：只改这份局部 `package.json` 的 canvas 依赖，同样指向 `npm:@ohos-ports/napi-rs-canvas@0.1.80-beta.0`；prisma/`@prisma/client` 版本原样保持 `5.1.1`（上游测试作者自己在文件里留了注释"upgrading these tests to use prisma 6 requires more investigation than this upgrade warranted... so for now i decided to put a pin in it"，本轮不动这个决定，超出范围）。
+- 验证：`9 skip, 0 fail`（CI 模式下全部按预期跳过），3/3 稳定。
+
+**最终验证**：5 个测试各自隔离 3/3 全绿；全量 `bundler/` 目录 105 个文件跑过一遍，只剩已知无关的 `compile-elf-segment-layout.test.ts`。改动全部落在 `test/` 目录（`test/package.json`、`test/bundler/bundler_bytecode_portable.test.ts`、两个子目录独立 `package.json`/`bun.lock`），不涉及 bun 运行时代码、formula、CI 配置，**未提交**（用户未要求提交，留待后续决定是否连带下次 upstream 同步一起处理）。
