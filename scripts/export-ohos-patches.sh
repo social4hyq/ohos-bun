@@ -32,7 +32,7 @@ SCRATCH="${BUN_REPLAY_DIR:-/data/storage/el2/base/tmp/opencode/bun-patch-replay}
 # reads). The equivalence check at the bottom excludes the same set, so
 # it still asserts the replayed tree equals the fork tip on every path
 # the patch series covers.
-GIT_EXCLUDES=":(exclude)test :(exclude)OHOS_TEST_STATUS.md :(exclude).github :(exclude).webkit-version :(exclude).gitignore :(exclude)scripts/ohos :(exclude)scripts/run-baseline.sh :(exclude)scripts/update-ohos-test-durations.mjs :(exclude)scripts/runner.node.mjs :(exclude)scripts/utils.mjs :(exclude)src/ohos_sign/tests :(exclude)scripts/build/shims/cpu_model :(exclude)src/io/windows_event_loop.rs :(exclude)packages/bun-plugin-svelte/bun.lock :(exclude)src/runtime/cli/init/react-shadcn/bun.lock :(exclude)src/runtime/cli/init/react-tailwind/bun.lock"
+GIT_EXCLUDES=":(exclude)test :(exclude)OHOS_TEST_STATUS.md :(exclude).github :(exclude).webkit-version :(exclude).gitignore :(exclude)scripts/ohos :(exclude)scripts/run-baseline.sh :(exclude)scripts/update-ohos-test-durations.mjs :(exclude)scripts/runner.node.mjs :(exclude)scripts/utils.mjs :(exclude)src/ohos_sign/tests :(exclude)scripts/build/shims/cpu_model :(exclude)src/io/windows_event_loop.rs :(exclude)packages/bun-plugin-svelte/bun.lock :(exclude)src/runtime/cli/init/react-shadcn/bun.lock :(exclude)src/runtime/cli/init/react-tailwind/bun.lock :(exclude)probe :(exclude)scripts/export-ohos-patches.sh"
 
 rm -rf "$SCRATCH"
 git -C "$REPO" worktree add --detach "$SCRATCH" "$UPSTREAM_TAG" >/dev/null 2>&1
