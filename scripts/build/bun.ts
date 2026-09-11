@@ -27,7 +27,7 @@
  */
 
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
-import { dirname, relative, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import type { Sources } from "../glob-sources.ts";
 import { emitCodegen, type CodegenOutputs } from "./codegen.ts";
 import { ar, cc, cxx, link, pch } from "./compile.ts";
@@ -105,8 +105,16 @@ function systemLibs(cfg: Config): string[] {
   if (cfg.ohos) {
     libs.push("-lc", "-lpthread", "-ldl");
     // Link ICU for local WebKit builds on OHOS (cross-compiled ICU at ohosIcuDir/lib).
+    // Explicit .a paths: the keg lib dir also carries .so, and ld prefers
+    // shared — that would bake DT_NEEDED libicu*.so.78 (with no usable
+    // rpath) into the binary, breaking bottles. Static matches the
+    // prebuilt-WebKit production flow.
     if (cfg.webkit === "local" && cfg.ohosIcuDir) {
-      libs.push(`-L${cfg.ohosIcuDir}/lib`, "-licudata", "-licui18n", "-licuuc");
+      libs.push(
+        join(cfg.ohosIcuDir, "lib", "libicudata.a"),
+        join(cfg.ohosIcuDir, "lib", "libicui18n.a"),
+        join(cfg.ohosIcuDir, "lib", "libicuuc.a"),
+      );
     }
   }
 
