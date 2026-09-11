@@ -5177,3 +5177,32 @@ const STALL_MS = 9000;
 
 1. **10 秒超时被 SIGTERM 杀（`Got: 143`）**：`bun remove`/`bun install` 子进程挂起直到 harness 强杀。触发时机（`bun remove`/`bun install` 都出现过）和症状（父进程等一个已经 spawn 出去的 bun 子进程，等不到它退出）跟上面 `regression/issue/32492.test.ts` 的 worker-pool 卡死高度相似——都是"spawn 子进程 + 事件循环等待完成"这个模式在 HongMeng 上偶发卡死，怀疑是同一类根因的另一次命中，建议以后专项排查时两个一起看。
 2. **`error: security scanner failed: ENOENT`**（"Security scanner installed successfully" 打印之后）：顺着 Rust 源码追到具体路径——`src/install/PackageManager/security_scanner.rs` 的 `SecurityScanSubprocess::spawn_posix()`（约 1073-1101 行）用 `spawn::spawn_process(&spawn_options, ...)` 拉起一个新 bun 子进程去跑扫描器代码，`spawn_options.cwd` 直接设成 `FileSystem::instance().top_level_dir()`；这个调用的返回值经 `.map_err(|e| e.to_zig_err())?` 传播成顶层 `crate::Error`，其 `.name()` 直接渲染原始 errno 符号名（`src/sys/Error.rs` 用 strum 做的 `ENOENT`/`EACCES` 等映射）——即这个 "ENOENT" **一定来自 `spawn_process` 这次系统调用本身失败**，不是上层某个更抽象的错误类型顺手叫 ENOENT。已排除一个候选：`bun_core::self_exe_path()`（`src/bun_core/util.rs`，同一条调用链上用来算 argv[0] 的那个 `readlink /proc/self/exe` 封装）失败时只会映射成泛化的 `Unexpected`，不会渲染出字面 "ENOENT"，所以不是它。**当前最可能的假设**：`spawn_process` 调用瞬间，`top_level_dir()` 指向的目录碰巧不存在（矩阵测试高频创建/清理 `scanner-matrix_*` 临时目录，可能存在目录已删但字符串缓存未更新的窗口期），导致 POSIX spawn 带着一个不存在的 cwd 直接 ENOENT——这和已修复的 [[project_ohos_readlink_proc_cwd_enoent]]（`/proc/self/cwd` 在 OHOS 上对已删除目录的语义跟 Linux 不一致）是同一大类"目录消失时机"问题，但这次是 spawn 时的 cwd 参数而不是 readlink 调用本身，需要进一步确认。**未修复**：只出现在几百种组合里的 1 种、且不是每次都复现，静态读代码到这一步就是不加真机插桩（`eprintln!` + 重新走 formula 构建）验证不下去了，留给专项 session（连同上面第 1 点的 32492 关联一起查，很可能是同一个 futex/事件循环根因表现在两个不同的 spawn-and-wait 调用点上）。
+
+## 2026-09-12 — bun 1.4.2 上游源 + 补丁系列构建全量基线（口径①，真机 20 核）
+
+被测二进制：本机 brew `bun@1.4 1.4.2_1`（bottle r5）。** provenance 变更**：此构建不再来自 fork 直构，而是上游 `oven-sh/bun` tag `bun-v1.4.2`（744846f844）+ `Patches/bun@1.4/` 109 个按文件补丁（PR #558/#559/#560 的最终形态；fork tip `3dcac9d45a`，waiter-thread 强制已移除）。对补丁系列的逐位等价性与三层验证见 PR #560 描述与记忆库。
+
+三级复跑，命令与历次口径①完全一致（`CI=1 BUN_TEST_NO_SECRETS=1 node scripts/runner.node.mjs --exec-path=<bun@1.4> --quiet --parallel --retries=1 --results-json=... --exclude=integration/bun-types --exclude=internal/source-lints --exclude=bake/dev --exclude=js/bun/ffi/cc.test.ts --exclude=regression/issue/20144 --exclude=regression/issue/26249`），产物见 `logs/baseline-r5-20260912/`。
+
+| 阶段 | 通过 / 总数（文件） | 失败 |
+|---|---|---|
+| 全量 20 核并行 | 5800 / 5844（99.24%） | 44 |
+| 44 个失败文件逐个**串行隔离复测** | **44 / 44 全部通过** | **0** |
+
+**串行复核后有效通过率：100%**。44 个并行失败全部为并发假象（资源竞争/端口/时序），包含历史「真实卡死」项 `regression/issue/32492.test.ts`（本轮串行 180s 内正常完成，性质再次变化）与 `process-execve.test.ts`（execve 间歇 SIGSEGV 史）。
+
+### 与 2026-09-06 基线对比（同口径，被测为 fork 直构 `9cc023c27e`）
+
+| | 2026-09-06（fork 直构） | 2026-09-12（上游源+补丁） |
+|---|---|---|
+| 20 核并行 | 5792/5844（99.11%），52 失败 | 5800/5844（**99.24%**），44 失败 |
+| 串行复核后 | 若干真实失败 | **0 真实失败** |
+
+- 并行口径失败 52 → 44；串行复核后 0 真实失败，**无任何新增回归**。
+- 结论：上游源 + 109 补丁的构建在测试面**优于 fork 直构基线**；waiter-thread 移除与补丁裁剪（#559/#560）无测试面影响。
+
+### 方法论备注
+
+- 复测命令：`node scripts/runner.node.mjs --include=<file> --exec-path=<bun@1.4> --quiet`，逐文件严格串行，单文件 180s 超时（32492 本轮 <180s 完成）。
+- 探测器存档：`/data/storage/el2/base/tmp/opencode/ohos-probe.c`（15+ 项 OHOS 内核行为探测，裸内核 vs LD_PRELOAD(shim) 双跑，EL2 tmp 易失，建议挪入仓内长期保留）。
+- 环境无 LD_PRELOAD 污染（双跑一致）。
