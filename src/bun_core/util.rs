@@ -4153,12 +4153,9 @@ pub fn getcwd_or_exe_dir(buf: &mut PathBuffer) -> &ZStr {
     ZStr::from_buf(&buf.0, len)
 }
 
-/// OHOS-only: honest deleted-cwd re-check bypassing ohos-compat-shim's
-/// silent `$HOME` substitution in the plain `getcwd()` that `getcwd_len`
-/// uses. Mirrors `bun_sys::posix::cwd_is_deleted` — duplicated rather than
-/// shared, since `bun_sys` depends on `bun_core`, not the other way around.
+/// Bypass the embedded getcwd fallback when callers require ENOENT.
 #[cfg(target_env = "ohos")]
-fn cwd_is_deleted_ohos() -> bool {
+pub fn cwd_is_deleted_ohos() -> bool {
     let mut proc_buf = [0u8; 4096];
     // SAFETY: "/proc/self/cwd" is a valid NUL-terminated path literal;
     // proc_buf provides 4095 writable bytes + one reserved NUL slot.

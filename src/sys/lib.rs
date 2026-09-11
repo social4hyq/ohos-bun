@@ -2664,83 +2664,14 @@ mod posix_impl {
     #[cfg(target_env = "ohos")]
     pub fn process_cwd(buf: &mut [u8]) -> Maybe<usize> {
         let result = getcwd(buf);
-        if result.is_ok() && cwd_is_deleted() {
+        if result.is_ok() && bun_core::cwd_is_deleted_ohos() {
             return Err(Error::from_code(E::ENOENT, Tag::getcwd));
         }
         result
     }
 
-    /// OHOS: whether the cwd has been rmdir'd. `readlink("/proc/self/cwd")` is
-    /// the honest signal: it resolves server-side via `d_path()` with no
-    /// userspace permission check, and on OHOS the procfs entry itself returns
-    /// ENOENT when the cwd is gone (Linux instead appends " (deleted)" to the
-    /// path and leaves the readlink succeeding — both are handled here).
-    #[cfg(target_env = "ohos")]
-    fn cwd_is_deleted() -> bool {
-        let mut proc_buf = [0u8; 4096];
-        // SAFETY: "/proc/self/cwd" is a valid NUL-terminated path literal;
-        // proc_buf provides 4095 writable bytes + one reserved NUL slot.
-        let n = unsafe {
-            libc::readlink(
-                b"/proc/self/cwd\0".as_ptr().cast(),
-                proc_buf.as_mut_ptr().cast(),
-                proc_buf.len() - 1,
-            )
-        };
-        if n > 0 {
-            proc_buf[n as usize] = 0;
-            let mut st: libc::stat = unsafe { core::mem::zeroed() };
-            // SAFETY: proc_buf is NUL-terminated by the assignment above.
-            return unsafe { libc::stat(proc_buf.as_ptr().cast(), &mut st) } < 0
-                && last_errno() == libc::ENOENT;
-        }
-        n < 0 && last_errno() == libc::ENOENT
-    }
 
     // ── link/perm/time/access group ──
-    pub fn link(src: &ZStr, dest: &ZStr) -> Maybe<()> {
-        // OHOS: the kernel refuses the bare `linkat` syscall with EACCES, and
-        // ohos-compat-shim works around that by interposing the *libc symbol*
-        // `linkat`. musl implements `link(a, b)` as a direct
-        // `syscall(SYS_linkat, AT_FDCWD, a, AT_FDCWD, b, 0)`, so it never
-        // reaches that symbol and never gets the workaround — hardlinks fail
-        // with EACCES no matter how the shim is configured (verified: setting
-        // OHOS_COMPAT_SHIM_ENABLE changes nothing, because the interposer is
-        // simply never called). Routing through `linkat` fixes it: measured
-        // on-device, the libc `linkat` symbol succeeds where both `link()` and
-        // the raw syscall return EACCES, and stripping the shim from
-        // LD_PRELOAD makes `linkat` fail too — confirming the symbol
-        // interposition is what makes hardlinks work here at all.
-        #[cfg(target_env = "ohos")]
-        {
-            check_p!(
-                // SAFETY: both `ZStr`s are valid NUL-terminated C strings;
-                // AT_FDCWD makes both paths resolve exactly as `link` would.
-                unsafe {
-                    libc::linkat(
-                        libc::AT_FDCWD,
-                        src.as_ptr(),
-                        libc::AT_FDCWD,
-                        dest.as_ptr(),
-                        0,
-                    )
-                },
-                Tag::link,
-                src
-            );
-            return Ok(());
-        }
-        #[cfg(not(target_env = "ohos"))]
-        {
-            check_p!(
-                // SAFETY: both `ZStr`s are valid NUL-terminated C strings.
-                unsafe { libc::link(src.as_ptr(), dest.as_ptr()) },
-                Tag::link,
-                src
-            );
-            Ok(())
-        }
-    }
     pub fn linkat(src_dir: impl AsFd, src: &ZStr, dest_dir: impl AsFd, dest: &ZStr) -> Maybe<()> {
         let src_dir = src_dir.as_fd();
         let dest_dir = dest_dir.as_fd();
