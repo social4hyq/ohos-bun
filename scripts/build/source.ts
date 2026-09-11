@@ -615,7 +615,7 @@ export function registerDepRules(n: Ninja, cfg: Config): void {
   // the dep, cmake --build is a no-op (inner ninja re-stats), and our restat
   // prunes everything downstream.
   n.rule("dep_build", {
-    command: `${stream} ${cmake} --build $builddir --config $buildtype $parallel $verbose $targets`,
+    command: `${stream} $toolEnv ${cmake} --build $builddir --config $buildtype $parallel $verbose $targets`,
     description: "build $name",
     restat: true,
     pool: "dep",
@@ -1400,6 +1400,13 @@ function emitNestedCmake(
       parallel: spec.parallel === undefined ? "" : `--parallel ${spec.parallel}`,
       verbose: spec.verbose ? "--verbose" : "",
       targets: targets.map(t => `--target ${t}`).join(" "),
+      // OHOS hosts ship no /usr/bin/{clang,gcc}. WebKit's preprocess.pl
+      // (inspector protocol codegen) execs $ENV{CC} || /usr/bin/clang ||
+      // /usr/bin/gcc for its preprocessed DSL, so the nested build must
+      // carry CC/CXX explicitly. stream.ts merges --env=K=V over its env.
+      ...(cfg.ohos
+        ? { toolEnv: `--env=CC=${quote(cfg.cc, hostWin)} --env=CXX=${quote(cfg.cxx, hostWin)}` }
+        : { toolEnv: "" }),
     },
   });
 
