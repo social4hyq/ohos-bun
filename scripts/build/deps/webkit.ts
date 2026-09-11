@@ -371,7 +371,9 @@ export const webkit: Dependency = {
             CMAKE_FIND_ROOT_PATH: cfg.ohosSysroot,
             CMAKE_PREFIX_PATH: cfg.ohosIcuDir,
             ICU_ROOT: cfg.ohosIcuDir,
+            ICU_INCLUDE_DIR: join(cfg.ohosIcuDir, "include"),
             CMAKE_THREAD_LIBS_INIT: "-lpthread",
+            CMAKE_HAVE_THREADS_LIBRARY: "1",
             CMAKE_DL_LIBS: "",
             CMAKE_FIND_ROOT_PATH_MODE_PACKAGE: "BOTH",
             CMAKE_FIND_ROOT_PATH_MODE_LIBRARY: "BOTH",
@@ -412,6 +414,9 @@ export const webkit: Dependency = {
       // Release local WebKit keeps debug info so JSC crashes symbolicate.
       // LTO stays plain Release (debug info + LTO bloats significantly).
       buildType: cfg.release && !cfg.lto ? "RelWithDebInfo" : cfg.buildType,
+      // OHOS generated-header copy rules are not reliable on the mounted
+      // filesystem when Ninja runs them concurrently.
+      ...(cfg.ohos ? { parallel: 1 } : {}),
     };
 
     if (cfg.windows) {
