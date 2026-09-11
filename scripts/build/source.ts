@@ -613,7 +613,7 @@ export function registerDepRules(n: Ninja, cfg: Config): void {
   // the dep, cmake --build is a no-op (inner ninja re-stats), and our restat
   // prunes everything downstream.
   n.rule("dep_build", {
-    command: `${stream} ${cmake} --build $builddir --config $buildtype$parallel $targets`,
+    command: `${stream} ${cmake} --build $builddir --config $buildtype $parallel $targets`,
     description: "build $name",
     restat: true,
     pool: "dep",
@@ -1395,7 +1395,7 @@ function emitNestedCmake(
       name,
       builddir: buildDir,
       buildtype: buildType,
-      parallel: spec.parallel === undefined ? "" : ` --parallel ${spec.parallel}`,
+      parallel: spec.parallel === undefined ? "" : `--parallel ${spec.parallel}`,
       targets: targets.map(t => `--target ${t}`).join(" "),
     },
   });
