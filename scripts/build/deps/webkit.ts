@@ -414,8 +414,11 @@ export const webkit: Dependency = {
       // LTO stays plain Release (debug info + LTO bloats significantly).
       buildType: cfg.release && !cfg.lto ? "RelWithDebInfo" : cfg.buildType,
       // OHOS generated-header copy rules are not reliable on the mounted
-      // filesystem when Ninja runs them concurrently.
-      ...(cfg.ohos ? { parallel: 1 } : {}),
+      // filesystem when Ninja runs them concurrently. BUN_WEBKIT_PARALLEL
+      // overrides for local bring-up (e.g. =10 on a 20-core device — JSC
+      // TU compiles at -g eat 2-6 GB each, so respect RAM, not nproc); CI
+      // keeps the serial default.
+      ...(cfg.ohos ? { parallel: Number(process.env.BUN_WEBKIT_PARALLEL) || 1 } : {}),
       ...(cfg.ohos ? { verbose: true } : {}),
     };
 
