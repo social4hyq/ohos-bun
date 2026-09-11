@@ -293,6 +293,23 @@ export const webkit: Dependency = {
     // -no-pie rides along in CMAKE_C_FLAGS so try_compile() probes link on
     // PIE-default distros — without it the driver still passes -pie and the
     // -fno-pic probe object fails R_X86_64_32S relocation, killing FindThreads.
+    if (cfg.ohos) {
+      // FindThreads' libc probe calls pthread_cancel, which OHOS musl
+      // deliberately does not declare (or provide). Define it to nothing
+      // so the probe compiles and the module concludes "threads in libc"
+      // (CMAKE_THREAD_LIBS_INIT=""); otherwise its library fallback
+      // "succeeds" without linking under
+      // CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY and invents a
+      // nonexistent -lpthreads that kills the final jsc link. Nothing in
+      // WTF/JSC/bmalloc calls pthread_cancel, so the macro is inert.
+      // Must live in THESE flags: our CMAKE_C_FLAGS args override the
+      // computeDepFlags/extraCFlags assembly in source.ts (see above).
+      // Parens are backslash-escaped: the flag string rides unquoted
+      // through try_compile children's build.ninja into sh, and sh
+      // strips the backslashes before clang sees the function-like
+      // macro. (Unescaped parens are a shell syntax error there.)
+      optFlags.push("-Dpthread_cancel\\(x\\)=");
+    }
     if (cfg.unix && cfg.abi !== "android" && !cfg.ohos) optFlags.push("-fno-pic", "-fno-pie", "-no-pie");
     if (cfg.lto) optFlags.push("-flto=thin");
     if (cfg.pgoGenerate) optFlags.push(`-fprofile-generate=${cfg.pgoGenerate}`);
@@ -372,7 +389,6 @@ export const webkit: Dependency = {
             CMAKE_PREFIX_PATH: cfg.ohosIcuDir,
             ICU_ROOT: cfg.ohosIcuDir,
             ICU_INCLUDE_DIR: join(cfg.ohosIcuDir, "include"),
-            CMAKE_THREAD_LIBS_INIT: "-lpthread",
             CMAKE_DL_LIBS: "",
             CMAKE_FIND_ROOT_PATH_MODE_PACKAGE: "BOTH",
             CMAKE_FIND_ROOT_PATH_MODE_LIBRARY: "BOTH",
