@@ -373,7 +373,6 @@ export const webkit: Dependency = {
             ICU_ROOT: cfg.ohosIcuDir,
             ICU_INCLUDE_DIR: join(cfg.ohosIcuDir, "include"),
             CMAKE_THREAD_LIBS_INIT: "-lpthread",
-            CMAKE_HAVE_THREADS_LIBRARY: "1",
             CMAKE_DL_LIBS: "",
             CMAKE_FIND_ROOT_PATH_MODE_PACKAGE: "BOTH",
             CMAKE_FIND_ROOT_PATH_MODE_LIBRARY: "BOTH",
@@ -417,6 +416,7 @@ export const webkit: Dependency = {
       // OHOS generated-header copy rules are not reliable on the mounted
       // filesystem when Ninja runs them concurrently.
       ...(cfg.ohos ? { parallel: 1 } : {}),
+      ...(cfg.ohos ? { verbose: true } : {}),
     };
 
     if (cfg.windows) {
