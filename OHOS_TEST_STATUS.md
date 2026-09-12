@@ -5180,29 +5180,30 @@ const STALL_MS = 9000;
 
 ## 2026-09-12 — bun 1.4.2 上游源 + 补丁系列构建全量基线（口径①，真机 20 核）
 
-被测二进制：本机 brew `bun@1.4 1.4.2_1`（bottle r5）。** provenance 变更**：此构建不再来自 fork 直构，而是上游 `oven-sh/bun` tag `bun-v1.4.2`（744846f844）+ `Patches/bun@1.4/` 109 个按文件补丁（PR #558/#559/#560 的最终形态；fork tip `3dcac9d45a`，waiter-thread 强制已移除）。对补丁系列的逐位等价性与三层验证见 PR #560 描述与记忆库。
+> **勘误（同日）**：本条目初版所附「44 个失败串行复测 44/44 通过、有效通过率 100%」**作废**——复测脚本的 `--include` 带了 `test/` 前缀而 runner 扫描清单路径不带前缀，44 个全部 0 匹配，只跑了 `bun install` 前置步骤即报 PASS（runner 静默空转，且 `--quiet` 吞掉了 Including 诊断行）。修正版串行复测（v2/v3，`--include` 去前缀 + 校验测试文件条目真实存在）见下方修正结果。
 
-三级复跑，命令与历次口径①完全一致（`CI=1 BUN_TEST_NO_SECRETS=1 node scripts/runner.node.mjs --exec-path=<bun@1.4> --quiet --parallel --retries=1 --results-json=... --exclude=integration/bun-types --exclude=internal/source-lints --exclude=bake/dev --exclude=js/bun/ffi/cc.test.ts --exclude=regression/issue/20144 --exclude=regression/issue/26249`），产物见 `logs/baseline-r5-20260912/`。
+被测二进制：本机 brew `bun@1.4 1.4.2_2`（bottle r7）。** provenance 变更**：此构建不再来自 fork 直构，而是上游 `oven-sh/bun` tag `bun-v1.4.2`（744846f844）+ `Patches/bun@1.4/` 110 个按文件补丁（PR #558/#559/#563 的最终形态；fork tip `e14dc4028a`，waiter-thread 强制以 `cfg!(target_env="ohos")` 保留——移除它的尝试被设备 A/B 否决：`bun test js/node/module/sourcemap-simd.test.ts` 在 ~20 并发子进程负载下 6/6 确定性崩溃 SIGABRT/SIGBUS/SIGSEGV，恢复强制后全过）。
 
-| 阶段 | 通过 / 总数（文件） | 失败 |
-|---|---|---|
-| 全量 20 核并行 | 5800 / 5844（99.24%） | 44 |
-| 44 个失败文件逐个**串行隔离复测** | **44 / 44 全部通过** | **0** |
+全量 20 核并行（命令与历次口径①一致，产物 `logs/baseline-r5-20260912/`）：**5800/5844（99.24%），44 失败**（对照 2026-09-06 fork 直构基线 5792/5844、52 失败：并行口径改善 8 项、零新增）。
 
-**串行复核后有效通过率：100%**。44 个并行失败全部为并发假象（资源竞争/端口/时序），包含历史「真实卡死」项 `regression/issue/32492.test.ts`（本轮串行 180s 内正常完成，性质再次变化）与 `process-execve.test.ts`（execve 间歇 SIGSEGV 史）。
+### 修正版串行复测（v3 终版，对 1.4.2_2/r7 构建；v2 曾对 r5 构建）
 
-### 与 2026-09-06 基线对比（同口径，被测为 fork 直构 `9cc023c27e`）
+44 个失败文件逐个真实执行（`--include` 去前缀 + 条目存在性校验 + stdoutPreview 用例计数）：
 
-| | 2026-09-06（fork 直构） | 2026-09-12（上游源+补丁） |
-|---|---|---|
-| 20 核并行 | 5792/5844（99.11%），52 失败 | 5800/5844（**99.24%**），44 失败 |
-| 串行复核后 | 若干真实失败 | **0 真实失败** |
+- **真实失败 13**：
+  - 与 09-06 基线 19 个真实失败重合的 11：`compile-elf-segment-layout`(2/0)、`cli/bun.test.ts`(1/38)、`bun-workspaces-self-contained`(5/19)、`bun-workspaces`(1/81)、`run_command`(1/7)、`bunshell`(3/431)、`node-net`(10/85)、`process-execve`(1/10)、`test-use-system-ca`(1/13)、`32492`(1/0)、`test-net-autoselectfamily`(crash 0/0)
+  - 已知/预期 2：`spawnsync-isolated-event-loop`(1/5，在 09-06 并行 52 清单)、`package-json-lint`(2/19，fork 的 @ohos-ports 接线与上游 exact-version lint 规则冲突)
+- **并发假象 27**：串行全部通过（含真实用例计数：color 1023、bunshell 431、spawn 139、multi-run 126、bun-test 98 等）
+- **复现性验证**：`sourcemap-simd` 在 r5 构建（waiter-thread 移除态）为 SIGABRT/SIGBUS/SIGSEGV 崩溃（v2: 0p/0f），恢复强制后本轮 **24/24 全过**——与设备 A/B 结论一致
+- **未执行 1 + 波动 1**：`security-scanner-matrix-without-node-modules`（v2/v3 两轮 runner 均未产出条目，待查）、`bun-pm-why`（v2 串行 28p 通过、v3 未产出条目——前置依赖间歇，非产物问题）
 
-- 并行口径失败 52 → 44；串行复核后 0 真实失败，**无任何新增回归**。
-- 结论：上游源 + 109 补丁的构建在测试面**优于 fork 直构基线**；waiter-thread 移除与补丁裁剪（#559/#560）无测试面影响。
+### 与 2026-09-06 基线的 19 个真实失败对照
 
-### 方法论备注
+11 个仍复现（既有真实失败，非本次引入）；8 个本轮通过（complex-workspace、env.test、napi-rs-canvas、esbuild-child_process、prisma、rollup-v4、vitest 等——部分受益于 npm registry 恢复可达与 @ohos-npm-ports 接线）。**相对基线无新增不明原因失败**；唯一新面孔 `package-json-lint` 2 项为 fork 接线与上游 lint 规则的预期冲突（测试期定位，非运行时回归）。
 
-- 复测命令：`node scripts/runner.node.mjs --include=<file> --exec-path=<bun@1.4> --quiet`，逐文件严格串行，单文件 180s 超时（32492 本轮 <180s 完成）。
-- 探测器存档：`/data/storage/el2/base/tmp/opencode/ohos-probe.c`（15+ 项 OHOS 内核行为探测，裸内核 vs LD_PRELOAD(shim) 双跑，EL2 tmp 易失，建议挪入仓内长期保留）。
-- 环境无 LD_PRELOAD 污染（双跑一致）。
+### 方法论备注（本轮新增教训）
+
+1. runner `--include` 匹配**不带 `test/` 前缀**的路径；`--quiet` 会吞掉 `Including tests: [...] N/M` 诊断行——复核 include 是否命中必去 --quiet。
+2. 串行复测必须校验**测试文件条目真实存在**（install 前置步骤会被单独计数成"通过"）。
+3. 完整 sha 必须 `git rev-parse` 获取（手工补全 40 位导致两轮假失败/假通过）。
+4. OHOS 内核行为探测（裸内核 vs shim 双跑）：dup+CTL_DEL 失效、openat2 SIGSYS、statx(socket) EBADF、getpwuid_r 无条目、tmpfile/link/linkat 沙箱拒绝——对应补丁机制全部实证必要；EPOLLONESHOT 解除与 pidfd+epoll 实测正常。探测器见 `probe/ohos-probe.c`。
