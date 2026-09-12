@@ -177,6 +177,56 @@ export const workarounds: Workaround[] = [
       `(options.detached block), replace the local 0x80 with libc::POSIX_SPAWN_SETSID, ` +
       `drop the explanatory comments, and delete this entry.`,
   },
+  {
+    id: "ohos-native-tls",
+    issue: "https://github.com/llvm/llvm-project (no tracked issue — undocumented target default)",
+    description:
+      "clang defaults aarch64-linux-ohos to emulated TLS (-femulated-tls), routing every " +
+      "__thread/thread_local access through a software __emutls_get_address lookup instead of a " +
+      "native TP-register access. OHOS's musl fully supports native TLS (verified with a minimal " +
+      "-fno-emulated-tls test program); the default looks inherited from Android's historical NDK " +
+      "clang config rather than a real OHOS limitation. Without the override, mismatched TLS access " +
+      "reliably SIGSEGVs inside mimalloc's per-thread heap pointer at startup.",
+    applies: cfg => cfg.abi === "ohos",
+    expectedToBeFixed: () => {
+      // No version signal to check against — this is an undocumented
+      // per-target default, not a tracked bug with a fix release. Re-test
+      // by dropping -fno-emulated-tls from globalFlags (flags.ts) and
+      // running `clang -### -c -x c /dev/null -o /dev/null --target=
+      // aarch64-linux-ohos 2>&1 | grep -o -- '-f\\(no-\\)\\?emulated-tls'`
+      // whenever the LLVM pin bumps; flip this to a real check once a
+      // fixed version is known.
+      return false;
+    },
+    cleanup:
+      `Delete the -fno-emulated-tls entry in globalFlags (scripts/build/flags.ts) and this entry.`,
+  },
+  {
+    id: "ohos-compat-shim-embed",
+    issue: "https://gitee.com/openharmony (no tracked issue — application-sandbox seccomp policy)",
+    description:
+      "The OHOS app sandbox's seccomp filter SIGSYS-kills several Linux syscalls the kernel and " +
+      "OpenHarmony itself otherwise support (close_range, fchmodat2, ...) instead of returning " +
+      "ENOSYS/EPERM, and a few libc calls assume a traditional /etc/passwd-backed uid or writable " +
+      "P_tmpdir. shims/ohos_compat_shim.c interposes the libc-symbol level of these (both the named " +
+      "function and bun's own internal syscall()/close_range() callers, since it's linked directly " +
+      "into the executable rather than LD_PRELOAD'd) and falls back to a userspace-safe path. " +
+      "Canonical source lives in the standalone ../ohos-compat-shim repo, synced in as-needed — " +
+      "diff before resyncing to confirm no bun-side customization has drifted.",
+    applies: cfg => cfg.abi === "ohos",
+    expectedToBeFixed: () => {
+      // Sandbox policy, not a toolchain/library version — no reliable
+      // signal to check. Re-test by removing the shim and running the
+      // pipe-idle/close_range-triggering smoke test (`bun-profile
+      // --revision` forks and hits close_range during its crash-handler
+      // self-registration) on a newer OHOS SDK/device; flip to a real
+      // check only if a future SDK exposes a queryable capability flag.
+      return false;
+    },
+    cleanup:
+      `Delete scripts/build/shims/ohos_compat_shim.c, the needsOhosCompatShim block in shims.ts ` +
+      `(registerShimRules + emitShims), and this entry.`,
+  },
 ];
 
 /**

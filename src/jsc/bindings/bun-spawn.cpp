@@ -248,7 +248,7 @@ extern "C" ssize_t posix_spawn_bun(
 
     sigfillset(&blockall);
     sigprocmask(SIG_SETMASK, &blockall, &oldmask);
-#if !OS(ANDROID)
+#if !OS(ANDROID) && !defined(__OHOS__)
     pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cs);
 #endif
 
@@ -595,7 +595,7 @@ extern "C" ssize_t posix_spawn_bun(
 #endif
 
     sigprocmask(SIG_SETMASK, &oldmask, 0);
-#if !OS(ANDROID)
+#if !OS(ANDROID) && !defined(__OHOS__)
     pthread_setcancelstate(cs, 0);
 #else
     (void)cs;

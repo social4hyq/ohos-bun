@@ -130,6 +130,16 @@ export const globalFlags: Flag[] = [
     desc: "Android: platform define + 64-bit off_t (bionic defaults to 32-bit on LP32)",
   },
   {
+    // webkit:local links system ICU (bun.ts systemLibs) on the assumption
+    // its headers are in the default search path — true on distros that
+    // install libicu-dev to /usr/include. Harmonybrew's icu4c@78 is
+    // keg-only under a non-default prefix, so make the include path
+    // explicit rather than relying on that assumption for OHOS too.
+    flag: () => ["-isystem", join(process.env.BUN_OHOS_ICU_ROOT ?? "/opt/icu-ohos", "include")],
+    when: c => c.abi === "ohos" && c.webkit === "local",
+    desc: "OHOS: explicit ICU include path (Harmonybrew's icu4c@78 isn't on the default search path)",
+  },
+  {
     // On hosts with a GCC install (amazonlinux), clang's driver auto-detects
     // it and injects /usr/include/c++/N into the search list — even with
     // --sysroot, --gcc-toolchain, and -nostdinc++. That breaks #include_next
@@ -569,6 +579,21 @@ export const globalFlags: Flag[] = [
     when: c => c.unix && c.ci,
     desc: "Remap source paths in debug info (reproducible builds)",
   },
+
+  {
+    flag: "-fno-emulated-tls",
+    when: c => c.abi === "ohos",
+    // clang's default for this target is emulated TLS (-femulated-tls) —
+    // every `__thread`/`thread_local` (mimalloc's per-thread heap pointer
+    // included) goes through a software-emulated lookup instead of a native
+    // hardware TLS access. OHOS's musl fully supports native TLS (verified:
+    // a minimal -fno-emulated-tls program reads/writes __thread correctly);
+    // this default looks inherited from Android's historical NDK clang
+    // config, not an actual OHOS limitation. Must be in globalFlags (not
+    // bunOnlyFlags): the crash reproduces in mimalloc's own DirectBuild
+    // (vendor/mimalloc/src/alloc.c), which only inherits globalFlags.
+    desc: "OHOS: force native TLS — this target's emulated-tls default isn't a real platform limitation",
+  },
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -665,7 +690,7 @@ export const bunOnlyFlags: Flag[] = [
   },
   {
     flag: ["-fno-pic", "-fno-pie"],
-    when: c => c.unix && c.abi !== "android",
+    when: c => c.unix && c.abi !== "android" && c.abi !== "ohos",
     desc: "No position-independent code (we're a final executable)",
   },
   {
@@ -673,7 +698,17 @@ export const bunOnlyFlags: Flag[] = [
     when: c => c.abi === "android",
     desc: "Android requires PIE since API 21; bionic's loader rejects non-PIE",
   },
-
+  {
+    flag: "-fPIC",
+    when: c => c.abi === "ohos",
+    // Non-PIC/non-PIE ABS relocations against external data symbols (e.g.
+    // `stdout`) become link-time COPY relocations; the OHOS SDK's libc.so
+    // link stub carries wrong size/alignment metadata for at least stdout
+    // (st_size=4, not-8-aligned st_value), which lld's alignment check on
+    // R_AARCH64_LDST64_ABS_LO12_NC rejects. PIC/PIE routes the same access
+    // through the GOT instead, which never touches that stub metadata.
+    desc: "OHOS: PIC sidesteps a libc.so link-stub metadata bug that breaks non-PIC ABS/COPY relocations",
+  },
   // ─── Warnings-as-errors (unix) ───
   {
     flag: [
@@ -1285,13 +1320,27 @@ export const linkerFlags: Flag[] = [
   },
   {
     flag: ["-fno-pic", "-Wl,-no-pie"],
-    when: c => c.linux && c.abi !== "android",
+    when: c => c.linux && c.abi !== "android" && c.abi !== "ohos",
     desc: "No PIE (we don't need ASLR; simpler codegen)",
   },
   {
     flag: ["-fPIC", "-pie"],
     when: c => c.abi === "android",
     desc: "Android: bionic loader requires PIE",
+  },
+  {
+    flag: ["-fPIC", "-pie"],
+    when: c => c.abi === "ohos",
+    desc: "OHOS: PIE avoids a libc.so link-stub metadata bug (see the compile-time -fPIC entry above)",
+  },
+  {
+    // systemLibs (bun.ts) links -licudata/-licui18n/-licuuc assuming the
+    // default library search path — true on distros with libicu-dev in
+    // /usr/lib. Harmonybrew's icu4c@78 is keg-only under a non-default
+    // prefix (same reasoning as the compile-time ICU -isystem entry above).
+    flag: () => [`-L${join(process.env.BUN_OHOS_ICU_ROOT ?? "/opt/icu-ohos", "lib")}`],
+    when: c => c.abi === "ohos" && c.webkit === "local",
+    desc: "OHOS: library search path for Harmonybrew's icu4c@78",
   },
   {
     flag: [

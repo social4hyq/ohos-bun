@@ -14,7 +14,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { Config } from "./config.ts";
-import { DARWIN_STACK_SIZE } from "./flags.ts";
+import { computeDepFlags, DARWIN_STACK_SIZE } from "./flags.ts";
 import type { Ninja } from "./ninja.ts";
 import { quote } from "./shell.ts";
 
@@ -138,6 +138,20 @@ function needsMuslCrtDecompress(cfg: Config): boolean {
 const MUSL_CRT_OBJECTS = ["Scrt1.o", "crt1.o", "crti.o", "crtn.o"];
 
 /**
+ * OHOS app sandbox seccomp-kills several syscalls (close_range, fchmodat2,
+ * ...) with SIGSYS instead of returning ENOSYS/EPERM — see
+ * shims/ohos_compat_shim.c. Linking its object directly into the executable
+ * (rather than requiring callers to LD_PRELOAD it) interposes both the named
+ * libc symbol AND bun's own internal callers, since a strong symbol defined
+ * in the same link unit wins over the dynamic libc one for calls resolved at
+ * link time — no wrapper script needed for bun or `bun build --compile`
+ * output. Tracked in workarounds.ts ("ohos-compat-shim-embed").
+ */
+function needsOhosCompatShim(cfg: Config): boolean {
+  return cfg.abi === "ohos";
+}
+
+/**
  * Register shim compile rules. Call once from rules.ts alongside the
  * other registerXxxRules() calls.
  */
@@ -173,6 +187,17 @@ export function registerShimRules(n: Ninja, cfg: Config): void {
       command: `${q(existsSync(llvmObjcopy) ? llvmObjcopy : "llvm-objcopy")} --decompress-debug-sections $in $out`,
       description: "decompress-crt $out",
       restat: true,
+    });
+  }
+
+  if (needsOhosCompatShim(cfg)) {
+    // Plain object, compiled with the same flags as every other C/C++ dep
+    // (computeDepFlags) so cross-target/--sysroot line up when this is
+    // built by a cross CI host; $flags also carries -fPIC since the
+    // interposed symbols must land in the PIE's dynamic symbol table.
+    n.rule("shim_cc", {
+      command: `${q(cfg.cc)} $flags -fPIC -O2 -c $in -o $out`,
+      description: "shim $out",
     });
   }
 }
@@ -242,6 +267,21 @@ export function emitShims(n: Ninja, cfg: Config): ShimLinkOpts {
     // -B prepends to clang's startfile/library search paths, so the driver
     // resolves Scrt1.o/crti.o/crtn.o here before /usr/lib.
     ldflags.push(`-B${crtDir}`);
+  }
+
+  if (needsOhosCompatShim(cfg)) {
+    const src = resolve(cfg.cwd, "scripts", "build", "shims", "ohos_compat_shim.c");
+    const out = resolve(cfg.buildDir, "ohos_compat_shim.o");
+    n.build({
+      outputs: [out],
+      rule: "shim_cc",
+      inputs: [src],
+      vars: { flags: computeDepFlags(cfg).cflags.join(" ") },
+    });
+    // A plain .o is always fully linked (no archive member selection to skip
+    // it), so it interposes libc regardless of link-line position.
+    ldflags.push(out);
+    implicitInputs.push(out);
   }
 
   return { ldflags, implicitInputs };

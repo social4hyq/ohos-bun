@@ -2155,18 +2155,19 @@ mod posix_impl {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     mod linux_statx {
         // glibc: libc 0.2.x exposes the full surface directly.
-        #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+        #[cfg(all(target_os = "linux", not(any(target_env = "musl", target_env = "ohos"))))]
         pub(super) use libc::{
             STATX_ATIME, STATX_BLOCKS, STATX_BTIME, STATX_CTIME, STATX_GID, STATX_INO, STATX_MODE,
             STATX_MTIME, STATX_NLINK, STATX_SIZE, STATX_TYPE, STATX_UID, statx,
         };
 
-        // musl/Android: `libc` gates `statx`/`STATX_*` behind a build-script
-        // `musl_v1_2_3` cfg that cross-compiles can't trigger, and bionic's
-        // `statx()` wrapper requires API 30. Define the kernel-ABI struct +
-        // bits ourselves and dispatch via raw `syscall` — works on every
-        // Linux ABI.
-        #[cfg(any(target_env = "musl", target_os = "android"))]
+        // musl/OHOS/Android: `libc` gates `statx`/`STATX_*` behind a
+        // build-script `musl_v1_2_3` cfg that cross-compiles can't trigger
+        // (and OHOS's musl fork has no `statx()` wrapper at all — same gap,
+        // no cfg to even gate on), and bionic's `statx()` wrapper requires
+        // API 30. Define the kernel-ABI struct + bits ourselves and dispatch
+        // via raw `syscall` — works on every Linux ABI.
+        #[cfg(any(target_env = "musl", target_env = "ohos", target_os = "android"))]
         mod raw {
             #![allow(non_camel_case_types)]
             use core::ffi::{c_char, c_int, c_uint};
@@ -2242,7 +2243,7 @@ mod posix_impl {
                 unsafe { libc::syscall(libc::SYS_statx, dirfd, path, flags, mask, buf) as c_int }
             }
         }
-        #[cfg(any(target_env = "musl", target_os = "android"))]
+        #[cfg(any(target_env = "musl", target_env = "ohos", target_os = "android"))]
         pub(super) use raw::*;
     }
     #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -5199,16 +5200,17 @@ pub mod linux {
     pub use libc::epoll_event;
     pub use libc::pollfd;
 
-    // `libc::time_t` is `#[deprecated]` on musl: musl 1.2.0 widened `time_t`
-    // to 64-bit on 32-bit arches and the `libc` crate plans to follow (see
-    // rust-lang/libc#1848). Bun only ships 64-bit Linux, where the kernel
-    // `SYS_futex` timespec is `{ __kernel_long_t; __kernel_long_t; }` and
-    // `time_t == c_long == i64` on every libc, so spell it `i64` on musl to
-    // sidestep the deprecation without changing layout. The `const _` below
-    // guards the layout-identical-to-`libc::timespec` invariant.
-    #[cfg(target_env = "musl")]
+    // `libc::time_t` is `#[deprecated]` on musl (OHOS's musl fork included):
+    // musl 1.2.0 widened `time_t` to 64-bit on 32-bit arches and the `libc`
+    // crate plans to follow (see rust-lang/libc#1848). Bun only ships 64-bit
+    // Linux, where the kernel `SYS_futex` timespec is `{ __kernel_long_t;
+    // __kernel_long_t; }` and `time_t == c_long == i64` on every libc, so
+    // spell it `i64` on musl/ohos to sidestep the deprecation without
+    // changing layout. The `const _` below guards the
+    // layout-identical-to-`libc::timespec` invariant.
+    #[cfg(any(target_env = "musl", target_env = "ohos"))]
     type time_t = i64;
-    #[cfg(not(target_env = "musl"))]
+    #[cfg(not(any(target_env = "musl", target_env = "ohos")))]
     type time_t = libc::time_t;
 
     /// kernel-shaped timespec (`sec`/`nsec`, no `tv_` prefix).
