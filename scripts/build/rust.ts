@@ -531,10 +531,6 @@ export function cargoBuildInvocation(cfg: Config): CargoInvocation {
   // and the `bun_runtime` staticlib has no link step, so it's normally dead — but
   // if a target cdylib ever appears it'd fail with "could not open '-fuse-ld=lld'".
   if (!cfg.windows) rustflags.push(`-Clink-arg=-fuse-ld=lld`);
-  // OHOS: the LLD CodeSign patch injects a .codesign section at link time
-  // when --code-sign is passed. This signs every linked binary (including
-  // cargo build-script artifacts) so the OHOS kernel will execute them.
-  if (cfg.ohos) rustflags.push(`-Clink-arg=--code-sign`);
   // Keep the clang driver quiet about link args that don't apply to a given
   // artifact kind: rustc adds `-no-pie` under `-Crelocation-model=static`,
   // which is meaningless when it links a target cdylib, and rustc's
@@ -629,7 +625,7 @@ export function cargoBuildInvocation(cfg: Config): CargoInvocation {
     // `lld-link.exe` (`cfg.ld`); both speak the `/X` dialect rustc emits.
     [`CARGO_TARGET_${triple.toUpperCase().replace(/-/g, "_")}_LINKER`]: cfg.windows
       ? (cfg.msvcLinker ?? cfg.ld)
-      : (cfg.ohos && process.env.OHOS_BUN_SIGNING_LINKER ? process.env.OHOS_BUN_SIGNING_LINKER : cfg.cxx),
+      : cfg.cxx,
   };
   if (cfg.cargoHome !== undefined) env.CARGO_HOME = cfg.cargoHome;
   if (cfg.rustupHome !== undefined) env.RUSTUP_HOME = cfg.rustupHome;
