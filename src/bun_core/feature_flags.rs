@@ -2,12 +2,7 @@
 //! instead.
 
 use crate::env;
-// `crate::feature_flag` (lib.rs) is a stub module for flags "not yet wired"
-// into the real env_var-backed accessors -- every `.get()` there is a
-// hardcoded `false`. BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE and
-// BUN_FEATURE_FLAG_NO_LIBDEFLATE are both already properly declared in
-// env_var.rs's `feature_flag` module, so this import needs to be that one.
-use crate::env_var::feature_flag;
+use crate::feature_flag;
 
 /// Store and reuse file descriptors during module resolution
 /// This was a ~5% performance improvement
