@@ -46,7 +46,7 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, createWriteStream, openSync, writeSync } from "node:fs";
+import { closeSync, createWriteStream, fstatSync, openSync, writeSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { nameColor } from "./tty.ts";
 
@@ -192,6 +192,11 @@ function main(): void {
   let out: NodeJS.WritableStream;
   let outFd: number;
   try {
+    // Under node, fd 3 is often node's own epoll descriptor (libuv takes
+    // the lowest free fd), which accepts open() but fails writes with
+    // EINVAL. The FD-3 bypass is a dup of the terminal — a character
+    // device — so only take the bypass when fstat says chardev.
+    if (!fstatSync(STREAM_FD).isCharacterDevice()) throw new Error("fd 3 is not a character device");
     writeSync(STREAM_FD, ""); // 0-byte write: throws EBADF if fd isn't open
     // autoClose false: the fd is shared across parallel stream.ts procs.
     out = createWriteStream("", { fd: STREAM_FD, autoClose: false });
