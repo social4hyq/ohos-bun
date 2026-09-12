@@ -1229,13 +1229,7 @@ fn ensure_temp_node_gyp_script_run(manager: &mut PackageManager) -> Result<(), E
         "fi\n"
     );
 
-    // ── OHOS: auto-configure C compiler + code-sign for node-gyp ──
-    // node-gyp needs a C/C++ compiler to build native .node addons. On OHOS
-    // there is no system gcc/g++, so we default to cc/c++ (brew shims from
-    // llvm@21 that wrap signed clang/clang++ with LLD --code-sign).
-    // NOTE: "clang"/"clang++" in PATH may resolve to ohos-sdk LLVM 15 (no
-    // C++20 source_location); "cc"/"c++" are llvm@21 shims with correct LLD.
-    // Users can override via CC/CXX/LDFLAGS env vars.
+    // OHOS: default CC/CXX to brew cc/c++ — PATH "clang" may be the SDK's LLVM 15 (no <source_location>); the shims wrap LLD code-signing.
     #[cfg(target_env = "ohos")]
     {
         if manager.env().get(b"CC").is_none() {

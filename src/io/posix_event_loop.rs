@@ -382,11 +382,7 @@ impl FilePoll {
         self.deinit_possibly_defer(ctx, true, false);
     }
 
-    /// Same as [`Self::deinit_force_unregister`], but skips the explicit
-    /// CTL_DEL syscall (linux/android only — see `unregister_with_fd_impl`'s
-    /// `skip_ctl_del` doc comment). Only safe to use when the caller is about
-    /// to `close(fd)` immediately after, which removes the registration
-    /// implicitly.
+    /// Like [`Self::deinit_force_unregister`], but skips the explicit CTL_DEL — only safe when the caller `close(fd)`s immediately after (linux/android only; see `unregister_with_fd_impl`).
     pub(crate) fn deinit_force_unregister_skip_ctl_del(&mut self) {
         let ctx = get_vm_ctx(self.allocator_type);
         self.deinit_possibly_defer(ctx, true, true);
@@ -917,15 +913,11 @@ impl FilePoll {
         skip_ctl_del: bool,
     ) -> sys::Result<()> {
         debug_assert!(fd.native() >= 0 && fd != INVALID_FD);
-        // Only meaningful on the linux/android CTL_DEL branch below; kqueue
-        // (macos/freebsd) has no equivalent dup-sharing bug to work around.
+        // linux/android only below; kqueue has no equivalent dup-sharing bug to work around.
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
         let _ = skip_ctl_del;
 
-        // Unconditional and cheap when untracked. Covers every unregister
-        // path (including the `needs_rearm` skip below, which returns before
-        // reaching the real CTL_DEL) so a closed/reused fd number is never
-        // left poking a stale watchdog entry.
+        // Unconditional and cheap when untracked, so a closed/reused fd number is never left poking a stale watchdog entry.
         #[cfg(any(target_os = "linux", target_os = "android"))]
         epoll_rearm_watchdog::untrack(fd.native());
 
@@ -987,17 +979,7 @@ impl FilePoll {
 
         #[cfg(any(target_os = "linux", target_os = "android"))]
         {
-            // `skip_ctl_del`: the caller is about to `close(fd)` right after this
-            // returns, which already removes any epoll registration for `fd`
-            // implicitly (epoll(7)) — so the explicit CTL_DEL below is normally
-            // just belt-and-suspenders. On OHOS/HongMeng it is actively harmful
-            // for a `dup()`-shared open file description (e.g. Bun.Terminal's
-            // read_fd/write_fd, both dup'd from the same pty master): CTL_DEL on
-            // one of the pair permanently orphans the other's kernel-side epoll
-            // entry (see project_ohos_epoll_dup_del_leak memory). Skipping it
-            // when we know close() is imminent sidesteps the bug for every
-            // caller, not just Terminal, while still emitting the DEL for the
-            // "unregister but keep the fd open" callers that need it.
+            // `skip_ctl_del`: the caller is about to close(fd), which removes the registration implicitly; on OHOS an explicit CTL_DEL on a dup-shared open file description permanently orphans the sibling's epoll entry, so skip it while the fd is closing.
             if !skip_ctl_del {
                 use bun_sys::linux::{self, EPOLL};
                 // CTL_DEL keys on fd alone, so both directions are removed together.
@@ -1249,47 +1231,15 @@ pub enum Flags {
 
     Socket,
 
-    /// Opt-in only (set via `FilePollRef::set_flag` before the first
-    /// registration; currently only `Bun.Terminal`'s PTY-master reader).
-    /// OHOS's epoll implementation has a confirmed real-device defect where
-    /// `epoll_ctl` reports success but the kernel silently stops delivering
-    /// events for the fd (see OHOS_TEST_STATUS.md, 2026-08-20). This flag
-    /// enrolls the fd in `epoll_rearm_watchdog`'s backoff-poked redundant
-    /// `CTL_MOD` recovery. Narrowly scoped (not default-on for every
-    /// Readable registration in the runtime) since the defect is only
-    /// confirmed for this fd class and the watchdog carries a background
-    /// thread + syscall cost that unrelated I/O shouldn't pay for.
+    /// Opt-in only (set before the first registration; currently only Bun.Terminal's PTY master): OHOS's epoll reports CTL success but can silently stop delivering events, so the fd is enrolled in `epoll_rearm_watchdog`'s redundant-CTL_MOD recovery.
     EpollRearmWatch,
 }
 
 pub type FlagsSet = enumset::EnumSet<Flags>;
 
-/// Userspace recovery for a confirmed real-device OHOS kernel epoll defect:
-/// `epoll_ctl` reports success but the kernel silently stops delivering
-/// events for the fd (root-caused down to the raw syscall level, see
-/// OHOS_TEST_STATUS.md 2026-08-20 -- `register_with_fd_impl`'s own ADD/MOD
-/// calls and their return codes were verified byte-for-byte correct on a
-/// real device that never went on to fire `on_poll`). A real-device A/B
-/// (3 paired trials on a prototype, then 5 independent trials on this
-/// implementation) confirmed a redundant `epoll_ctl(CTL_MOD)` from a second
-/// thread reliably unsticks it.
+/// Userspace recovery for an OHOS kernel epoll defect (`epoll_ctl` reports success but the kernel silently stops delivering events): a redundant `epoll_ctl(CTL_MOD)` from this thread unsticks it.
 ///
-/// Only fds whose `FilePoll` opted in via `Flags::EpollRearmWatch` are
-/// tracked (currently just `Bun.Terminal`'s PTY-master reader -- see
-/// `PosixFlags::EPOLL_REARM_WATCH` in `PipeReader.rs`): this is a targeted
-/// fix for a fd class with confirmed exposure, not a blanket tax on every
-/// Readable registration in the runtime.
-///
-/// Backoff mirrors `ohos-compat-shim`'s `epoll_pipe` interceptor (same
-/// defect family, different interception layer -- this path is bun's own
-/// direct `epoll_ctl` call via uws, never passes through the shim's
-/// LD_PRELOAD libc-symbol layer): any real registration activity (a fresh
-/// ADD or a natural WouldBlock-driven MOD) resets an fd's poke interval to
-/// `BASE_POKE_INTERVAL`; each watchdog-driven poke with no intervening
-/// natural activity doubles it, capped at `MAX_POKE_INTERVAL`. A healthy,
-/// actively-read fd re-registers constantly on its own and never accrues a
-/// poke; only a genuinely silent (stuck, or legitimately idle) fd gets
-/// touched, and the redundant `CTL_MOD` is a harmless no-op either way.
+/// Only fds opted in via `Flags::EpollRearmWatch` are tracked (currently Bun.Terminal's PTY-master reader — see `PosixFlags::EPOLL_REARM_WATCH` in PipeReader.rs). Backoff mirrors `ohos-compat-shim`'s `epoll_pipe` interceptor: any real registration activity resets the poke interval to `BASE_POKE_INTERVAL`, watchdog pokes double it up to `MAX_POKE_INTERVAL`, and a healthy actively-read fd never accrues a poke (the redundant CTL_MOD is a harmless no-op either way).
 #[cfg(any(target_os = "linux", target_os = "android"))]
 mod epoll_rearm_watchdog {
     use std::collections::HashMap;
@@ -1303,10 +1253,7 @@ mod epoll_rearm_watchdog {
     struct Entry {
         watcher_fd: i32,
         events: u32,
-        // The FilePoll pointer the real registration stored as the kernel's
-        // event userdata. CTL_MOD replaces that data wholesale, so this must
-        // be round-tripped byte-for-byte -- a wrong/stale value would hand
-        // the dispatcher a bad pointer the moment the kernel next delivers.
+        // Kernel event userdata: the FilePoll pointer. CTL_MOD replaces it wholesale, so it must round-trip byte-for-byte.
         userdata: u64,
         last_activity: Instant,
         interval: Duration,
@@ -1322,10 +1269,7 @@ mod epoll_rearm_watchdog {
         *DISABLED.get_or_init(|| std::env::var_os("BUN_DISABLE_EPOLL_REARM_WATCHDOG").is_some())
     }
 
-    /// Called from `register_with_fd_impl` after a successful ADD/MOD for a
-    /// `Flags::EpollRearmWatch`-tagged fd. Any call resets the fd to the base
-    /// interval -- this fires on every natural WouldBlock-driven MOD for an
-    /// actively-read fd, so a healthy fd's interval never has a chance to grow.
+    /// Called after every successful ADD/MOD: resets the fd to the base interval, so an actively-read fd never accrues a poke.
     pub(crate) fn track(watcher_fd: i32, fd: i32, events: u32, userdata: u64) {
         if disabled() {
             return;
@@ -1351,9 +1295,7 @@ mod epoll_rearm_watchdog {
         });
     }
 
-    /// Called from `unregister_with_fd_impl` for every unregister attempt
-    /// (unconditionally -- removing an untracked fd is a cheap no-op), so a
-    /// closed/reused fd number is never left with a stale watchdog entry.
+    /// Called on every unregister (cheap no-op when untracked) so a closed/reused fd never keeps a stale watchdog entry.
     pub(crate) fn untrack(fd: i32) {
         if let Ok(mut t) = table().lock() {
             t.remove(&fd);
@@ -1365,8 +1307,7 @@ mod epoll_rearm_watchdog {
         loop {
             std::thread::sleep(TICK);
             let now = Instant::now();
-            // Collect due pokes under the lock, issue the syscalls after
-            // releasing it -- don't hold the table lock across a syscall.
+            // Collect due pokes under the lock; issue the syscalls after releasing it.
             let due: Vec<(i32, i32, u32, u64)> = {
                 let mut t = match table().lock() {
                     Ok(t) => t,
@@ -1387,11 +1328,7 @@ mod epoll_rearm_watchdog {
                     events,
                     u64: userdata,
                 };
-                // SAFETY: redundant CTL_MOD from a second thread; epoll_ctl is
-                // documented safe to call concurrently with epoll_wait/pwait
-                // on the same epfd from another thread. A failure here (most
-                // likely ENOENT: unregistered/closed between our snapshot and
-                // this call) is inert -- nothing to recover, the fd is gone.
+                // SAFETY: epoll_ctl is documented safe to call concurrently with epoll_wait/pwait on the same epfd; a failure (likely ENOENT after an unregister) is inert.
                 let _ =
                     unsafe { linux::epoll_ctl(watcher_fd, EPOLL::CTL_MOD, fd, &raw mut event) };
             }

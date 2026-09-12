@@ -210,11 +210,7 @@ bitflags::bitflags! {
         const USE_PREAD                = 1 << 8;
         const IS_PAUSED                = 1 << 9;
         const KEEP_ALIVE               = 1 << 10; // default true
-        /// Opt-in: enroll this reader's fd in `epoll_rearm_watchdog` (a
-        /// confirmed real-device OHOS kernel epoll defect recovery -- see
-        /// `Flags::EpollRearmWatch` in posix_event_loop.rs). Set before the
-        /// first `register_poll()`/`read()` call; currently only
-        /// `Bun.Terminal`'s PTY-master reader.
+        /// Opt-in: enroll this reader's fd in `epoll_rearm_watchdog` (OHOS epoll-defect recovery — see posix_event_loop.rs); set before first `register_poll()`.
         const EPOLL_REARM_WATCH        = 1 << 11;
     }
 }
@@ -340,19 +336,7 @@ impl PosixBufferedReader {
                 let owner = std::ptr::from_mut(self).cast::<c_void>();
                 self.handle.close(Some(owner), None::<fn(*mut c_void)>);
             } else if matches!(self.handle, PollOrFd::Poll(_)) {
-                // The fd belongs to whoever cleared `CLOSE_HANDLE`, but the
-                // FilePoll is ours and must not outlive us: the loop dispatches
-                // through the reader pointer it carries. A pipe at EOF stays
-                // readable (level-triggered), so a poll left registered here
-                // fires into freed memory and reaches `on_reader_done` a second
-                // time, tearing the parent down twice. `close_fd = false` leaves
-                // the fd alone. `IOReader` already does this by hand before its
-                // own `close`; doing it here covers every non-owning consumer,
-                // and its explicit call stays a no-op (handle is `Closed` by
-                // then). Note `Closer::close` is asynchronous, so a parent that
-                // closes the fd from its own `Drop` may get here after that was
-                // queued — unregistering a watch for an fd already closed is
-                // benign (epoll drops the registration with the fd).
+                // The FilePoll is ours even when the fd belongs to whoever cleared `CLOSE_HANDLE`: an EOF'd pipe stays readable, so a poll left registered fires into freed memory and tears down twice.
                 self.handle.close_impl(None, None::<fn(*mut c_void)>, false);
             }
         }

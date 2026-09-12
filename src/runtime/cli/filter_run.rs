@@ -165,12 +165,7 @@ impl<'a> ProcessHandle<'a> {
 
         #[cfg(unix)]
         {
-            // Mark the BufferedReader as nonblocking + socket so it uses
-            // the same read strategy as Bun.spawn (SubprocessPipeReader).
-            // Required on OHOS (blocking pipe strategy causes infinite loop)
-            // and safe on other Unix platforms. remaining_fds must be
-            // incremented per started reader (upstream fix) — on_reader_done/
-            // on_reader_error decrement it and debug_assert it stays > 0.
+            // Nonblocking+socket flags match Bun.spawn's SubprocessPipeReader (blocking pipe strategy infinite-loops on OHOS); remaining_fds must be incremented per started reader (on_reader_done/on_reader_error decrement it).
             let pipe_setup =
                 |reader: &mut BufferedReader,
                  remaining_fds: &mut i8,

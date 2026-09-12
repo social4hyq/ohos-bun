@@ -117,9 +117,7 @@ pub(crate) fn openat2_beneath(dir: Fd, path: &ZStr, flags: i32, mode: Mode) -> R
 
 #[inline]
 pub(crate) fn openat2_in_root(dir: Fd, path: &ZStr, flags: i32, mode: Mode) -> Result<Fd, i32> {
-    // OHOS seccomp blocks openat2 with uncatchable SIGSYS (same guard as
-    // openat2_beneath above); returning ENOSYS lets the sys/lib.rs wrapper
-    // cache UNAVAILABLE and fall back to plain openat.
+    // OHOS seccomp blocks openat2 with uncatchable SIGSYS; returning ENOSYS lets the sys/lib.rs wrapper fall back to plain openat.
     #[cfg(target_env = "ohos")]
     {
         let _ = (dir, path, flags, mode);
@@ -468,7 +466,6 @@ pub unsafe fn copy_file_range(
     len: usize,
     flags: u32,
 ) -> isize {
-    // OHOS: copy_file_range verified available (rc=16 on 2026-06-07).
     // SAFETY: raw `copy_file_range(2)`; kernel validates fds; offset ptrs may
     // be null.
     {
@@ -487,7 +484,6 @@ pub unsafe fn copy_file_range(
 }
 
 /// `pidfd_open(2)` — `Result` shape (caller maps to `bun_sys::Error`).
-/// OHOS: verified available (returns fd) on 2026-06-07.
 #[inline]
 #[cfg(target_os = "linux")]
 pub fn pidfd_open(pid: i32, flags: u32) -> Result<Fd, i32> {
@@ -499,7 +495,6 @@ pub fn pidfd_open(pid: i32, flags: u32) -> Result<Fd, i32> {
 /// `cfg(target_os = "linux")`, but the kernel ABI is identical (same generic
 /// syscall number 434 since Linux 5.3, before any Android NDK target shipped).
 /// Raw-syscall it like the other shims here.
-/// OHOS: verified available (returns fd) on 2026-06-07.
 #[inline]
 #[cfg(target_os = "android")]
 pub fn pidfd_open(pid: i32, flags: u32) -> Result<Fd, i32> {

@@ -103,9 +103,7 @@ export const allRustTargets = [
  * Tier 3 targets — rustup ships no prebuilt `rust-std` for these, so
  * `rustup target add` would fail and cargo needs `-Zbuild-std` (which in turn
  * needs the `rust-src` component). As of nightly-2026-05, CI's matrix has two
- * Tier 3 triples: aarch64-freebsd and the OHOS port's aarch64-unknown-linux-ohos
- * (the bun.rb formula stages its own rust-nightly + rust-src resource for the
- * same reason, independently of this build path).
+ * Tier 3 triples: aarch64-freebsd and aarch64-unknown-linux-ohos.
  */
 export function rustTargetIsTier3(triple: string): boolean {
   return triple === "aarch64-unknown-freebsd" || triple === "aarch64-unknown-linux-ohos";

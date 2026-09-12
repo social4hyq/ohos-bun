@@ -658,15 +658,7 @@ impl ShellSubprocess {
         // function never needs to borrow the `Cmd` arena slot.
         debug_assert!(matches!(spawn_args.argv.last(), Some(p) if p.is_null()));
 
-        // OHOS: same fixup as Bun.spawn's (js_bun_spawn_bindings.rs) --
-        // `Bun.$`/`bun run <script>` don't go through that function, they
-        // land here instead, so a `node` invoked from the shell needs its
-        // own copy of this. `spawn_args.argv[0]` is the resolved absolute
-        // path (`Cmd::transition_to_exec` in states/Cmd.rs overwrites
-        // `Cmd.args[0]` with it before building `spawn_args.argv`), and this
-        // struct has no `Vec<ZBox>` storage the way spawn bindings does --
-        // new env lines are bump-allocated in `spawn_args.arena` instead,
-        // matching `SpawnArgs::fill_env` just above.
+        // OHOS: same node-userinfo env fixup as Bun.spawn's (js_bun_spawn_bindings.rs) — `Bun.$`/`bun run <script>` land here instead, so a shell-spawned `node` needs its own copy. argv[0] is the resolved absolute path (set by `Cmd::transition_to_exec`); env lines are bump-allocated in `spawn_args.arena` like `SpawnArgs::fill_env` above.
         #[cfg(target_env = "ohos")]
         if let Some(&a0) = spawn_args.argv.first() {
             if !a0.is_null() {

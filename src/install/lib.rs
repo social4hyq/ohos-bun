@@ -593,9 +593,7 @@ impl RunCommand {
             // with no group/other write bits.
             match bun_sys::mkdir(DIR_Z, 0o700) {
                 Ok(()) => {
-                    // OHOS tmpfs forces setgid + group-write on new
-                    // directories; chmod back to 0700 so the EEXIST
-                    // permission check below passes on re-entry.
+                    // OHOS tmpfs forces setgid+group-write on new dirs; chmod back to 0700 so the EEXIST re-entry check below passes.
                     #[cfg(target_env = "ohos")]
                     {
                         let _ = bun_sys::chmod(DIR_Z, 0o700);

@@ -253,12 +253,7 @@ function main(): void {
     writeSync(outFd, lead + prefix + text);
   };
 
-  // process.exit() discards whatever is still sitting in the WriteStream's
-  // internal buffer. Historically that meant the failing edge's last lines —
-  // the actual compiler/ninja error — were silently dropped, leaving a
-  // truncated fragment and making nested build failures look "silent"
-  // (clean exit(1), no diagnostics). Poll until the buffer drains (bounded)
-  // before exiting; the final-message write above is already synchronous.
+  // process.exit() discards whatever is still in the WriteStream's buffer (nested build failures used to look "silent") — poll-drain, bounded, before exiting; the final message above is already synchronous.
   const exitAfterFlush = (code: number): void => {
     const writable = out as import("node:stream").Writable;
     const deadline = Date.now() + 10_000;
@@ -286,8 +281,7 @@ function main(): void {
     if (code === 0) {
       writeStamp();
     } else {
-      // Sync final line: even if the flush below hits its deadline, the
-      // exit status is on record right after the child's last output.
+      // Sync final line: even if the flush below hits its deadline, the exit status is on record.
       writeFinal(`exited with code ${code ?? 1}\n`);
     }
     exitAfterFlush(code ?? 1);

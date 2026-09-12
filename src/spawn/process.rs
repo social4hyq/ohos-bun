@@ -3296,9 +3296,7 @@ mod spawn_process_body {
                 if no_orphans
                     && (cfg!(any(target_os = "linux", target_os = "android"))
                         || cfg!(target_os = "macos"))
-                    // OHOS: wait_linux_signalfd uses signalfd+pidfd which hangs.
-                    // Use poll+wait4 with pidfd parent-death detection instead
-                    // (verified via ohos-pdeathsig-poll-verify.c on 2026-06-09).
+                    // OHOS: wait_linux_signalfd's signalfd+pidfd path hangs; use the poll+wait4 loop below instead.
                     && !cfg!(target_env = "ohos")
                 {
                     let ppid = ParentDeathWatchdog::ppid_to_watch().unwrap_or(0);
@@ -3344,24 +3342,11 @@ mod spawn_process_body {
                     // plain poll() loop so `.buffer` stdio still drains instead
                     // of being dropped (or deadlocking) in a blind `wait4()`.
                 }
-                // OHOS no_orphans: monitor parent death via pidfd + ppid polling.
-                // Same approach as wait_linux_signalfd but without signalfd/pidfd
-                // on the child (which hangs on OHOS).
+                // OHOS no_orphans: watch parent death via pidfd + ppid polling (the signalfd path hangs on OHOS).
                 #[cfg(target_env = "ohos")]
                 let (ohos_ppid, ohos_ppid_fd): (libc::pid_t, AutoCloseFd) = if no_orphans
                 {
-                    // Only trade PDEATHSIG away for the pidfd/getppid watch if the
-                    // loop that performs that watch is actually going to run. Its
-                    // condition is the same `out_fds_to_wait_for` test below: with
-                    // inherited stdio — which is what plain `bun run <script>`
-                    // uses — both fds are INVALID, the loop body never executes,
-                    // and clearing PDEATHSIG here would leave the process with no
-                    // parent-death detection of any kind. That is exactly the
-                    // `--no-orphans` guarantee, so keep the kernel-side signal
-                    // when we cannot replace it. The cost is that the cleanup
-                    // defer won't run in the SIGKILL case, which matches upstream
-                    // Linux behaviour (see enable()'s comment: that path relies on
-                    // env-var inheritance for descendant cleanup).
+                    // Only clear PDEATHSIG when the poll loop below will actually run: with inherited stdio both fds are INVALID, the loop never executes, and keeping the kernel signal is then the only parent-death detection left.
                     let will_watch_in_poll_loop = out_fds_to_wait_for[0] != Fd::INVALID
                         || out_fds_to_wait_for[1] != Fd::INVALID;
                     let ppid_from_watchdog = if will_watch_in_poll_loop {
@@ -3370,8 +3355,7 @@ mod spawn_process_body {
                         0
                     };
                     if ppid_from_watchdog > 1 {
-                        // Clear PDEATHSIG — SIGKILL is uncatchable and would prevent
-                        // our cleanup defer from running.  See wait_linux_signalfd:3697.
+                        // Clear PDEATHSIG — SIGKILL is uncatchable and would skip our cleanup defer.
                         let _ = unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, 0) };
                         let fd = bun_sys::pidfd_open(ppid_from_watchdog, 0)
                             .map(AutoCloseFd::new)
@@ -3435,8 +3419,7 @@ mod spawn_process_body {
                         break;
                     }
 
-                    // OHOS fallback: no pidfd → poll with 100ms timeout so we
-                    // can check getppid() for parent death on each iteration.
+                    // OHOS: no pidfd → poll with a 100ms timeout so each iteration can check getppid() for parent death.
                     #[allow(unused_mut)]
                     let mut poll_timeout: libc::c_int = -1;
                     #[cfg(target_env = "ohos")]
@@ -3455,9 +3438,7 @@ mod spawn_process_body {
                         }
                     }
 
-                    // Check parent death after poll returns.
-                    // The pidfd in the poll set fires when the parent exits;
-                    // getppid() fallback covers the no-pidfd case.
+                    // pidfd in the poll set fires on parent exit; getppid() covers the no-pidfd case.
                     #[cfg(target_env = "ohos")]
                     if ohos_ppid > 1 {
                         let parent_dead = if ohos_ppid_fd.fd() != Fd::INVALID {

@@ -36,9 +36,7 @@ pub struct Capture {
     // BACKREF: raw pointer to a capture buffer owned by the shell interpreter.
     // The shell keeps the buffer alive for the lifetime
     // of the spawned process; this struct never frees it.
-    // OHOS: stays `pub` (not upstream's pub(crate)) — the only reader is
-    // `Stdio::byte_slice`, whose sole caller lives in the memfd path that is
-    // cfg'd out on OHOS; pub(crate) would trip -D dead-code.
+    // OHOS: stays `pub` (not upstream's pub(crate)) -- sole reader `Stdio::byte_slice`'s only caller is the memfd path, cfg'd out here; pub(crate) trips -D dead-code.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     pub buf: *mut Vec<u8>,
 }
@@ -104,8 +102,7 @@ impl ToSpawnOptsError {
 }
 
 impl Stdio {
-    // OHOS: stays `pub` — the only caller is the memfd path in `use_memfd`,
-    // cfg'd out on OHOS; pub(crate) trips -D dead-code here.
+    // OHOS: stays `pub` -- only caller is the memfd path in `use_memfd`, cfg'd out here; pub(crate) trips -D dead-code.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     pub fn byte_slice(&self) -> &[u8] {
         match self {
@@ -136,9 +133,7 @@ impl Stdio {
     }
 
     pub(crate) fn use_memfd(&mut self, index: u32) -> bool {
-        // OHOS: memfd writes not visible to fstat after child exits
-        // (verified 2026-06-11: dup2(memfd,1/2) → child writes → fstat size=0).
-        // Fall through to socketpair on OHOS.
+        // OHOS: memfd writes are not visible to fstat after the child exits -- fall through to socketpair.
         #[cfg(not(all(any(target_os = "linux", target_os = "android"), not(target_env = "ohos"))))]
         {
             let _ = index;

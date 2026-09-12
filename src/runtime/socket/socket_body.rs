@@ -326,13 +326,7 @@ pub struct NewSocket<const SSL: bool> {
     pub(crate) server_name: JsCell<Option<Box<[u8]>>>,
     pub(crate) buffered_data_for_node_net: JsCell<Vec<u8>>,
     pub(crate) bytes_written: Cell<u64>,
-    /// Positive errno of a fatal send that `internal_flush` already reacted to
-    /// (buffer dropped, writable no longer re-armed) but whose caller was not
-    /// in a position to surface it. `internal_flush` has five callers and only
-    /// `on_writable` reads its return value; the other four discard it, so
-    /// whichever one happens to run first used to consume the error along with
-    /// the undeliverable bytes. Latching it here makes the report independent
-    /// of who triggered the flush. Cleared by whoever delivers it.
+    /// Latched errno of a fatal send that `internal_flush` already reacted to: most of its five callers discard the return value, so the report must not depend on which caller drove the flush. Cleared by whoever delivers it.
     pub(crate) pending_fatal_send_errno: Cell<i32>,
 
     pub(crate) native_callback: JsCell<NativeCallbacks>,
@@ -959,14 +953,7 @@ impl<const SSL: bool> NewSocket<SSL> {
         // Windows, keep the legacy contract there (the close path still fails
         // the pending write callback when the socket is torn down).
         let flushed = this.internal_flush();
-        // A flush driven by one of the callers that discards the return value
-        // (`flush()`/`end()` from JS, or the post-open deferred flush) already
-        // dropped the undeliverable bytes and latched the errno. Without
-        // draining that latch here the socket went on to dispatch 'drain' —
-        // telling JS the write completed — and closed cleanly, so the peer saw
-        // a silently truncated stream. Measured on device: a 10MB write with
-        // the peer resetting mid-flight delivered 1MB, dropped 9.4MB, and
-        // reported success.
+        // Drain the latch: a flush driven by a return-value-discarding caller already dropped the bytes, and without this the socket dispatched 'drain' and closed cleanly, silently truncating the stream.
         let fatal_send_errno = if flushed != 0 {
             this.pending_fatal_send_errno.set(0);
             flushed
@@ -1648,13 +1635,7 @@ impl<const SSL: bool> NewSocket<SSL> {
             // the do_socket_write backpressure arms the normal writable
             // subscription.
             let flushed = this.internal_flush();
-            // A fatal send empties the buffer by *dropping* it, so an empty
-            // buffer no longer means everything was written. Dispatching the
-            // drain here would complete the pending JS write callback with
-            // success for bytes that were discarded (measured: 'drain' arrived
-            // before the 'error', so the callback saw null where Node reports
-            // EPIPE). Leave the latched errno for on_writable, whose fatal
-            // path fails that same callback with the error.
+            // A fatal send empties the buffer by *dropping* it, so an empty buffer ≠ fully written — don't dispatch 'drain' for discarded bytes; leave the latch for on_writable's error path.
             if flushed == 0
                 && this.pending_fatal_send_errno.get() == 0
                 && this.buffered_data_for_node_net.get().len() == 0
@@ -3101,10 +3082,7 @@ impl<const SSL: bool> NewSocket<SSL> {
                     // already acknowledged to JS, so only an 'error' can).
                     self.buffered_data_for_node_net
                         .with_mut(|b| b.clear_and_free());
-                    // Returning the errno only reaches `on_writable`; the other
-                    // four callers discard it, and by then the bytes are gone.
-                    // Latch it so the report does not depend on which caller
-                    // happened to drive this flush.
+                    // Returning the errno only reaches `on_writable`; latch it so the report does not depend on which caller drove this flush.
                     self.pending_fatal_send_errno.set(fatal_errno);
                     return fatal_errno;
                 }

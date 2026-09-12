@@ -97,10 +97,7 @@ pub mod bun_subprocess;
 #[path = "api/bun/js_bun_spawn_bindings.rs"]
 pub mod js_bun_spawn_bindings;
 
-// Gives an exec'd `node` child a working os.userInfo() -- the embedded
-// ohos-compat-shim (see js_bun_spawn_bindings.rs's OHOS PWD block for the
-// sibling workaround) only covers this process, not a spawned child.
-// workarounds.ts: "ohos-node-userinfo-preload".
+// Gives an exec'd `node` child a working os.userInfo() -- the embedded ohos-compat-shim only covers this process, not a spawned child (see ohos_node_userinfo.rs).
 #[cfg(target_env = "ohos")]
 #[path = "api/bun/ohos_node_userinfo.rs"]
 pub mod ohos_node_userinfo;

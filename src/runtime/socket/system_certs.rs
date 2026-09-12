@@ -50,10 +50,7 @@ const WELL_KNOWN_DIRS: &[&[u8]] = &[
     b"/data/misc/user/0/cacerts-added",
 ];
 
-// OHOS has no OpenSSL layout either: one system CA directory, hashed PEM files
-// (c_rehash format `<hash>.0`, usually symlinks). `load_directory` doesn't do
-// hash-indexed lookup — it just PEM-parses every regular file it finds after
-// following links — so the hashed layout needs no special-casing here.
+// OHOS: single system CA directory of hashed PEM symlinks (c_rehash format); load_directory PEM-parses every file it finds, so the hashed layout needs no special-casing here.
 #[cfg(target_env = "ohos")]
 const WELL_KNOWN_BUNDLES: &[&[u8]] = &[];
 #[cfg(target_env = "ohos")]

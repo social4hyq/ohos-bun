@@ -3,12 +3,7 @@ use crate::sha256;
 const PAGE: usize = 4096;
 const H: usize = 32;
 
-/// Compute the fs-verity merkle tree root hash.
-/// Matches upstream merkle_tree_builder.cpp::RunHashTask exactly:
-/// - leaf pages are SHA-256(4KB page), last page zero-padded
-/// - pages in [cs_off/PAGE, ceil((cs_off+cs_len)/PAGE)) get zero leaf hash
-/// - upper layers: every 128 leaf hashes fill one page, re-hashed
-/// - when current layer fits in one page it is zero-padded and hashed → root
+/// fs-verity merkle root, matching upstream merkle_tree_builder.cpp exactly: SHA-256 each 4KB page (zero hash in the codesign range), folding 128 hashes per page.
 pub fn root_hash(data: &[u8], cs_off: u64, cs_len: u64) -> [u8; H] {
     if data.is_empty() {
         let zeros = [0u8; PAGE];

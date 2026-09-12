@@ -1023,8 +1023,7 @@ impl BuildCommand {
                     }
                 }
 
-                // OHOS: strip stale .codesign (bun payload shifts alignment) and re-sign
-                // in-process so the compiled binary can execute under the seccomp policy.
+                // OHOS: the appended payload invalidates the .codesign (shifts alignment), so strip it and re-sign in-process or the compiled binary can't execute.
                 #[cfg(target_env = "ohos")]
                 {
                     use std::os::unix::ffi::OsStrExt;

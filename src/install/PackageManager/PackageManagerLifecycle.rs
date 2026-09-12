@@ -394,13 +394,7 @@ impl PackageManager {
 
         #[cfg(target_env = "ohos")]
         {
-            // node-gyp/make find C++ via $CXX/$CC; route to the brew cc/c++
-            // shims at $HOMEBREW_PREFIX/bin (llvm@21 libc++ has
-            // <source_location>; the shim also auto-signs the ELF output).
-            // The OHOS SDK's own clang++ lacks <source_location>, so without
-            // this node-gyp's V8 headers fail to compile. Read the prefix
-            // from $HOMEBREW_PREFIX rather than a baked-in path — there is
-            // no single fixed install location across OHOS devices.
+            // Route CC/CXX to the brew cc/c++ shims: the SDK's clang++ lacks <source_location> (node-gyp V8 headers fail), and the shims auto-sign output.
             if let Ok(brew_prefix) = std::env::var("HOMEBREW_PREFIX") {
                 if script_env.get(b"CXX").unwrap_or(b"").is_empty() {
                     script_env.put(b"CXX", format!("{brew_prefix}/bin/c++").as_bytes())?;

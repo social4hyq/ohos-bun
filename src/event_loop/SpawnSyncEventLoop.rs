@@ -378,14 +378,7 @@ impl SpawnSyncEventLoop {
         let duration: Option<&Timespec> = match timeout {
             Some(ts) => {
                 let mut dur = ts.duration(&Timespec::now(TimespecMockMode::ForceRealTime));
-                // OHOS: observed a wrapped-underflow where the target time had
-                // already passed by a small amount, wrapping_sub produced
-                // sec = i64::MAX / nsec = 999_999_999, and that turned into an
-                // effectively-infinite epoll_wait timeout — symptom:
-                // spawnSync signal timeout <= ~15 ms hangs. Not reproduced on
-                // other platforms, and a flat 86_400s cap there would wrongly
-                // clamp a legitimate multi-day spawnSync timeout, so this
-                // stays OHOS-only.
+                // OHOS: a just-passed target wraps to an effectively-infinite epoll_wait duration, so clamp it; on other platforms negative durations are handled and a cap would wrongly clamp legitimate multi-day timeouts.
                 if cfg!(target_env = "ohos") && (dur.sec < 0 || dur.sec > 86_400) {
                     dur = bun_core::Timespec::EPOCH;
                 }

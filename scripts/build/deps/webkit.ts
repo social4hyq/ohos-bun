@@ -193,11 +193,7 @@ export const webkit: Dependency = {
   versionMacro: "WEBKIT",
 
   source: cfg => {
-    // OHOS prebuilt: use locally installed bun-webkit (formula) instead of
-    // downloading. The build environment pre-populates the cache from
-    // OHOS_WEBKIT_ROOT.
-    // OHOS local: fall through to the cmake build path below when
-    // --webkit=local is specified.
+    // OHOS: prebuilt comes from a local bun-webkit install (OHOS_WEBKIT_ROOT) instead of download; --webkit=local falls through to the cmake path below.
     if (cfg.ohos && cfg.webkit === "prebuilt") {
       const destDir = prebuiltDestDir(cfg);
       const identity = `${cfg.webkitVersion}${prebuiltSuffix(cfg)}`;
@@ -294,20 +290,7 @@ export const webkit: Dependency = {
     // PIE-default distros — without it the driver still passes -pie and the
     // -fno-pic probe object fails R_X86_64_32S relocation, killing FindThreads.
     if (cfg.ohos) {
-      // FindThreads' libc probe calls pthread_cancel, which OHOS musl
-      // deliberately does not declare (or provide). Define it to nothing
-      // so the probe compiles and the module concludes "threads in libc"
-      // (CMAKE_THREAD_LIBS_INIT=""); otherwise its library fallback
-      // "succeeds" without linking under
-      // CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY and invents a
-      // nonexistent -lpthreads that kills the final jsc link. Nothing in
-      // WTF/JSC/bmalloc calls pthread_cancel, so the macro is inert.
-      // Must live in THESE flags: our CMAKE_C_FLAGS args override the
-      // computeDepFlags/extraCFlags assembly in source.ts (see above).
-      // Parens are backslash-escaped: the flag string rides unquoted
-      // through try_compile children's build.ninja into sh, and sh
-      // strips the backslashes before clang sees the function-like
-      // macro. (Unescaped parens are a shell syntax error there.)
+      // OHOS musl lacks pthread_cancel, which FindThreads' libc probe calls — define it to nothing so the probe compiles and concludes "threads in libc" (else its fallback invents -lpthreads and kills the final jsc link; macro is inert, nothing in WTF/JSC/bmalloc calls pthread_cancel). Parens escaped: the flag rides unquoted through try_compile children's build.ninja into sh.
       optFlags.push("-Dpthread_cancel\\(x\\)=");
     }
     if (cfg.unix && cfg.abi !== "android" && !cfg.ohos) optFlags.push("-fno-pic", "-fno-pie", "-no-pie");
@@ -429,11 +412,7 @@ export const webkit: Dependency = {
       // Release local WebKit keeps debug info so JSC crashes symbolicate.
       // LTO stays plain Release (debug info + LTO bloats significantly).
       buildType: cfg.release && !cfg.lto ? "RelWithDebInfo" : cfg.buildType,
-      // OHOS generated-header copy rules are not reliable on the mounted
-      // filesystem when Ninja runs them concurrently. BUN_WEBKIT_PARALLEL
-      // overrides for local bring-up (e.g. =10 on a 20-core device — JSC
-      // TU compiles at -g eat 2-6 GB each, so respect RAM, not nproc); CI
-      // keeps the serial default.
+      // OHOS: generated-header copy rules are unreliable under concurrent Ninja on the mounted fs — serial default; BUN_WEBKIT_PARALLEL overrides for local bring-up.
       ...(cfg.ohos ? { parallel: Number(process.env.BUN_WEBKIT_PARALLEL) || 1 } : {}),
       ...(cfg.ohos ? { verbose: true } : {}),
     };

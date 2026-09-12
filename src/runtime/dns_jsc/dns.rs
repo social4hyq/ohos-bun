@@ -5171,11 +5171,7 @@ impl Resolver {
         resolver.do_lookup(name.slice(), port, options, global_this)
     }
 
-    /// True if the host has a routable (non-link-local, non-loopback) IPv6
-    /// address. OHOS exposes only `fe80::/10` link-local and `::1` loopback in
-    /// `/proc/net/if_inet6`, so a dual-stack `getaddrinfo` issues an AAAA query
-    /// that times out (EAI_AGAIN → DNS_ETIMEOUT). Callers doing an AF_UNSPEC
-    /// lookup force IPv4 when this returns false.
+    /// OHOS dual-stack getaddrinfo times out on AAAA when no global IPv6 (2000::/3); ULA fc00::/7 does not count.
     #[cfg(target_env = "ohos")]
     fn has_global_ipv6() -> bool {
         const PATH: &[u8] = b"/proc/net/if_inet6\0";
@@ -5195,11 +5191,6 @@ impl Resolver {
             if line.is_empty() {
                 return false;
             }
-            // Global unicast = 2000::/3 (first nibble '2' or '3'). Excludes
-            // ::1 loopback, fe80::/10 link-local, and fc00::/7 ULA — OHOS
-            // devices commonly report a ULA address on wlan0/vpn-tun, and
-            // treating that as "global" made dns.lookup({all:true}) still
-            // return AAAA on networks where it can't actually route.
             matches!(line[0], b'2' | b'3')
         })
     }
@@ -5230,10 +5221,7 @@ impl Resolver {
         }
 
         let mut opts = options;
-        // OHOS: no global IPv6 (only fe80::/10 link-local + ::1 loopback), so
-        // a dual-stack (AF_UNSPEC) getaddrinfo issues an AAAA query that times
-        // out (EAI_AGAIN → DNS_ETIMEOUT). Force IPv4 when the caller left the
-        // family unspecified and there is no routable IPv6 address.
+        // OHOS: dual-stack (AF_UNSPEC) getaddrinfo times out on AAAA without a routable IPv6 address, so force IPv4 when the caller left the family unspecified.
         #[cfg(target_env = "ohos")]
         if opts.family == bun_dns::Family::Unspecified && !Self::has_global_ipv6() {
             opts.family = bun_dns::Family::Inet;

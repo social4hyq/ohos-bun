@@ -104,11 +104,7 @@ function systemLibs(cfg: Config): string[] {
 
   if (cfg.ohos) {
     libs.push("-lc", "-lpthread", "-ldl");
-    // Link ICU for local WebKit builds on OHOS (cross-compiled ICU at ohosIcuDir/lib).
-    // Explicit .a paths: the keg lib dir also carries .so, and ld prefers
-    // shared — that would bake DT_NEEDED libicu*.so.78 (with no usable
-    // rpath) into the binary, breaking bottles. Static matches the
-    // prebuilt-WebKit production flow.
+    // OHOS local WebKit: explicit .a paths — the keg lib dir also carries .so, which ld would prefer, baking an unresolvable DT_NEEDED libicu*.so into the binary.
     if (cfg.webkit === "local" && cfg.ohosIcuDir) {
       libs.push(
         join(cfg.ohosIcuDir, "lib", "libicudata.a"),
@@ -829,10 +825,9 @@ export function emitPostLink(
  */
 function emitSmokeTest(n: Ninja, cfg: Config, exe: string, exeName: string, strippedExe: string | undefined): void {
   // Skip when the binary can't run on this host (different os/arch/abi) —
-  // `ninja check` becomes a no-op alias for the exe. OHOS targets always
-  // fail this: detectHost() maps the "openharmony" platform to os "linux"
-  // (config.ts), so os "ohos" never equals host.os and canRunOnHost is
-  // always false — same effect as the old explicit `|| cfg.ohos` check.
+  // `ninja check` becomes a no-op alias for the exe. OHOS targets always fail
+  // this: detectHost() maps "openharmony" to os "linux" (config.ts), so os
+  // "ohos" never equals host.os and canRunOnHost is always false.
   if (!cfg.canRunOnHost) {
     n.phony("check", [exe]);
     return;

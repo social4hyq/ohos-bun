@@ -1185,13 +1185,7 @@ pub mod package_manifest {
                     // Attempt #2: the file may already exist. Let's unlink and try again.
                     let _ = bun_sys::unlinkat(cache_dir, outpath);
                     let link_ok2 = bun_sys::linkat_tmpfile(file.handle, cache_dir, outpath);
-                    // Attempt #3: linkat_tmpfile still failing. On OHOS the compat
-                    // shim's linkat hook now materializes the O_TMPFILE via a
-                    // /proc/self/fd copy, so attempt #1 usually succeeds; this is the
-                    // last resort for any remaining linkat failure. Write to tmp_path
-                    // then rename atomically so quick_exit cannot observe a 0-byte or
-                    // partially-written .npm file ("manifest is invalid" on reload).
-                    // Non-fatal: this is a cache, so a failure is just a lost entry.
+                    // Attempt #3: write tmp_path then rename so quick_exit never observes a partial .npm; it's a cache, so non-fatal.
                     if link_ok2.is_err() {
                         if let Ok(tmp_file) = File::openat(
                             tmpdir,

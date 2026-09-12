@@ -864,11 +864,7 @@ pub(crate) fn parse(cmd: CommandTag, ctx: Context<'_>) -> crate::Result<api::Tra
         Box::<[u8]>::from(bun_core::getcwd_or_exe_dir(&mut temp).as_bytes())
     } else {
         // Everything else (install/test/build/...) must not silently act on
-        // whatever project happens to live above the executable. `getcwd_honest`
-        // (not plain `getcwd`): on OHOS, ohos-compat-shim's getcwd() interceptor
-        // silently substitutes $HOME for a deleted cwd instead of failing, which
-        // would let this pre-resolved `absolute_working_dir` silently become
-        // $HOME here — observed as `bun test` scanning the real $HOME for tests.
+        // whatever project happens to live above the executable. `getcwd_honest` (not plain `getcwd`): OHOS's shim getcwd() silently substitutes $HOME for a deleted cwd, which would make this pre-resolved `absolute_working_dir` become $HOME.
         let mut temp = PathBuffer::uninit();
         Box::<[u8]>::from(bun_core::getcwd_honest(&mut temp)?.as_bytes())
     };

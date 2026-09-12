@@ -5,8 +5,7 @@ mod elf;
 
 pub use elf::SignError;
 
-// Exported under `__` names so integration tests can reach internal primitives
-// without exposing them as first-class public API.
+// `__` names expose internals to integration tests without becoming public API.
 #[doc(hidden)]
 pub fn __sha256_hash(data: &[u8]) -> [u8; 32] {
     sha256::hash(data)
@@ -44,7 +43,7 @@ pub fn strip_codesign(elf: &mut Vec<u8>) -> Result<bool, SignError> {
     elf::strip(elf)
 }
 
-/// Sign a file in-place. Creates a `.unsigned` sibling during the operation.
+/// Sign a file in-place.
 pub fn sign_selfsign_inplace(path: &std::path::Path) -> Result<(), SignError> {
     let bytes = std::fs::read(path)?;
     let signed = sign_selfsign(&bytes)?;

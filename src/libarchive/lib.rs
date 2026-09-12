@@ -1067,11 +1067,7 @@ fn open_dir_with_stat(dir_fd: Fd, sub_path: &[u8]) -> Option<(Fd, bun_sys::Stat)
     }
 }
 
-/// `bun_sys::symlinkat`, retried once on OHOS SELinux's intermittent
-/// EPERM/EACCES denial. The parent directory is already guaranteed to exist
-/// by `create_deferred_symlinks`'s pre-pass below, so (unlike the
-/// pre-refactor per-symlink code this replaces) no lazy `mkdir` is needed
-/// before the retry.
+/// `bun_sys::symlinkat`, retried once on OHOS SELinux's intermittent EPERM/EACCES; parent dirs are pre-created by `create_deferred_symlinks`'s pre-pass, so no lazy `mkdir` is needed before the retry.
 #[cfg(unix)]
 fn symlinkat_ohos_retry(target: &ZStr, dirfd: Fd, dest: &ZStr) -> bun_sys::Maybe<()> {
     let result = bun_sys::symlinkat(target, dirfd, dest);

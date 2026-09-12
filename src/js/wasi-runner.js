@@ -24,10 +24,7 @@ if (WASM_ENV_STR?.length) {
   env = JSON.parse(WASM_ENV_STR);
 }
 
-// On OHOS the app sandbox denies open("/") (EACCES), which makes the WASI
-// constructor throw before the guest starts. Skip the default "/" preopen
-// when the host root is not openable (an explicit WASM_ROOT_DIR is still
-// honored verbatim — if the caller chose it, they see the error).
+// OHOS: the app sandbox denies open("/") so the WASI constructor throws — probe before adding the "/" preopen (an explicit WASM_ROOT_DIR is honored verbatim).
 const preopens = { ".": WASM_CWD || process.cwd() };
 if (process.env.WASM_ROOT_DIR !== undefined) {
   preopens["/"] = WASM_ROOT_DIR;
@@ -37,8 +34,7 @@ if (process.env.WASM_ROOT_DIR !== undefined) {
     fs.closeSync(fs.openSync("/", "r"));
     preopens["/"] = "/";
   } catch (e) {
-    // EISDIR still means the root is openable; only genuine denial
-    // (OHOS sandbox EACCES) drops the preopen.
+    // EISDIR still means the root is openable; only genuine denial (OHOS sandbox EACCES) drops the preopen.
     if (e?.code === "EISDIR") preopens["/"] = "/";
   }
 }

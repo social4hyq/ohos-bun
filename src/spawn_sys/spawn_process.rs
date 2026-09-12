@@ -779,9 +779,7 @@ pub unsafe fn spawn_process_posix(
                 actions.open(fileno, path, flag | bun_sys::O::CREAT as u32, 0o664)?;
             }
             PosixStdio::Buffer => {
-                // OHOS: memfd writes not visible to fstat after child exits
-                // (verified 2026-06-11: dup2(memfd,1/2) → child writes → fstat size=0).
-                // Fall through to socketpair on OHOS.
+                // OHOS: memfd writes are not visible to fstat after the child exits; fall through to socketpair.
                 #[cfg(all(any(target_os = "linux", target_os = "android"), not(target_env = "ohos")))]
                 'use_memfd: {
                     if !options.stream && i > 0 && bun_sys::can_use_memfd() {
@@ -976,27 +974,13 @@ pub unsafe fn spawn_process_posix(
     // SAFETY: argv0 is a valid NUL-terminated C string (caller contract).
     let argv0_cstr = unsafe { bun_core::ffi::cstr(argv0) };
 
-    // OHOS: kernel refuses to exec unsigned files. ELF binaries can be signed
-    // via binary-sign-tool, but shebang scripts cannot (tool rejects non-ELF).
-    // On OHOS the kernel's shebang expansion path either returns EPERM or
-    // hangs on unsigned scripts. Manually expand shebang here so exec targets
-    // the already-signed interpreter; the script path becomes an argv entry
-    // and is only opened/read (not exec'd) by the interpreter.
+    // OHOS: the kernel refuses to exec unsigned files and shebang scripts can't be signed, so expand the shebang here and exec the (signed) interpreter directly.
     #[cfg(target_env = "ohos")]
     let _ohos_shebang_keepalive: Option<(std::ffi::CString, Vec<std::ffi::CString>, Vec<*const c_char>)> = 'shim: {
         use std::io::Read as _;
         use std::os::unix::ffi::OsStrExt as _;
         let path = std::ffi::OsStr::from_bytes(argv0_cstr.to_bytes());
-        // 128 bytes is the traditional kernel binfmt_script limit, but we do
-        // our own parsing here rather than relying on the kernel, and this
-        // needs to comfortably fit a `#!<interpreter>` line where the
-        // interpreter is an absolute path under a deeply-nested tmpdir (this
-        // OHOS sandbox's TMPDIR routinely produces 150+ byte paths) — 128
-        // silently truncated the interpreter path mid-string, and since the
-        // truncated remainder still looked like a syntactically valid
-        // absolute path, the shim exec'd it anyway instead of bailing out,
-        // producing a confusing EACCES (exec of a directory) instead of the
-        // real problem. 4096 matches PATH_MAX headroom.
+        // 4096, not binfmt_script's traditional 128: deep sandbox TMPDIRs produce 150+ byte interpreter paths, and a mid-string truncation execs a wrong-but-plausible path instead of failing.
         let mut buf = [0u8; 4096];
         let n = match std::fs::File::open(path).and_then(|mut f| f.read(&mut buf)) {
             Ok(n) if n >= 2 => n,
@@ -1007,12 +991,7 @@ pub unsafe fn spawn_process_posix(
         }
         let line_end = match strings::index_of_char_usize(&buf[..n], b'\n') {
             Some(pos) => pos,
-            // No newline in what we read. If we filled the whole buffer,
-            // the real line may continue past it — treating `n` as the end
-            // would silently truncate the interpreter path (see the buffer
-            // comment above) rather than fail loudly. Only safe to treat
-            // `n` as the line end when the read stopped short of the
-            // buffer (i.e. hit real EOF).
+            // Only treat `n` as the line end on a real short read (EOF); a buffer-full read may have more line past it, and truncating would mis-parse the interpreter path.
             None if n == buf.len() => break 'shim None,
             None => n,
         };

@@ -22,9 +22,7 @@
 //!      tree rooted at `getpid()` and SIGKILLs every descendant so children
 //!      Bun spawned don't outlive it.
 //!      - macOS: libproc `proc_listchildpids()`.
-//!      - Linux: `/proc/<pid>/task/*/children`, falling back to a `/proc` scan
-//!        on kernels without `CONFIG_PROC_CHILDREN` (that file is absent, and
-//!        treating that as "no children" would silently disable the walk).
+//!      - Linux: `/proc/<pid>/task/*/children`, falling back to a `/proc` scan when the kernel lacks `CONFIG_PROC_CHILDREN`.
 //!
 //! Motivation: process supervisors that wrap Bun in a thin shim (e.g. a macOS
 //! TCC "disclaimer" trampoline: Electron → shim → bun) can be SIGKILLed by
@@ -692,11 +690,7 @@ fn list_child_pids_linux(parent: libc::pid_t, out: &mut [libc::pid_t]) -> Option
     });
 
     let mut written: usize = 0;
-    // Whether any `children` file was actually readable. Distinguishes "this
-    // process has no children" (file present, empty) from "this kernel has no
-    // CONFIG_PROC_CHILDREN" (file absent) — both otherwise yield written == 0,
-    // and reporting the latter as a successful empty enumeration silently
-    // disables every caller. See the scan fallback below.
+    // Distinguish "no children" (file present, empty) from "kernel lacks CONFIG_PROC_CHILDREN" (file absent) — the latter must not be reported as a successful empty enumeration.
     let mut children_file_usable = false;
     // Sized so a single read can saturate the 4096-pid `out` buffer
     // (~8 bytes per "1234567 " entry × 4096).
@@ -742,15 +736,7 @@ fn list_child_pids_linux(parent: libc::pid_t, out: &mut [libc::pid_t]) -> Option
     Some(written)
 }
 
-/// Fallback enumeration for kernels built without `CONFIG_PROC_CHILDREN`, where
-/// `/proc/<pid>/task/<tid>/children` does not exist at all (OpenHarmony is one).
-/// Walks every numeric entry under `/proc` and keeps those whose `stat` ppid
-/// field is `parent` — what `pgrep`/`pstree` do.
-///
-/// O(number of processes) per call instead of one file read, so this is only
-/// reached when the fast path is unavailable. Every caller is on the
-/// `--no-orphans` teardown path (process exit, or the spawnSync disarm defer),
-/// never in steady-state execution.
+/// Fallback for kernels without `CONFIG_PROC_CHILDREN` (e.g. OpenHarmony): scan `/proc` and keep entries whose `stat` ppid is `parent`. O(processes) per call, so teardown path only.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn list_child_pids_by_scan(parent: libc::pid_t, out: &mut [libc::pid_t]) -> Option<usize> {
     let proc_fd = match bun_sys::open_dir_for_iteration_os_path(Fd::cwd(), &b"/proc"[..]) {
@@ -771,7 +757,6 @@ fn list_child_pids_by_scan(parent: libc::pid_t, out: &mut [libc::pid_t]) -> Opti
         if written >= out.len() {
             break;
         }
-        // Non-numeric entries (`self`, `net`, `meminfo`, …) parse as None.
         let Some(pid) = bun_core::fmt::parse_decimal::<libc::pid_t>(entry.name.slice()) else {
             continue;
         };

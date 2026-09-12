@@ -675,8 +675,7 @@ mod elf {
         }
 
         pub(super) fn get_data() -> Option<(*mut u8, usize)> {
-            // Primary: read .bun section from /proc/self/exe via file I/O then
-            // mmap MAP_PRIVATE so JSC can mutate bytecode in place.
+            // Primary: mmap the .bun section of /proc/self/exe MAP_PRIVATE so JSC can mutate bytecode in place.
             match File::open("/proc/self/exe") {
                 Ok(file) => {
                     let (sh_offset, sh_size) = locate_bun_section(&file)?;
@@ -706,15 +705,7 @@ mod elf {
                     Some((unsafe { (mapping as *mut u8).add(8) }, byte_count))
                 }
                 Err(_) => {
-                    // Execute-only fallback (chmod 0o111): OHOS hmdfs denies
-                    // open("/proc/self/exe") for files lacking the read bit.
-                    //
-                    // write_bun_section() stored the link-time virtual address of
-                    // the payload in BUN_COMPILED.size. On OHOS all binaries are
-                    // PIE, so that link-time vaddr must be shifted by the ASLR
-                    // base before dereferencing. We read /proc/self/maps (always
-                    // accessible, regardless of file execute-only permission) to
-                    // find the load base, then compute the runtime address.
+                    // Exec-only fallback: hmdfs denies open("/proc/self/exe"); add the PIE load base from /proc/self/maps to the link-time vaddr.
                     unsafe extern "C" {
                         fn Bun__getStandaloneModuleGraphELFVaddr() -> *mut u64;
                     }
@@ -729,12 +720,7 @@ mod elf {
                         return None;
                     }
 
-                    // Find the PIE load base: scan /proc/self/maps for the first
-                    // file-backed mapping at file offset 0.  On OHOS (hmdfs/tmpfs)
-                    // the ELF header segment is mapped `r--p` (not `r-xp` as on
-                    // glibc Linux), so matching on execute permission misses it.
-                    // The first mapping with offset 0 and a real path is always
-                    // the ELF header PT_LOAD — its start address IS the PIE base.
+                    // PIE base: first file-backed maps line at file offset 0 — OHOS maps the ELF header `r--p`, so don't match on exec permission.
                     let load_base: usize = {
                         let mut base = 0usize;
                         if let Ok(maps) = std::fs::read_to_string("/proc/self/maps") {
@@ -767,7 +753,6 @@ mod elf {
                         return None;
                     }
 
-                    // runtime_addr = load_base + link_vaddr (PIE relocation).
                     let runtime_addr = load_base.wrapping_add(link_vaddr as usize);
                     let target = runtime_addr as *mut u8;
                     // SAFETY: target points to an 8-byte little-endian length prefix
@@ -2339,10 +2324,7 @@ pub(crate) fn inject<'a>(
                 return None;
             }
 
-            // OHOS: Cut COW/reflink left by an earlier copy_file_range, otherwise
-            // subsequent writes to the cloned executable may silently fail (only the
-            // page cache updates while the disk content stays stale). Reference:
-            // springmin/bun ohos-aarch64 @ 39d8416e.
+            // OHOS: ftruncate cuts the COW/reflink left by copy_file_range — later writes otherwise hit stale disk pages.
             #[cfg(target_env = "ohos")]
             let _ = Syscall::ftruncate(cloned_executable_fd, 0);
 
@@ -2354,9 +2336,7 @@ pub(crate) fn inject<'a>(
                 return None;
             }
 
-            // OHOS: fsync before move_file_z_with_handle, which uses
-            // copy_file_range (EXDEV fallback) reading from disk, not the page
-            // cache. Without fsync the move target gets stale data.
+            // fsync first: move_file_z_with_handle's copy_file_range fallback reads from disk, not the page cache.
             #[cfg(target_env = "ohos")]
             unsafe { libc::fsync(cloned_executable_fd.native()); }
 

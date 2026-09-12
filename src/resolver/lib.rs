@@ -293,15 +293,7 @@ pub mod fs {
                 Some(d) => DirnameStore::instance().append_slice(d)?,
                 None => {
                     let mut buf = bun_paths::PathBuffer::default();
-                    // Let getcwd failures (e.g. ENOENT on deleted cwd) propagate so
-                    // callers emit a clean error instead of running JS from an
-                    // indeterminate environment (BUG-01). `getcwd_honest` (not
-                    // plain `getcwd`): on OHOS, ohos-compat-shim's getcwd()
-                    // interceptor silently substitutes $HOME for a deleted cwd
-                    // instead of failing, which defeats this propagation and
-                    // was observed running `bun test`/`bun install` inside the
-                    // real $HOME instead of erroring — this call site wants the
-                    // genuine failure, not the shim's robustness fallback.
+                    // getcwd_honest: the ohos-compat-shim's getcwd hides a deleted cwd by substituting $HOME; this site wants the real error.
                     DirnameStore::instance()
                         .append_slice(bun_core::getcwd_honest(&mut buf)?.as_bytes())?
                 }
@@ -1123,14 +1115,7 @@ pub mod fs {
                     if bun_sys::posix::setrlimit(resource, raised).is_ok() {
                         lim.cur = raised.cur;
                     } else {
-                        // Unprivileged processes cannot raise rlim_max (EPERM),
-                        // so when target exceeds the current hard limit the
-                        // attempt above fails outright and leaves the soft
-                        // limit at whatever low value the parent set -- e.g.
-                        // `ulimit -Sn 256 && exec bun` observed on OHOS, where
-                        // bun then runs the whole session with a 256-fd budget.
-                        // Fall back to Node's semantics: raise soft as far as
-                        // the hard limit allows.
+                        // Raising above the hard limit fails with EPERM, stranding the parent's low soft limit; fall back to Node semantics: clamp soft to hard.
                         let mut clamped = lim;
                         clamped.cur = lim.max.min(target);
                         if clamped.cur > lim.cur
@@ -1212,11 +1197,7 @@ pub mod fs {
             err: crate::Error,
         ) -> crate::CrateResult<&'static mut EntriesOption> {
             let mut get_or_put_result = self.entries.get_or_put(dir)?;
-            // See the matching comment in fs.rs's read_directory_error: on
-            // OHOS, sandboxed ancestor directories can return EACCES/EPERM
-            // where other platforms would see ENOENT or succeed; treat
-            // those as "not found" there only, so a real permission error
-            // elsewhere isn't silently cached as missing.
+            // OHOS: sandboxed ancestor directories return EACCES/EPERM where other platforms see ENOENT; treat as not-found (OHOS only).
             let is_not_found = err == crate::Error::Sys(bun_errno::SystemErrno::ENOENT)
                 || (cfg!(target_env = "ohos")
                     && matches!(
@@ -1749,8 +1730,7 @@ pub mod fs {
             }
             #[cfg(all(not(target_os = "android"), target_env = "ohos"))]
             {
-                // OHOS /tmp is read-only erofs. Check writability at runtime
-                // and fall back to /data/local/tmp → $HOME/tmp → /tmp (last resort).
+                // OHOS /tmp is read-only erofs; fall back /data/local/tmp → $HOME/tmp → /tmp (last resort).
                 static FALLBACK: std::sync::OnceLock<&'static [u8]> = std::sync::OnceLock::new();
                 return *FALLBACK.get_or_init(|| {
                     let candidates: &[&[u8]] = &[b"/tmp", b"/data/local/tmp"];
@@ -1761,13 +1741,11 @@ pub mod fs {
                         };
                         // SAFETY: candidate is a valid C string for libc::access
                         if unsafe { libc::access(cstr.as_ptr(), libc::W_OK) } == 0 {
-                            // Return the static literal directly (no allocation needed)
                             if candidate == b"/tmp" { return b"/tmp"; }
                             if candidate == b"/data/local/tmp" { return b"/data/local/tmp"; }
                             return Box::leak(candidate.to_vec().into_boxed_slice());
                         }
                     }
-                    // Fallback: try $HOME/tmp
                     if let Some(home) = env_var::HOME.get_not_empty() {
                         let mut v = Vec::with_capacity(home.len() + 5);
                         v.extend_from_slice(home);
@@ -1775,7 +1753,6 @@ pub mod fs {
                         v.extend_from_slice(b"tmp");
                         return Box::leak(v.into_boxed_slice());
                     }
-                    // Last resort: /tmp even if readonly
                     b"/tmp"
                 });
             }

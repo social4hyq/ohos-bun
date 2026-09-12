@@ -1,4 +1,4 @@
-// SHA-256 per FIPS 180-4. Direct port of self-sign.c — no external dependencies.
+// SHA-256 per FIPS 180-4.
 
 const K: [u32; 64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,

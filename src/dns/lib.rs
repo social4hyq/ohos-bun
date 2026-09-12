@@ -278,8 +278,7 @@ impl Backend {
     // Android: c-ares can't discover nameservers (no /etc/resolv.conf,
     // no JNI for ares_library_init_android). bionic getaddrinfo proxies
     // through netd which knows the real resolvers.
-    // OHOS: system getaddrinfo resolves via netsys IPC (private channel,
-    // e.g. intranet domains); c-ares only sees /etc/resolv.conf.
+    // OHOS: system getaddrinfo resolves via netsys IPC; c-ares only sees /etc/resolv.conf.
     #[cfg(all(
         not(any(target_os = "macos", windows)),
         any(target_os = "android", target_env = "ohos")

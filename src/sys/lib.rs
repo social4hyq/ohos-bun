@@ -2333,16 +2333,7 @@ mod posix_impl {
                 //   EPERM:      seccomp filter rejects statx (libseccomp < 2.3.3,
                 //               docker < 18.04, various CI sandboxes)
                 //   EINVAL:     old Android builds
-                //   EBADF:      OHOS's statx(2) rejects socket-backed fds with
-                //               EBADF instead of one of the errnos above (verified
-                //               on-device: raw `syscall(SYS_statx, ...)` on a
-                //               perfectly valid socket fd returns -1/EBADF, while
-                //               plain fstat(2) on the same fd succeeds). Safe to
-                //               fold into the same fallback bucket: if the fd
-                //               really is bad, statx_fallback's plain fstat(fd)
-                //               reports the identical EBADF the caller would have
-                //               seen anyway; if it's a statx-unsupported fd type
-                //               (this case), fstat works where statx doesn't.
+                //   EBADF:      OHOS statx(2) rejects socket-backed fds; a truly-bad fd gets the identical EBADF from statx_fallback's fstat(fd), so folding it into the fallback is safe.
                 let is_fallback_errno = matches!(
                     errno,
                     Some(E::ENOSYS | E::EOPNOTSUPP | E::EPERM | E::EINVAL)
@@ -2652,15 +2643,7 @@ mod posix_impl {
         Ok(len)
     }
 
-    /// `process.cwd()` entry point: like `getcwd`, but surfaces a rmdir'd cwd
-    /// as ENOENT (Node's uv_cwd() contract) instead of the ohos-compat-shim's
-    /// `$HOME` fallback. Narrow to `process.cwd()` only — this crate's own
-    /// getcwd callers (npm install manifest paths, lockfile) rely on the
-    /// shim's `$HOME` fallback for robustness. `bun_core::getcwd_or_exe_dir`
-    /// and `bun_core::getcwd_honest` are the equivalent narrow overrides for
-    /// startup's tolerant/strict cwd resolution respectively — resolver's
-    /// top-level-dir init explicitly wants a genuine failure to propagate
-    /// (see its own BUG-01 comment), not the shim's fallback.
+    /// `process.cwd()` (OHOS): surface a rmdir'd cwd as ENOENT (Node's uv_cwd() contract) instead of the ohos-compat-shim's `$HOME` fallback — deliberately narrow; other getcwd callers in this crate still want the fallback.
     #[cfg(target_env = "ohos")]
     pub fn process_cwd(buf: &mut [u8]) -> Maybe<usize> {
         let result = getcwd(buf);
@@ -2670,11 +2653,7 @@ mod posix_impl {
         result
     }
 
-    /// OHOS: whether the cwd has been rmdir'd. `readlink("/proc/self/cwd")` is
-    /// the honest signal: it resolves server-side via `d_path()` with no
-    /// userspace permission check, and on OHOS the procfs entry itself returns
-    /// ENOENT when the cwd is gone (Linux instead appends " (deleted)" to the
-    /// path and leaves the readlink succeeding — both are handled here).
+    /// OHOS: whether the cwd was rmdir'd — readlink("/proc/self/cwd") ENOENTs on OHOS; Linux appends " (deleted)" so readlink succeeds but stat then ENOENTs. Both handled.
     #[cfg(target_env = "ohos")]
     fn cwd_is_deleted() -> bool {
         let mut proc_buf = [0u8; 4096];
@@ -2699,18 +2678,7 @@ mod posix_impl {
 
     // ── link/perm/time/access group ──
     pub fn link(src: &ZStr, dest: &ZStr) -> Maybe<()> {
-        // OHOS: the kernel refuses the bare `linkat` syscall with EACCES, and
-        // ohos-compat-shim works around that by interposing the *libc symbol*
-        // `linkat`. musl implements `link(a, b)` as a direct
-        // `syscall(SYS_linkat, AT_FDCWD, a, AT_FDCWD, b, 0)`, so it never
-        // reaches that symbol and never gets the workaround — hardlinks fail
-        // with EACCES no matter how the shim is configured (verified: setting
-        // OHOS_COMPAT_SHIM_ENABLE changes nothing, because the interposer is
-        // simply never called). Routing through `linkat` fixes it: measured
-        // on-device, the libc `linkat` symbol succeeds where both `link()` and
-        // the raw syscall return EACCES, and stripping the shim from
-        // LD_PRELOAD makes `linkat` fail too — confirming the symbol
-        // interposition is what makes hardlinks work here at all.
+        // OHOS: musl's `link()` issues the raw `syscall(SYS_linkat, ..)`, which the kernel rejects with EACCES; only the shim-interposed libc `linkat` symbol works, so route through it.
         #[cfg(target_env = "ohos")]
         {
             check_p!(
@@ -3508,8 +3476,6 @@ mod posix_impl {
     /// `bun.sys.canUseMemfd()` — false on non-Linux; on Linux, false when
     /// `BUN_FEATURE_FLAG_DISABLE_MEMFD` is set or once `memfd_create` has
     /// returned ENOSYS/EPERM/EACCES.
-    /// OHOS: memfd_create verified available on 2026-06-07 (falls under this
-    /// same target_os = "linux" arm; no separate guard needed there).
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[inline]
     pub fn can_use_memfd() -> bool {
@@ -3533,12 +3499,10 @@ mod posix_impl {
     /// [`can_use_memfd`] to false.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     pub fn memfd_create(name: &core::ffi::CStr, flags_: MemfdFlags) -> Maybe<Fd> {
-        // OHOS: memfd_create verified available (returned fd=4 on 2026-06-07).
         {
             let mut flags: u32 = flags_ as u32;
             loop {
-                // Android/OHOS: libc may not have memfd_create wrapper.
-                // Raw-syscall it (kernel has had it since 3.17).
+                // Android/OHOS lack a usable memfd_create wrapper; raw-syscall it (kernel has had it since 3.17).
                 // SAFETY: `name` is a valid NUL-terminated C string.
                 #[cfg(any(target_os = "android", target_env = "ohos"))]
                 let rc = unsafe {
@@ -3567,9 +3531,8 @@ mod posix_impl {
         }
     }
 
-    /// sys.zig:504 — `sendfile(src, dest, len)`. Clamps `len` (avoid EINVAL on
-    /// >2GB), EINTR-retries, and attaches the *source* fd to the error
-    /// (sys.zig:513 `errnoSysFd(rc, .sendfile, src)`).
+    /// `sendfile(src, dest, len)`. Clamps `len` (avoid EINVAL on
+    /// >2GB), EINTR-retries, and attaches the *source* fd to the error.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     pub fn sendfile(src: Fd, dest: Fd, len: usize) -> Maybe<usize> {
         let len = len.min(i32::MAX as usize - 1);
@@ -3688,9 +3651,9 @@ mod windows_impl {
         }
     }
     pub fn write(fd: Fd, buf: &[u8]) -> Maybe<usize> {
-        // sys.zig:1876-1909 — `.windows => { kernel32.WriteFile(fd.cast(), …) }`
+        // kernel32 `WriteFile` directly
         // (NOT via libuv — sys_uv::write → fd.uv() panics for HANDLE-backed
-        // Fds). Spec also remaps `ERROR_ACCESS_DENIED → EBADF` (a write to a
+        // Fds). Also remaps `ERROR_ACCESS_DENIED → EBADF` (a write to a
         // read-only-opened HANDLE yields ACCESS_DENIED, which POSIX surfaces
         // as EBADF "fd not open for writing").
         debug_assert!(!buf.is_empty()); // Zig: `bun.assert(bytes.len > 0)`
@@ -6167,9 +6130,7 @@ pub fn dlopen(filename: &ZStr, flags: i32) -> Option<*mut c_void> {
         if p.is_null() { None } else { Some(p.cast()) }
     }
 }
-/// C-ABI wrapper so `BunProcess.cpp` (process.dlopen) routes through
-/// `sys::dlopen()` instead of calling `libc::dlopen()` directly.
-/// On OHOS this ensures the file is signed before loading.
+/// C-ABI wrapper so `BunProcess.cpp` (process.dlopen) routes through `sys::dlopen()` — on OHOS that signs the file before loading.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Bun__dlopen(path: *const core::ffi::c_char, flags: i32) -> *mut c_void {
     if path.is_null() {
@@ -6184,7 +6145,7 @@ pub unsafe extern "C" fn Bun__dlopen(path: *const core::ffi::c_char, flags: i32)
     }
 }
 
-/// sys.zig:4565 — `dlsym(handle, name)`.
+/// `dlsym(handle, name)`.
 pub fn dlsym_impl(handle: Option<*mut c_void>, name: &ZStr) -> Option<*mut c_void> {
     #[cfg(unix)]
     {
@@ -7440,13 +7401,10 @@ pub fn read_nonblocking(fd: Fd, buf: &mut [u8]) -> Maybe<usize> {
         if rc < 0 {
             let e = last_errno();
             match e {
-                // ESPIPE: preadv2(RWF_NOWAIT) on pipe/FIFO fd returns
-                // "Illegal seek" — pipes don't support positional I/O.
-                // Disable RWF and fall back to plain read().
+                // ESPIPE: preadv2(RWF_NOWAIT) on a pipe/FIFO fd ("Illegal seek") — disable RWF and fall back to plain read().
                 libc::EOPNOTSUPP | libc::ENOSYS | libc::EPERM | libc::EACCES | libc::ESPIPE => {
                     linux::RWFFlagSupport::disable();
-                    // sys.zig:4070 — only fall through to BLOCKING read if the fd is
-                    // actually readable now; otherwise return retry (EAGAIN).
+                    // Only fall through to BLOCKING read if the fd is actually readable now; otherwise return retry (EAGAIN).
                     return match bun_core::is_readable(fd) {
                         bun_core::Pollable::Ready | bun_core::Pollable::Hup => read(fd, buf),
                         _ => Err(Error::retry().with_fd(fd)),
@@ -7473,12 +7431,10 @@ pub fn write_nonblocking(fd: Fd, buf: &[u8]) -> Maybe<usize> {
         if rc < 0 {
             let e = last_errno();
             match e {
-                // ESPIPE: pwritev2(RWF_NOWAIT) on pipe/FIFO fd returns
-                // "Illegal seek" — pipes don't support positional I/O.
-                // Disable RWF and fall back to plain write().
+                // ESPIPE: pwritev2(RWF_NOWAIT) on a pipe/FIFO fd ("Illegal seek") — disable RWF and fall back to plain write().
                 libc::EOPNOTSUPP | libc::ENOSYS | libc::EPERM | libc::EACCES | libc::ESPIPE => {
                     linux::RWFFlagSupport::disable();
-                    // sys.zig:4123 — poll before issuing a blocking write.
+                    // Poll before issuing a blocking write.
                     return match bun_core::is_writable(fd) {
                         bun_core::Pollable::Ready | bun_core::Pollable::Hup => write(fd, buf),
                         _ => {

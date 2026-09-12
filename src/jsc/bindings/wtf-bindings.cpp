@@ -195,20 +195,7 @@ static int ttySetMode(int fd, int mode, BunTTYState& state, int action)
     /* Apply changes after draining */
     rc = uv__tcsetattr(fd, TCSADRAIN, &tmp);
 #if defined(__OHOS__)
-    // OHOS refuses tcsetattr on a PTY *master* fd for any action that drains
-    // or flushes the output queue: TCSADRAIN and TCSAFLUSH both fail with
-    // EACCES, while TCSANOW on the very same fd succeeds and the new termios
-    // reads back correctly. (Measured directly: master TCSANOW ok /
-    // TCSADRAIN EACCES / TCSAFLUSH EACCES; slave all three ok. Presumably the
-    // sandbox blocks the TCSBRK/TIOCDRAIN the draining variants issue.)
-    //
-    // Bun.Terminal calls through here with the PTY master, so without this
-    // every setRawMode() throws on-device. Fall back rather than switching to
-    // TCSANOW outright: keep the drain-then-apply ordering wherever the
-    // kernel actually allows it, and only give it up on the fds that would
-    // otherwise fail outright. Losing the drain means pending output can be
-    // reinterpreted under the new settings — acceptable next to setRawMode
-    // being unusable, and it is what a PTY master on this platform permits.
+    // OHOS refuses tcsetattr with drain/flush on a PTY *master* fd (TCSADRAIN and TCSAFLUSH fail EACCES, TCSANOW on the same fd succeeds), so fall back per-call — keeps drain-then-apply wherever the kernel allows it; without this every Bun.Terminal setRawMode() throws on-device.
     if (rc == EACCES) {
         rc = uv__tcsetattr(fd, TCSANOW, &tmp);
     }

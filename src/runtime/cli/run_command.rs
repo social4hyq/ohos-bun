@@ -626,25 +626,7 @@ Full documentation is available at <magenta>https://bun.com/docs/cli/run<r>
 
         // SAFETY: `Transpiler::init` always sets `fs` to the process singleton.
         let top_level_dir = unsafe { (*this_transpiler.fs).top_level_dir };
-        // On OHOS, a permission-denied top-level dir (e.g. a FUSE mount where
-        // getcwd/openat is blocked by SELinux) is not fatal — the resolver
-        // already silences EPERM/EACCES internally (see the matching handling
-        // at resolver.rs:4454), and this recovers with a $HOME/"/" fallback
-        // DirInfo instead. Everywhere else, a failure to read the top-level
-        // directory is a real, fatal error and must be reported as such —
-        // restore that upstream behavior exactly.
-        //
-        // The recovery is limited to `with_linker` callers (install and
-        // friends), which need a resolver root but never read the cwd's
-        // package.json as an identity. `bun run <script>` (with_linker=false)
-        // must NOT recover: it looks the script up in
-        // `root_dir_info.enclosing_package_json`, so a $HOME fallback silently
-        // runs $HOME's same-named script instead of the project's, with no
-        // diagnostic — measured: a project defining `start` in an unreadable
-        // cwd ran $HOME's `start`, and inherited its npm_package_name/version/
-        // config_* plus a PATH led by $HOME/node_modules/.bin. Failing loudly
-        // is the only safe answer when the directory the user pointed at
-        // cannot be read.
+        // OHOS: recover EPERM/EACCES on the top-level dir with a $HOME/"/" fallback root — but only for with_linker callers (install and friends). `bun run` (with_linker=false) must NOT recover: it resolves scripts via `root_dir_info.enclosing_package_json`, so a fallback root would silently run $HOME's same-named script.
         let root_dir_info: Option<bun_resolver::DirInfoRef> =
             match this_transpiler.resolver.read_dir_info(top_level_dir) {
                 #[cfg(target_env = "ohos")]
@@ -687,16 +669,7 @@ Full documentation is available at <magenta>https://bun.com/docs/cli/run<r>
                 }
                 Ok(Some(info)) => Some(info),
             };
-        // OHOS-only fallback root DirInfo for the two None cases above (only
-        // reachable with `with_linker`; see the arms). Uses $HOME which is
-        // always readable; "/" may be blocked by SELinux. Returns an error
-        // only when neither path is readable.
-        //
-        // This root exists purely so the resolver has somewhere to start. It
-        // is NOT the user's project, so `root_dir_info_is_fallback` gates the
-        // npm_package_* seeding below: those variables describe "the package
-        // being run", and taking them from $HOME's package.json hands the
-        // script a different package's name, version and entire config block.
+        // OHOS-only fallback root DirInfo for the two None arms above (with_linker only); it is NOT the user's project, so `root_dir_info_is_fallback` gates the npm_package_* seeding below — those variables describe the package being run, and $HOME's package.json has no claim to that identity.
         #[cfg(target_env = "ohos")]
         let mut root_dir_info_is_fallback = false;
         #[cfg(target_env = "ohos")]
@@ -710,9 +683,6 @@ Full documentation is available at <magenta>https://bun.com/docs/cli/run<r>
                     .read_dir_info_ignore_error(if home.is_empty() { b"/" } else { home.as_bytes() })
                     .or_else(|| this_transpiler.resolver.read_dir_info_ignore_error(b"/"))
                     .ok_or(crate::Error::InstallFailed)?;
-                // Say so. A silent substitution makes every downstream
-                // oddity (wrong package name, unexpected $PATH entry) look
-                // like it came from somewhere else.
                 if opts.log_errors {
                     pretty_errorln!(
                         "<r><yellow>warn<r><d>:<r> cannot read {}; resolving from <b>{}<r> instead",
@@ -726,8 +696,7 @@ Full documentation is available at <magenta>https://bun.com/docs/cli/run<r>
                 info
             }
         };
-        // Off OHOS, every arm above either diverges (return Err(...)) or
-        // produces Some(info), so this is always populated.
+        // Off OHOS every arm above either diverges or produces Some(info), so this is always populated.
         #[cfg(not(target_env = "ohos"))]
         let root_dir_info: bun_resolver::DirInfoRef =
             root_dir_info.expect("Ok(None)/EPERM/EACCES arms are OHOS-only; other arms diverge");
@@ -809,9 +778,7 @@ Full documentation is available at <magenta>https://bun.com/docs/cli/run<r>
             }
         }
 
-        // Skip when the root is the $HOME/"/" fallback rather than the user's
-        // directory: npm_package_name/version/config_* describe the package
-        // being run, and a substituted root has no claim to that identity.
+        // Skip seeding npm_package_* when the root is the OHOS $HOME/"/" fallback rather than the user's directory.
         #[cfg(target_env = "ohos")]
         let seed_package_env = !root_dir_info_is_fallback;
         #[cfg(not(target_env = "ohos"))]

@@ -3346,12 +3346,7 @@ JSC_DEFINE_HOST_FUNCTION(Process_functiongetgroups, (JSGlobalObject * globalObje
     groupVector.resize(ngroups);
     getgroups(ngroups, groupVector.begin());
 
-    // Node's documented behavior: "POSIX leaves it unspecified if the
-    // effective group ID is included, but Node.js ensures it is." A raw
-    // getgroups(2) returns only supplementary groups, and on platforms
-    // where the effective gid is not also in the supplementary list
-    // (observed on OHOS: egid 20020101 not in the list, while `id -G`
-    // reports it) this array disagrees with both Node and `id -G`.
+    // Node.js guarantees the effective gid is included; raw getgroups(2) may omit it (seen on OHOS), so append it.
     const gid_t egid = getegid();
     bool hasEgid = false;
     for (unsigned i = 0; i < groupVector.size(); i++) {
@@ -4713,10 +4708,7 @@ static inline JSValue getCachedCwd(JSC::JSGlobalObject* globalObject)
     auto& vm = JSC::getVM(globalObject);
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    // Do NOT cache the result: process.cwd() must re-query the syscall each
-    // call (like Node's uv_cwd()), so a cwd deleted via rmdir after chdir
-    // surfaces ENOENT. The Rust side (bun_sys::getcwd) already probes stat(".")
-    // on OHOS to detect the deleted-cwd case; caching here would hide it.
+    // Do NOT cache: process.cwd() must re-query the syscall each call (like Node's uv_cwd()) so a deleted cwd surfaces ENOENT — bun_sys::getcwd probes stat(".") for that on OHOS, and caching here would hide it.
     auto cwd = Bun__Process__getCwd(globalObject);
     RETURN_IF_EXCEPTION(scope, {});
     JSString* cwdStr = uncheckedDowncast<JSString>(JSValue::decode(cwd));

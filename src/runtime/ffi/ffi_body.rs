@@ -30,8 +30,7 @@ use bun_sys;
 #[cfg(unix)]
 #[inline]
 fn dir_exists(path: &[u8]) -> bool {
-    // ZBox::from_bytes copies into an owned stack ZBox — `path` doesn't need
-    // to outlive this call.
+    // ZBox::from_bytes copies, so `path` need not outlive this call.
     let z = ZBox::from_bytes(path);
     bun_sys::directory_exists_at(bun_sys::Fd::cwd(), &z).unwrap_or(false)
 }
@@ -733,20 +732,7 @@ impl CompileC {
 
         #[cfg(target_env = "ohos")]
         {
-            // OHOS: libc lives in the SDK sysroot, not in standard FHS paths.
-            // TCC needs libc to link; the SDK sysroot provides libc.so / libc.a.
-            // Read the sysroot from $OHOS_SYSROOT rather than a baked-in
-            // path — there is no single fixed SDK install location across
-            // OHOS devices.
-            // The sysroot is multiarch: anything arch-dependent lives under a
-            // <arch>-linux-ohos subdirectory of usr/lib and usr/include alike,
-            // and the SDK ships one per arch it supports. Naming the triplet
-            // once is the point — the library path below used to spell it out
-            // while the include path did not, which meant TCC could not
-            // compile a translation unit including anything as ordinary as
-            // <stdint.h>: the generic usr/include/stdint.h does
-            // `#include <bits/alltypes.h>` and bits/ exists only under the
-            // triplet directory.
+            // OHOS: TCC needs the SDK sysroot's libc ($OHOS_SYSROOT — no fixed SDK install path). The sysroot is multiarch: headers like <stdint.h>'s bits/ exist only under usr/{lib,include}/<arch>-linux-ohos, so the triplet paths are added alongside the generic ones.
             #[cfg(target_arch = "aarch64")]
             const TRIPLET: &str = "aarch64-linux-ohos";
             #[cfg(target_arch = "x86_64")]
@@ -764,10 +750,6 @@ impl CompileC {
                         bun_output::scoped_log!(TCC, "TinyCC failed to add OHOS SDK library path");
                     }
                 }
-                // Added before the generic directory to mirror the SDK's own
-                // clang, though the two never disagree: the triplet directory
-                // holds only asm/ and bits/, and usr/include has neither, so
-                // no header is reachable through both.
                 let sdk_include_arch = format!("{sysroot}/usr/include/{TRIPLET}");
                 if dir_exists(sdk_include_arch.as_bytes()) {
                     let path_z = bun_core::ZBox::from_bytes(sdk_include_arch.as_bytes());

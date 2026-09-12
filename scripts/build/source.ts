@@ -325,10 +325,7 @@ export interface NestedCmakeBuild {
    * Release (lshpack — its debug build exposes asan symbols we can't link).
    */
   buildType?: BuildType;
-  /**
-   * Limit the nested CMake build's worker count. Some cross-target
-   * filesystems cannot safely run generated-header copy rules in parallel.
-   */
+  /** Worker cap for the nested CMake build (some cross-target filesystems can't run generated-header copy rules in parallel). */
   parallel?: number;
   /** Print each inner build command (useful for diagnosing generator failures). */
   verbose?: boolean;
@@ -1388,10 +1385,7 @@ function emitNestedCmake(
       parallel: spec.parallel === undefined ? "" : `--parallel ${spec.parallel}`,
       verbose: spec.verbose ? "--verbose" : "",
       targets: targets.map(t => `--target ${t}`).join(" "),
-      // OHOS hosts ship no /usr/bin/{clang,gcc}. WebKit's preprocess.pl
-      // (inspector protocol codegen) execs $ENV{CC} || /usr/bin/clang ||
-      // /usr/bin/gcc for its preprocessed DSL, so the nested build must
-      // carry CC/CXX explicitly. stream.ts merges --env=K=V over its env.
+      // OHOS hosts ship no /usr/bin/{clang,gcc} and WebKit's preprocess.pl execs $ENV{CC} || /usr/bin/clang || /usr/bin/gcc — stream.ts merges --env=K=V over its env.
       ...(cfg.ohos
         ? { toolEnv: `--env=CC=${quote(cfg.cc, hostWin)} --env=CXX=${quote(cfg.cxx, hostWin)}` }
         : { toolEnv: "" }),

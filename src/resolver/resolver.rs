@@ -4500,16 +4500,7 @@ impl<'a> Resolver<'a> {
                             self.dir_cache_mut().mark_not_found(queue_top.result);
                             rfs!().entries.mark_not_found(cached_dir_entry_result);
 
-                            // OHOS: Ancestor directories like "/" or "/storage/" may return
-                            // EACCES due to sandbox restrictions. Skip the unreadable ancestor
-                            // and continue processing child directories in the queue, instead
-                            // of falling through to the generic error handling below (which
-                            // would abandon this whole resolve attempt). Not enabled on other
-                            // platforms: there, an EACCES/EPERM on a directory in the resolve
-                            // path is a real error the generic handling below should report.
-                            // Guard: if the queue is now empty, there is nothing left to walk —
-                            // return Ok(None) instead of `continue`-ing into the while-exit path
-                            // that would hit the post-loop `unreachable!()`.
+                            // OHOS: sandboxed ancestors (e.g. "/", "/storage") EACCES — skip and keep walking; an empty queue must return (post-loop is unreachable!()).
                             if cfg!(target_env = "ohos")
                                 && (err == crate::Error::Sys(bun_errno::SystemErrno::EACCES)
                                     || err == crate::Error::Sys(bun_errno::SystemErrno::EPERM))
@@ -5813,9 +5804,7 @@ impl<'a> Resolver<'a> {
             match err.original_err {
                 crate::Error::Sys(bun_errno::SystemErrno::ENOENT)
                 | crate::Error::Sys(bun_errno::SystemErrno::ENOTDIR) => {}
-                // OHOS: sandboxed ancestor directories can return EACCES/EPERM
-                // where other platforms would see ENOENT; treat those as
-                // benign there only — elsewhere they're real errors to report.
+                // OHOS: sandboxed ancestors return EACCES/EPERM where other platforms see ENOENT — benign here only.
                 crate::Error::Sys(bun_errno::SystemErrno::EACCES)
                 | crate::Error::Sys(bun_errno::SystemErrno::EPERM)
                     if cfg!(target_env = "ohos") => {}
@@ -6474,10 +6463,7 @@ impl<'a> Resolver<'a> {
                     Ok(v) => v.map(bun_core::heap::into_raw),
                     Err(err) => {
                         let pretty = tsconfigpath;
-                        // OHOS: sandboxed ancestor directories can surface
-                        // EACCES/EPERM for a tsconfig path that would read as
-                        // ENOENT elsewhere; report those the same as
-                        // not-found there only.
+                        // OHOS: sandboxed ancestors surface EACCES/EPERM for tsconfig paths that are ENOENT elsewhere — report as not-found (OHOS only).
                         let is_not_found_like = err
                             == crate::Error::Sys(bun_errno::SystemErrno::ENOENT)
                             || (cfg!(target_env = "ohos")
