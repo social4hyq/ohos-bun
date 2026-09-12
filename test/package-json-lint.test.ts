@@ -25,7 +25,10 @@ describe("package.json dependencies must be exact versions", async () => {
       // Hyphen is necessary to accept prerelease versions like "1.1.3-alpha.7"
       // This regex still forbids semver ranges like "1.0.0 - 1.2.0", as those must have spaces
       // around the hyphen.
-      const okRegex = /^(([a-zA-Z0-9\.\-]|)+$|file:)/;
+      // The npm: branch accepts aliased deps (OHOS ports wiring, e.g.
+      // "@napi-rs/canvas": "npm:@ohos-ports/napi-rs-canvas@0.1.80-beta.0");
+      // the version after the last '@' must still be exact.
+      const okRegex = /^(([a-zA-Z0-9\.\-]|)+$|npm:[a-zA-Z0-9.\-\/@]+@[a-zA-Z0-9.\-]+$|file:)/;
 
       for (const [name, dep] of Object.entries(dependencies)) {
         expect(dep, `dependency ${name} specifies non-exact version "${dep}"`).toMatch(okRegex);
