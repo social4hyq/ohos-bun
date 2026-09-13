@@ -282,6 +282,68 @@ export const workarounds: Workaround[] = [
       `src/install/PackageInstaller.rs and src/install/isolated_install/Installer.rs, the ` +
       `#[cfg(target_env = "ohos")] signing block in src/runtime/cli/build_command.rs, and this entry.`,
   },
+  {
+    id: "ohos-statx-rejects-socket-stdio",
+    issue: "https://gitee.com/openharmony (no tracked issue — kernel statx(2) behavior)",
+    description:
+      "The HongMeng kernel's statx(2) rejects an AF_UNIX socket fd with EBADF even when it's a " +
+      "genuinely open fd — verified via /proc/self/fd showing it as a live socket entry at the " +
+      "exact moment statx rejects it. This bites any process whose stdio is a socketpair rather " +
+      "than a plain FIFO (notably a bun process spawned by Node's child_process — Node's libuv " +
+      "backs pipe-mode stdio with a socketpair on this platform, not pipe(2)). A plain shell `|` " +
+      "(a real FIFO) never hits this. Every fs.fstatSync()/node:fs stat call on such a socket fd " +
+      "(including bun's own startup isatty-style probing of fd 1/2) got the raw EBADF instead of " +
+      "falling back to plain fstat(2), which handles any fd type correctly.",
+    applies: cfg => cfg.abi === "ohos",
+    expectedToBeFixed: () => {
+      // Kernel behavior, not a toolchain/library version — no reliable
+      // signal to check. Re-test by removing the EBADF arm from the
+      // statx_impl fallback match in src/sys/lib.rs and calling
+      // fs.fstatSync() on a socketpair-backed stdio fd (e.g. spawn bun
+      // from Node with stdio: "pipe") on a newer OHOS SDK/device.
+      return false;
+    },
+    cleanup:
+      `Remove the "cfg!(target_env == "ohos") && errno == EBADF" arm from statx_impl's fallback ` +
+      `match in src/sys/lib.rs, and this entry.`,
+  },
+  {
+    id: "ohos-pwritev2-preadv2-espipe-socket",
+    issue: "https://gitee.com/openharmony (no tracked issue — kernel pwritev2(2)/preadv2(2) behavior)",
+    description:
+      "The HongMeng kernel's pwritev2(fd, iov, 1, -1, RWF_NOWAIT) (and the read-side preadv2) " +
+      "rejects an AF_UNIX socket fd with ESPIPE even though offset == -1 means 'do not seek, " +
+      "behave like plain writev()/readv()' per Linux semantics — a real FIFO on this same kernel " +
+      "is unaffected. This is the actual root cause of the js/bun/shell test-harness failure " +
+      "bucket documented in project_ohos_bun_shell_pipe_output_loss: bun's shell IOWriter " +
+      "(src/io/PipeWriter.rs's write_to_blocking_pipe) uses write_nonblocking() as its fast path " +
+      "for any pollable fd (FIFO or socket alike — bun's Linux FileType classification does not " +
+      "distinguish the two, only kqueue platforms do), so a bun process whose stdout/stderr is a " +
+      "socketpair (spawned via Node's child_process, or scripts/runner.node.mjs, or any OHOS-hosted " +
+      "orchestrator) gets ESPIPE on every write attempt with no existing fallback arm — the error " +
+      "propagated up as a real write failure, silently swallowed by the shell builtin's error path " +
+      "(state=Err, exit code 1, no message), producing the exact symptom: instant test completion, " +
+      "captured stdout/stderr empty. Verified via inline diagnostics (temporary eprintln! at each " +
+      "layer of is_pollable → try_write → write_to_blocking_pipe → write_nonblocking) showing " +
+      "'errno: 29 (ESPIPE)' from pwritev2 on the socket-backed fd, immediately fixed by adding an " +
+      "ESPIPE fallback arm. Fixed as a **per-call** fallback (no linux::RWFFlagSupport::disable()), " +
+      "unlike the existing EOPNOTSUPP/ENOSYS/EPERM/EACCES arms — those indicate the kernel lacks " +
+      "RWF_NOWAIT support entirely (safe to disable globally), but this kernel's real pipes take " +
+      "the fast path fine, so disabling it process-wide would needlessly lose that fast path for " +
+      "every FIFO write for the rest of the process's life.",
+    applies: cfg => cfg.abi === "ohos",
+    expectedToBeFixed: () => {
+      // Kernel behavior, not a toolchain/library version — no reliable
+      // signal to check. Re-test by removing the ESPIPE arms from
+      // read_nonblocking/write_nonblocking in src/sys/lib.rs and running
+      // test/js/bun/shell/commands/basename.test.ts spawned via Node's
+      // child_process with stdio: "pipe" on a newer OHOS SDK/device.
+      return false;
+    },
+    cleanup:
+      `Remove the "libc::ESPIPE if cfg!(target_env = \"ohos\")" arms from both ` +
+      `read_nonblocking and write_nonblocking in src/sys/lib.rs, and this entry.`,
+  },
 ];
 
 /**

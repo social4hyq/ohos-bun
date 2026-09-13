@@ -2334,10 +2334,23 @@ mod posix_impl {
                 //   EPERM:      seccomp filter rejects statx (libseccomp < 2.3.3,
                 //               docker < 18.04, various CI sandboxes)
                 //   EINVAL:     old Android builds
+                //   EBADF (OHOS only): the HongMeng kernel's statx(2) rejects
+                //   AF_UNIX socket fds used as stdio (e.g. a process spawned
+                //   by Node's child_process, whose pipe stdio is a
+                //   socketpair rather than a plain FIFO) with EBADF even
+                //   though the fd is genuinely open — verified via
+                //   /proc/self/fd showing it as a live `socket:[...]` entry
+                //   at the exact moment statx rejects it. A pipe/FIFO fd
+                //   (a plain shell `|`) doesn't hit this. Plain fstat(2)
+                //   handles any fd type correctly, so fall back the same as
+                //   the other "statx doesn't really work here" signals; if
+                //   the fd actually is bad, the fallback fstat(2) call
+                //   reports the same EBADF anyway.
                 if matches!(
                     errno,
                     Some(E::ENOSYS | E::EOPNOTSUPP | E::EPERM | E::EINVAL)
-                ) {
+                ) || (cfg!(target_env = "ohos") && errno == Some(E::EBADF))
+                {
                     SUPPORTS_STATX_ON_LINUX.store(false, Ordering::Relaxed);
                     return statx_fallback(fd, path, flags);
                 }
@@ -7333,6 +7346,19 @@ pub fn read_nonblocking(fd: Fd, buf: &mut [u8]) -> Maybe<usize> {
                         _ => Err(Error::retry().with_fd(fd)),
                     };
                 }
+                // HongMeng kernel's preadv2(fd, iov, 1, -1, RWF_NOWAIT)
+                // rejects AF_UNIX socket fds with ESPIPE even though offset
+                // == -1 means "no seeking" per Linux semantics (FIFOs are
+                // unaffected — only socket-backed fds, e.g. libuv's
+                // socketpair()-backed child stdio, hit this). Per-call
+                // fallback only (no global disable): real pipes on this
+                // kernel take the fast RWF_NOWAIT path fine.
+                libc::ESPIPE if cfg!(target_env = "ohos") => {
+                    return match bun_core::is_readable(fd) {
+                        bun_core::Pollable::Ready | bun_core::Pollable::Hup => read(fd, buf),
+                        _ => Err(Error::retry().with_fd(fd)),
+                    };
+                }
                 libc::EINTR => continue,
                 _ => return Err(Error::from_code_int(e, Tag::read).with_fd(fd)),
             }
@@ -7357,6 +7383,20 @@ pub fn write_nonblocking(fd: Fd, buf: &[u8]) -> Maybe<usize> {
                 libc::EOPNOTSUPP | libc::ENOSYS | libc::EPERM | libc::EACCES => {
                     linux::RWFFlagSupport::disable();
                     // Poll before issuing a blocking write.
+                    return match bun_core::is_writable(fd) {
+                        bun_core::Pollable::Ready | bun_core::Pollable::Hup => write(fd, buf),
+                        _ => {
+                            let mut e = Error::retry();
+                            e.syscall = Tag::write;
+                            Err(e.with_fd(fd))
+                        }
+                    };
+                }
+                // See the matching ESPIPE arm in `read_nonblocking`: HongMeng's
+                // pwritev2(fd, iov, 1, -1, RWF_NOWAIT) rejects AF_UNIX socket
+                // fds with ESPIPE. Per-call fallback only — FIFOs keep the
+                // fast path on this kernel.
+                libc::ESPIPE if cfg!(target_env = "ohos") => {
                     return match bun_core::is_writable(fd) {
                         bun_core::Pollable::Ready | bun_core::Pollable::Hup => write(fd, buf),
                         _ => {
