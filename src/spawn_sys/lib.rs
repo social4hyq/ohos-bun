@@ -119,7 +119,11 @@ pub mod ffi {
 pub mod waiter_thread_flag {
     use core::sync::atomic::{AtomicBool, Ordering};
 
-    static SHOULD_USE_WAITER_THREAD: AtomicBool = AtomicBool::new(false);
+    // OHOS: default on. The pidfd+shared-epoll child-exit path never
+    // resolves on this kernel (the child zombies while the epoll loop
+    // never wakes for it), so route child-exit detection through the
+    // waiter thread instead of the shared epoll loop from the start.
+    static SHOULD_USE_WAITER_THREAD: AtomicBool = AtomicBool::new(cfg!(target_env = "ohos"));
 
     /// The waiter thread is the fallback for Linux without pidfd. kqueue
     /// platforms always have EVFILT_PROC, and the thread's loop has no wakeup
