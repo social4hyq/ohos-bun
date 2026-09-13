@@ -252,6 +252,36 @@ export const workarounds: Workaround[] = [
       `Remove the #[cfg(target_env = "ohos")] short-circuit blocks from openat2_beneath and ` +
       `openat2_in_root in src/sys/linux_syscall.rs, and this entry.`,
   },
+  {
+    id: "ohos-codesign-required",
+    issue: "https://gitee.com/openharmony (no tracked issue — platform ELF execution policy)",
+    description:
+      "OHOS refuses to exec or dlopen an ELF without a valid HarmonyOS codesign section — a " +
+      "native addon .node/.so from bun install, or a `bun build --compile` standalone executable, " +
+      "is otherwise just an unsigned ELF and gets Permission denied. src/ohos_sign is a from-scratch " +
+      "in-process implementation (no external binary-sign-tool fork) of OHOS's fs-verity-style ELF " +
+      "code-signing format (SHA-256 + Merkle tree + descriptor), wired in at three points: " +
+      "sys::dlopen() signs lazily before every dlopen (has_codesign() short-circuits the already-" +
+      "signed case), PackageInstaller.rs/isolated_install/Installer.rs sign every .so/.node right " +
+      "after `bun install` places it, and build_command.rs signs (with the appended-payload-safe " +
+      "strip variant) right after writing a --compile output binary.",
+    applies: cfg => cfg.abi === "ohos",
+    expectedToBeFixed: () => {
+      // Platform execution policy, not a toolchain/library version — no
+      // reliable signal to check. Re-test by removing the ensure_signed()
+      // call in sys::dlopen and running an unsigned .node addon on a newer
+      // OHOS SDK/device; flip to a real check only if a future SDK adds an
+      // opt-out or a queryable capability flag.
+      return false;
+    },
+    cleanup:
+      `Delete src/ohos_sign/, its "src/ohos_sign" workspace member entry and the three ` +
+      `target-conditional dependency blocks (src/sys, src/install, src/runtime Cargo.toml), the ` +
+      `ensure_signed()/ohos_sign::has_codesign() branch in sys::dlopen() (src/sys/lib.rs), the ` +
+      `#[cfg(target_env = "ohos")] block calling ohos_sign_native_binaries() in ` +
+      `src/install/PackageInstaller.rs and src/install/isolated_install/Installer.rs, the ` +
+      `#[cfg(target_env = "ohos")] signing block in src/runtime/cli/build_command.rs, and this entry.`,
+  },
 ];
 
 /**

@@ -6012,8 +6012,29 @@ pub mod RTLD {
 
 /// `dlopen(filename, flags)`. Windows → `LoadLibraryExW` (UTF-8 → UTF-16).
 pub fn dlopen(filename: &ZStr, flags: i32) -> Option<*mut c_void> {
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_env = "ohos")))]
     {
+        // SAFETY: filename is NUL-terminated.
+        let p = unsafe { libc::dlopen(filename.as_ptr(), flags) };
+        if p.is_null() { None } else { Some(p) }
+    }
+    #[cfg(target_env = "ohos")]
+    {
+        // OHOS: refuses to dlopen an ELF without a valid codesign section.
+        // Native addon .node/.so files (from bun install, or built by the
+        // user's own postinstall/node-gyp step) never get one, so sign
+        // in-process before every dlopen — has_codesign() short-circuits the
+        // (already-signed) common case, e.g. anything bun install already
+        // signed via ohos_sign.
+        fn ensure_signed(path: &ZStr) {
+            let path_str = path.as_cstr().to_str().unwrap_or("");
+            let p = std::path::Path::new(path_str);
+            if ohos_sign::has_codesign(&std::fs::read(p).unwrap_or_default()) {
+                return;
+            }
+            let _ = ohos_sign::sign_selfsign_inplace(p);
+        }
+        ensure_signed(filename);
         // SAFETY: filename is NUL-terminated.
         let p = unsafe { libc::dlopen(filename.as_ptr(), flags) };
         if p.is_null() { None } else { Some(p) }
