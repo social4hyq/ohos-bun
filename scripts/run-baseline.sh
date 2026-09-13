@@ -21,7 +21,7 @@ run_batch() {
   name=$1; shift
   echo "=== $name $(date '+%H:%M:%S') ===" | tee -a "$OUT/SUMMARY.txt"
   CI=1 BUN_TEST_NO_SECRETS=1 node scripts/runner.node.mjs \
-    --exec-path="$BUN" --ignore-expectations=OPENHARMONY --retries=1 \
+    --exec-path="$BUN" --ignore-expectations=OPENHARMONY --retries=1 --parallel \
     --results-json="$OUT/$name.json" "$@" \
     --exclude=integration/bun-types --exclude=internal/source-lints \
     > "$OUT/$name.log" 2>&1
