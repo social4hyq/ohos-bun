@@ -135,7 +135,10 @@ export const globalFlags: Flag[] = [
     // install libicu-dev to /usr/include. Harmonybrew's icu4c@78 is
     // keg-only under a non-default prefix, so make the include path
     // explicit rather than relying on that assumption for OHOS too.
-    flag: () => ["-isystem", join(process.env.BUN_OHOS_ICU_ROOT ?? "/opt/icu-ohos", "include")],
+    // Default resolves `buildDir/ohos-icu/target`, a symlink to the keg
+    // (same convention the release formula uses) — not `/opt/...`, which
+    // needs root and doesn't survive this device's reboots.
+    flag: cfg => ["-isystem", join(process.env.BUN_OHOS_ICU_ROOT ?? join(cfg.buildDir, "ohos-icu/target"), "include")],
     when: c => c.abi === "ohos" && c.webkit === "local",
     desc: "OHOS: explicit ICU include path (Harmonybrew's icu4c@78 isn't on the default search path)",
   },
@@ -1347,7 +1350,7 @@ export const linkerFlags: Flag[] = [
     // default library search path — true on distros with libicu-dev in
     // /usr/lib. Harmonybrew's icu4c@78 is keg-only under a non-default
     // prefix (same reasoning as the compile-time ICU -isystem entry above).
-    flag: () => [`-L${join(process.env.BUN_OHOS_ICU_ROOT ?? "/opt/icu-ohos", "lib")}`],
+    flag: cfg => [`-L${join(process.env.BUN_OHOS_ICU_ROOT ?? join(cfg.buildDir, "ohos-icu/target"), "lib")}`],
     when: c => c.abi === "ohos" && c.webkit === "local",
     desc: "OHOS: library search path for Harmonybrew's icu4c@78",
   },
