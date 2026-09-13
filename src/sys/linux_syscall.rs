@@ -91,36 +91,62 @@ pub(crate) fn openat(dir: Fd, path: &ZStr, flags: i32, mode: Mode) -> Result<Fd,
 
 #[inline]
 pub(crate) fn openat2_beneath(dir: Fd, path: &ZStr, flags: i32, mode: Mode) -> Result<Fd, i32> {
-    let oflags = rustix::fs::OFlags::from_bits_retain(flags as u32);
-    let mode = rustix::fs::Mode::from_raw_mode(mode);
-    let dir = dir.as_borrowed_fd();
-    retry(|| {
-        rustix::fs::openat2(
-            dir,
-            path.as_cstr(),
-            oflags,
-            mode,
-            rustix::fs::ResolveFlags::BENEATH,
-        )
-    })
-    .map(own_fd)
+    // OHOS seccomp SIGSYS-kills openat2 unconditionally, uncatchably (unlike
+    // close_range's raw `syscall()` entry point, this goes through rustix's
+    // own inline-asm syscall backend, which no libc-symbol interposition —
+    // ohos_compat_shim.c included — can reach). Both call sites already
+    // treat ENOSYS/EPERM/EINVAL as "openat2 unavailable, fall back" for
+    // pre-5.6-kernel compatibility, so short-circuiting here needs no
+    // changes anywhere else.
+    #[cfg(target_env = "ohos")]
+    {
+        let _ = (dir, path, flags, mode);
+        return Err(libc::ENOSYS);
+    }
+    #[cfg(not(target_env = "ohos"))]
+    {
+        let oflags = rustix::fs::OFlags::from_bits_retain(flags as u32);
+        let mode = rustix::fs::Mode::from_raw_mode(mode);
+        let dir = dir.as_borrowed_fd();
+        retry(|| {
+            rustix::fs::openat2(
+                dir,
+                path.as_cstr(),
+                oflags,
+                mode,
+                rustix::fs::ResolveFlags::BENEATH,
+            )
+        })
+        .map(own_fd)
+    }
 }
 
 #[inline]
 pub(crate) fn openat2_in_root(dir: Fd, path: &ZStr, flags: i32, mode: Mode) -> Result<Fd, i32> {
-    let oflags = rustix::fs::OFlags::from_bits_retain(flags as u32);
-    let mode = rustix::fs::Mode::from_raw_mode(mode);
-    let dir = dir.as_borrowed_fd();
-    retry(|| {
-        rustix::fs::openat2(
-            dir,
-            path.as_cstr(),
-            oflags,
-            mode,
-            rustix::fs::ResolveFlags::IN_ROOT | rustix::fs::ResolveFlags::NO_MAGICLINKS,
-        )
-    })
-    .map(own_fd)
+    // See openat2_beneath above: OHOS seccomp kills this uncatchably, and
+    // sys/lib.rs's openat2_in_root() already falls back to plain openat on
+    // ENOSYS.
+    #[cfg(target_env = "ohos")]
+    {
+        let _ = (dir, path, flags, mode);
+        return Err(libc::ENOSYS);
+    }
+    #[cfg(not(target_env = "ohos"))]
+    {
+        let oflags = rustix::fs::OFlags::from_bits_retain(flags as u32);
+        let mode = rustix::fs::Mode::from_raw_mode(mode);
+        let dir = dir.as_borrowed_fd();
+        retry(|| {
+            rustix::fs::openat2(
+                dir,
+                path.as_cstr(),
+                oflags,
+                mode,
+                rustix::fs::ResolveFlags::IN_ROOT | rustix::fs::ResolveFlags::NO_MAGICLINKS,
+            )
+        })
+        .map(own_fd)
+    }
 }
 
 #[inline]

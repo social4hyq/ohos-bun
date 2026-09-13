@@ -227,6 +227,31 @@ export const workarounds: Workaround[] = [
       `Delete scripts/build/shims/ohos_compat_shim.c, the needsOhosCompatShim block in shims.ts ` +
       `(registerShimRules + emitShims), and this entry.`,
   },
+  {
+    id: "ohos-openat2-uncatchable-sigsys",
+    issue: "https://gitee.com/openharmony (no tracked issue — application-sandbox seccomp policy)",
+    description:
+      "Unlike close_range (ohos-compat-shim-embed above), the OHOS app sandbox's seccomp filter " +
+      "SIGSYS-kills openat2 in a way no libc-symbol interposition can catch: rustix's openat2 " +
+      "backend issues the syscall via its own inline-asm trampoline, never touching a named libc " +
+      "symbol a linked-in shim could interpose. src/sys/linux_syscall.rs short-circuits both " +
+      "openat2_beneath and openat2_in_root to return ENOSYS on OHOS before ever attempting the " +
+      "real syscall. Zero fallout elsewhere: both call sites (src/install/bin.rs and sys/lib.rs's " +
+      "openat2_in_root) already treat ENOSYS/EPERM/EINVAL as \"openat2 unavailable on this kernel\" " +
+      "for pre-5.6-kernel compatibility, so the existing fallback path (plain openat) just runs.",
+    applies: cfg => cfg.abi === "ohos",
+    expectedToBeFixed: () => {
+      // Sandbox policy, not a toolchain/library version — no reliable
+      // signal to check. Re-test by removing the two #[cfg(target_env =
+      // "ohos")] short-circuits and running `bun install` on a newer OHOS
+      // SDK/device; flip to a real check only if a future SDK exposes a
+      // queryable capability flag.
+      return false;
+    },
+    cleanup:
+      `Remove the #[cfg(target_env = "ohos")] short-circuit blocks from openat2_beneath and ` +
+      `openat2_in_root in src/sys/linux_syscall.rs, and this entry.`,
+  },
 ];
 
 /**
