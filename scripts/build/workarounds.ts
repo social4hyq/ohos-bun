@@ -344,6 +344,41 @@ export const workarounds: Workaround[] = [
       `Remove the "libc::ESPIPE if cfg!(target_env = \"ohos\")" arms from both ` +
       `read_nonblocking and write_nonblocking in src/sys/lib.rs, and this entry.`,
   },
+  {
+    id: "ohos-inotify-attrib-before-create",
+    issue: "https://gitee.com/openharmony (no tracked issue — kernel inotify(7) event ordering)",
+    description:
+      "The HongMeng kernel's inotify occasionally delivers IN_ATTRIB for a brand-new file " +
+      "*before* the IN_CREATE event for the same name, in the same read() batch — verified via " +
+      "inline tracing (a single read() on the inotify fd returned both events together, ATTRIB " +
+      "first). ext4 on mainline Linux always delivers IN_CREATE first for a plain " +
+      "fs.writeFileSync()-style create+write+close. This broke Node's fs.watch() 'rename' vs " +
+      "'change' classification (src/runtime/node/path_watcher.rs): the classifier only looked at " +
+      "the single event being dispatched, so the spurious leading ATTRIB got classified as " +
+      "'change' and dispatched to the listener before the real CREATE (which should have been " +
+      "'rename') ever arrived — reproduced in both plain and {recursive:true} fs.watch(), so not " +
+      "a recursive-walk artifact. Fixed by scanning the rest of the already-in-memory read() " +
+      "batch for a rename-worthy event on the same (watch descriptor, filename) before falling " +
+      "back to 'change'; gated to OHOS so other platforms' classification is untouched. Known " +
+      "residual: two js/node/test cases (test-fs-watch-recursive-sync-write.js, " +
+      "test-fs-watch-recursive-symlink.js) still fail because their ATTRIB/CREATE pair lands in " +
+      "*separate* read() calls, which same-batch lookahead cannot see — closing that gap would " +
+      "need a short cross-read coalescing window, deliberately not done here (adds dispatch " +
+      "latency for every fs.watch() consumer on this platform, not just the pathological case).",
+    applies: cfg => cfg.abi === "ohos",
+    expectedToBeFixed: () => {
+      // Kernel behavior, not a toolchain/library version — no reliable
+      // signal to check. Re-test by removing the `batch_has_rename_event`
+      // OHOS-gated lookahead in src/runtime/node/path_watcher.rs and running
+      // test/js/node/test/sequential/test-fs-watch.js plus the
+      // test/js/node/test/parallel/test-fs-watch-recursive-*.js cluster on a
+      // newer OHOS SDK/device.
+      return false;
+    },
+    cleanup:
+      "Remove `batch_has_rename_event` and its call site in " +
+      "src/runtime/node/path_watcher.rs's thread_main, and this entry.",
+  },
 ];
 
 /**

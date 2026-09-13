@@ -881,6 +881,42 @@ impl Linux {
         watcher.platform.wds.clear();
     }
 
+    /// Same-batch lookahead used by `thread_main`'s OHOS-only classification
+    /// upgrade: re-walks the just-read `base[0..n]` inotify buffer (the exact
+    /// same layout `thread_main`'s own loop parses) looking for another event
+    /// on the same `(wd, name)` whose mask is rename-worthy. `base` must be
+    /// the same 4-byte-aligned buffer `thread_main` read `n` bytes into.
+    #[cfg(target_env = "ohos")]
+    fn batch_has_rename_event(base: *const u8, n: usize, wd: core::ffi::c_int, name: &[u8]) -> bool {
+        use bun_sys::linux::IN;
+        const RENAME_BITS: u32 =
+            IN::CREATE | IN::DELETE | IN::DELETE_SELF | IN::MOVE_SELF | IN::MOVED_FROM | IN::MOVED_TO;
+        let mut j: usize = 0;
+        while j < n {
+            // SAFETY: same invariant as `thread_main`'s own walk — inotify
+            // guarantees whole, 4-byte-aligned events within `base[0..n]`.
+            let ev: &InotifyEvent = unsafe { &*base.byte_add(j).cast::<InotifyEvent>() };
+            let event_len = core::mem::size_of::<InotifyEvent>() + ev.name_len as usize;
+            if ev.watch_descriptor == wd && ev.mask & RENAME_BITS != 0 {
+                let ev_name: &[u8] = if ev.name_len > 0 {
+                    // SAFETY: kernel NUL-pads name within name_len bytes right
+                    // after the header, same as `thread_main`'s own read.
+                    unsafe {
+                        let name_ptr = base.byte_add(j + core::mem::size_of::<InotifyEvent>());
+                        bun_core::ffi::cstr(name_ptr.cast()).to_bytes()
+                    }
+                } else {
+                    b""
+                };
+                if ev_name == name {
+                    return true;
+                }
+            }
+            j += event_len;
+        }
+        false
+    }
+
     fn thread_main(manager: &'static PathWatcherManager) {
         use bun_sys::linux::IN;
         Output::Source::configure_named_thread(zstr!("fs.watch"));
@@ -1020,18 +1056,33 @@ impl Linux {
                 };
 
                 let is_dir_child = ev.mask & IN::ISDIR != 0;
-                let event_type: WatchEventKind = if ev.mask
-                    & (IN::CREATE
-                        | IN::DELETE
-                        | IN::DELETE_SELF
-                        | IN::MOVE_SELF
-                        | IN::MOVED_FROM
-                        | IN::MOVED_TO)
-                    != 0
-                {
-                    WatchEventKind::Rename
-                } else {
-                    WatchEventKind::Change
+                let event_type: WatchEventKind = {
+                    let is_rename = ev.mask
+                        & (IN::CREATE
+                            | IN::DELETE
+                            | IN::DELETE_SELF
+                            | IN::MOVE_SELF
+                            | IN::MOVED_FROM
+                            | IN::MOVED_TO)
+                        != 0;
+                    // HongMeng's inotify occasionally delivers `IN_ATTRIB` for a
+                    // brand-new file *before* the `IN_CREATE` event for the same
+                    // name, in the same `read()` batch (verified via inline
+                    // tracing: `read()` returns both events together; ext4 on
+                    // mainline Linux always delivers `IN_CREATE` first). Scan the
+                    // rest of the already-in-memory batch for a rename-worthy
+                    // event with the same (wd, name) so Node's 'rename' semantics
+                    // still hold. The batch is a handful of events at most, so
+                    // this scan is free; gated to OHOS to leave other platforms'
+                    // classification untouched.
+                    #[cfg(target_env = "ohos")]
+                    let is_rename =
+                        is_rename || Self::batch_has_rename_event(buf.0.as_ptr(), n, wd, name);
+                    if is_rename {
+                        WatchEventKind::Rename
+                    } else {
+                        WatchEventKind::Change
+                    }
                 };
 
                 // Dispatch to every owner of this wd. The recursive branch below calls
