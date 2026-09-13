@@ -210,6 +210,15 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # OHOS has no bun release binary, so upgrade reports "not for this platform".
 # Both class D. Keeping quarantine.
 [ OPENHARMONY ] test/cli/install/bun-upgrade.test.ts [ Skip ] # OHOS has no bun release binary for upgrade download + staging dir recreation differs
+# bun-workspaces: 1/82 fails — "a copyfile install over a workspace's
+# hardlinked files does not empty the cache" asserts nlink > 1 after a
+# hardlink-strategy install. Verified structural: plain `ln` (link(2)) on
+# this device's EL2 tmp filesystem itself fails with "Permission denied" —
+# a platform/filesystem restriction, not a bun bug. bun's hardlink linker
+# strategy correctly falls back (install succeeds, content is correct,
+# 81/82 other assertions pass) but ends up using a copy instead, so nlink
+# never exceeds 1 on this platform. Class D (structural).
+[ OPENHARMONY ] test/cli/install/bun-workspaces.test.ts [ Failure ] # link(2) is Permission denied on this filesystem; hardlink installs correctly fall back to copy but nlink stays 1
 
 # next-pages: all 3 files import `bun:internal-for-testing` at module top
 # level, which doesn't exist in a release build (ENOENT, deterministic,
