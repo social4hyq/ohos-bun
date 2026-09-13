@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { bunEnv, bunExe, tempDir } from "harness";
+import { bunEnv, bunExe, isOHOS, tempDir } from "harness";
 import { readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { decodeSourceMappingsLine, itBundled } from "./expectBundled";
@@ -750,7 +750,12 @@ describe("bundler", () => {
       stdout: "outer-else",
     },
   });
-  itBundled("edgecase/AbsolutePathShouldNotResolveAsRelative", {
+  // OHOS's app sandbox denies opendir("/") (EACCES) -- the real filesystem
+  // root is off-limits to sandboxed apps. JSBundler's root-dir setup opens
+  // dirname(entryPoint) to walk up looking for a common root, and here that's
+  // literally "/", so it fails with EACCES before ever reaching the
+  // ModuleNotFound path this test wants to exercise.
+  (isOHOS ? itBundled.skip : itBundled)("edgecase/AbsolutePathShouldNotResolveAsRelative", {
     files: {
       "/entry.js": /* js */ `
         console.log(1);
