@@ -1334,6 +1334,15 @@ export const linkerFlags: Flag[] = [
     desc: "OHOS: PIE avoids a libc.so link-stub metadata bug (see the compile-time -fPIC entry above)",
   },
   {
+    // lld's aarch64-linux-ohos default gives RW/TLS a 64KiB p_align but
+    // leaves R/R-E at 4KiB, so a strict-p_align loader (e.g. our own
+    // standalone module-graph append/relocate logic) sees the segments
+    // overlap by a few KiB — same class as oven-sh/bun#40752.
+    flag: ["-Wl,-z,common-page-size=0x10000", "-Wl,-z,max-page-size=0x10000"],
+    when: c => c.abi === "ohos",
+    desc: "OHOS: uniform 64 KiB segment alignment — mixed 4K/64K PT_LOAD align overlaps under strict p_align",
+  },
+  {
     // systemLibs (bun.ts) links -licudata/-licui18n/-licuuc assuming the
     // default library search path — true on distros with libicu-dev in
     // /usr/lib. Harmonybrew's icu4c@78 is keg-only under a non-default
