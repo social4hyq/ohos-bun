@@ -379,6 +379,44 @@ export const workarounds: Workaround[] = [
       "Remove `batch_has_rename_event` and its call site in " +
       "src/runtime/node/path_watcher.rs's thread_main, and this entry.",
   },
+  {
+    id: "ohos-fstat-eacces-on-memfd",
+    issue: "https://gitee.com/openharmony (no tracked issue — kernel fstat(2)/statx(2) behavior)",
+    description:
+      "The HongMeng kernel's fstat(2) (via statx internally) returns EACCES for a memfd_create()'d " +
+      "fd, even though pread(2)/write(2) on that exact same fd work correctly — confirmed by a " +
+      "from-scratch libc-only repro (memfd_create + write + pread round-trips fine; fstat on the " +
+      "same fd fails with errno 13). This broke src/sys/file.rs's File::read_to_end() for any " +
+      "memfd-backed fd, used by bun's internal (non-JS) synchronous spawn helper " +
+      "(src/spawn/process.rs's sync::spawn, used by `bun pm version`'s git integration, the " +
+      "security scanner, and other CLI-only child-process capture) for its Linux memfd-based " +
+      "'.buffer' stdio path — read_to_end_with_array_list()'s SizeHint::UnknownSize branch called " +
+      "self.get_end_pos()? (an fstat-based capacity hint) with the `?` operator, so the fstat " +
+      "failure aborted the whole read before the pread() that would have succeeded ever ran. " +
+      "Symptom: the child process runs and exits normally (status looks fine), but its captured " +
+      "stdout is always empty — verified with a raw async-signal-safe write() probe inserted right " +
+      "before execve() in the vfork child (src/jsc/bindings/bun-spawn.cpp's posix_spawn_bun): the " +
+      "probe's own bytes land in the memfd correctly, so the write side was never the problem — " +
+      "only the parent's post-wait read-back was. Same root-cause family as " +
+      "ohos-statx-rejects-socket-stdio (socket fd → EBADF) and " +
+      "ohos-pwritev2-preadv2-espipe-socket (socket fd → ESPIPE): this kernel's statx/fstat and " +
+      "RWF_NOWAIT fast paths disagree with mainline Linux for several non-regular-file fd kinds, " +
+      "each with a different wrong errno.",
+    applies: cfg => cfg.abi === "ohos",
+    expectedToBeFixed: () => {
+      // Kernel behavior, not a toolchain/library version — no reliable
+      // signal to check. Re-test by reverting the `.unwrap_or(0)` fallback
+      // in src/sys/file.rs's read_to_end_with_array_list back to `?` and
+      // running test/cli/install/bun-pm-version.test.ts on a newer OHOS
+      // SDK/device — the "git integration > fails when git working
+      // directory is not clean" case is the most direct repro.
+      return false;
+    },
+    cleanup:
+      "Revert the `.unwrap_or(0)` fallback in src/sys/file.rs's " +
+      "read_to_end_with_array_list back to the `?` operator on " +
+      "self.get_end_pos(), and this entry.",
+  },
 ];
 
 /**
