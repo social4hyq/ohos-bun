@@ -213,6 +213,11 @@ static JSValue constructPlatform(VM& vm, JSObject* processObject)
     return JSC::jsString(vm, makeAtomString("darwin"_s));
 #elif defined(__ANDROID__)
     return JSC::jsString(vm, makeAtomString("android"_s));
+#elif defined(__OHOS__)
+    // Match real Node.js on OpenHarmony, which reports "openharmony" here
+    // (verified against the device's own Node build) — not folded into the
+    // generic __linux__ case below, same as __ANDROID__ above.
+    return JSC::jsString(vm, makeAtomString("openharmony"_s));
 #elif defined(__linux__)
     return JSC::jsString(vm, makeAtomString("linux"_s));
 #elif defined(__FreeBSD__)

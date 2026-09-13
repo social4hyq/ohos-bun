@@ -85,13 +85,15 @@ function codegenTarget(cfg: Config): { platform: string; arch: string } {
   const platform =
     cfg.abi === "android"
       ? "android"
-      : cfg.os === "darwin"
-        ? "darwin"
-        : cfg.os === "windows"
-          ? "win32"
-          : cfg.os === "freebsd"
-            ? "freebsd"
-            : "linux";
+      : cfg.abi === "ohos"
+        ? "openharmony"
+        : cfg.os === "darwin"
+          ? "darwin"
+          : cfg.os === "windows"
+            ? "win32"
+            : cfg.os === "freebsd"
+              ? "freebsd"
+              : "linux";
   const arch = cfg.x64 ? "x64" : "arm64";
   return { platform, arch };
 }

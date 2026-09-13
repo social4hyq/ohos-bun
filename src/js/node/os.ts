@@ -121,11 +121,13 @@ function bound(binding) {
         ? "Windows_NT"
         : process.platform === "darwin"
           ? "Darwin"
-          : process.platform === "linux" || process.platform === "android"
-            ? "Linux"
-            : process.platform === "freebsd"
-              ? "FreeBSD"
-              : $bundleError("TODO: type");
+          : process.platform === "openharmony"
+            ? "HarmonyOS" // matches real Node.js on this device, verified directly — not "Linux"
+            : process.platform === "linux" || process.platform === "android"
+              ? "Linux"
+              : process.platform === "freebsd"
+                ? "FreeBSD"
+                : $bundleError("TODO: type");
     },
     uptime: binding.uptime,
     userInfo: binding.userInfo,
@@ -135,8 +137,8 @@ function bound(binding) {
       // separate PR to avoid behavior change in the Android port.
       // FreeBSD: uname -m returns MACHINE ("arm64"/"amd64"), not MACHINE_ARCH.
       return process.arch === "arm64"
-        ? process.platform === "android"
-          ? "aarch64"
+        ? process.platform === "android" || process.platform === "openharmony"
+          ? "aarch64" // verified directly against this device's real Node.js
           : "arm64"
         : process.arch === "x64"
           ? process.platform === "freebsd"
