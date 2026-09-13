@@ -37,7 +37,9 @@ impl Default for CompileTarget {
                 tag: Default::default(),
                 _tag_padding: Default::default(),
             },
-            libc: if Environment::IS_MUSL {
+            libc: if Environment::IS_OHOS {
+                Libc::Ohos
+            } else if Environment::IS_MUSL {
                 Libc::Musl
             } else if Environment::IS_ANDROID {
                 Libc::Android
@@ -58,6 +60,12 @@ pub enum Libc {
     Musl,
     /// bionic (Android)
     Android,
+    /// hmusl (OpenHarmony) — only ever produced by `default()` for the
+    /// native host; no `--target=` string token maps to it (OHOS has no
+    /// published cross-compile npm target), so an explicit
+    /// `--target=bun-linux-x64-musl` built *from* an OHOS host correctly
+    /// stays plain `Musl`/"linux", not this variant.
+    Ohos,
 }
 
 impl Libc {
@@ -67,6 +75,7 @@ impl Libc {
             Libc::Default => "",
             Libc::Musl => "-musl",
             Libc::Android => "-android",
+            Libc::Ohos => "-ohos",
         }
     }
 }
@@ -250,6 +259,14 @@ impl CompileTarget {
         if input.is_empty() {
             return Ok(this);
         }
+        // `default()`'s `libc` reflects *this host* (e.g. `Ohos` on an OHOS
+        // build) — but from here on `this` describes an explicitly requested
+        // `--target=...` string, which may name a completely different
+        // platform. Start token parsing from a clean `Default` libc so e.g.
+        // `--target=bun-linux-x64` built from an OHOS host doesn't keep the
+        // host's `Ohos` tag (the `musl`/`android` token arms below still set
+        // it back correctly when present).
+        this.libc = Libc::Default;
 
         let mut found_os = false;
         let mut found_arch = false;
@@ -423,6 +440,10 @@ impl CompileTarget {
         let platform: &'static [u8] = match self.libc {
             // process.platform: Node reports "android" on Android, not "linux".
             Libc::Android => b"\"android\"",
+            // Same reasoning: real Node.js on OpenHarmony reports "openharmony",
+            // verified directly against this device's own Node build — not
+            // folded into the generic Linux case below.
+            Libc::Ohos => b"\"openharmony\"",
             Libc::Default | Libc::Musl => match self.os {
                 OperatingSystem::Mac => b"\"darwin\"",
                 OperatingSystem::Linux => b"\"linux\"",

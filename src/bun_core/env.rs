@@ -45,6 +45,7 @@ const IS_AARCH64: bool = cfg!(target_arch = "aarch64");
 const IS_X64: bool = cfg!(target_arch = "x86_64");
 pub const IS_MUSL: bool = cfg!(target_env = "musl");
 pub const IS_ANDROID: bool = cfg!(target_os = "android");
+pub const IS_OHOS: bool = cfg!(target_env = "ohos");
 pub const ALLOW_ASSERT: bool = IS_DEBUG || IS_TEST || build_options::RELEASE_SAFE;
 pub const CI_ASSERT: bool =
     IS_DEBUG || IS_TEST || ENABLE_ASAN || (build_options::RELEASE_SAFE && IS_CANARY);
