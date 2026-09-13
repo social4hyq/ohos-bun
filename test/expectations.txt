@@ -457,6 +457,7 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 [ OPENHARMONY ] test/js/node/test/parallel/test-child-process-exec-timeout-expire.js [ Failure ] # class B: exec 信号差异（OHOS 返 null signal + 143，Linux 不同）
 [ OPENHARMONY ] test/js/node/test/sequential/test-child-process-execsync.js [ Failure ] # class B: exec 时序/信号差异（OHOS）
 [ OPENHARMONY ] test/js/node/test/parallel/test-module-loading-error.js [ Failure ] # 结构性：OHOS 内核签名校验在 ELF 格式解析之前拦截 dlopen()，对损坏/伪造的 .node fixture 一律报 Permission denied，而不是 Linux 期望的 "file too short"/"Exec format error"；无论文件是否真的是 ELF 都会被先拦，不可能在用户态区分（2026-09-13 复测确认：ohos_sign 自身对该 7 字节垃圾 fixture 签名尝试静默失败，dlopen() 仍走原始未签名文件，返回的 Permission denied 来自内核本身）
+[ OPENHARMONY ] test/js/node/test/parallel/test-child-process-cwd.js [ Failure ] # 非 OHOS 专属：bun 自身 spawn({cwd:不存在}) 的既有缺陷——posix_spawn_bun(C++, vfork+子进程chdir)正确检测到 chdir ENOENT 并经 Rust spawn_bun() 转成 Err，但更上层某处把这个 Err 吞掉了，JS 侧看到假成功（真实 pid + exit 127，不触发 error 事件），而不是 Node 期望的 pid:undefined + error(ENOENT)；对照 spawn(不存在的命令) 走的是另一条路径（JS 层先查 $PATH，行为正确），证明这只是"命令存在但 cwd 不存在"这条路径上的 Rust/JS 粘合层缺陷，与 OHOS 内核/syscall 无关，超出本分支移植范围，不在此处修（2026-09-13 复测确认）
 [ OPENHARMONY ] test/js/node/vm/happy-dom-vm-16277.test.ts [ Failure ] # class D: ECONNREFUSED 外网 69.171.235.22:443（沙盒禁出站）
 [ OPENHARMONY ] test/js/valkey/integration/complex-operations.test.ts [ Failure ] # class D: Redis 连不上（valkey/Docker 不可用）
 [ OPENHARMONY ] test/js/third_party/grpc-js/test-server.test.ts [ Failure ] # T49 修复后仍偶发 ECONNRESET（grpc 时序敏感，bun-g2 实测 fail/pass 摇摆）
