@@ -635,6 +635,48 @@ export const workarounds: Workaround[] = [
       "and libohos_compat_preload.so build edge in scripts/build/shims.ts, " +
       "and this entry.",
   },
+  {
+    id: "ohos-epoll-ctl-del-dup-corruption",
+    issue: "https://gitee.com/openharmony (no tracked issue — kernel epoll keys by open file description, not (fd, file))",
+    description:
+      "The HongMeng kernel keys epoll registrations by open file description rather than " +
+      "(fd, file) like mainline Linux. When two fds sharing the same open file description each " +
+      "have their own epoll entry (Bun.Terminal dup()s its PTY master into independent " +
+      "read_fd/write_fd registrations), an explicit epoll_ctl(CTL_DEL) on one fd permanently " +
+      "corrupts the other's entry -- a second DEL on it returns -1, and even the file's full " +
+      "release can't reclaim it. Symptom: a 'dead' Bun.Terminal instance where data genuinely " +
+      "sits in the PTY master's buffer (confirmed via raw FFI read()) but is never delivered, " +
+      "because the reader's epoll entry was collaterally corrupted by an unrelated DEL on the " +
+      "writer's dup'd fd (or vice versa). PARTIAL fix only (real, A/B-validated, but does not " +
+      "close the whole bug class): when a PollOrFd::close_impl() caller is about to close(fd) " +
+      "anyway, skip the explicit CTL_DEL and rely on the kernel's implicit close-time removal " +
+      "instead -- correct on mainline Linux too (close() always removes epoll registrations " +
+      "there), just redundant. A second, still-unfixed leak source remains in " +
+      "PipeWriter.rs's own early-unregister-on-empty-buffer path (see " +
+      "ohos-pipewriter-idle-busy-spin) -- that unregister happens mid-session while the fd stays " +
+      "open, not right before close(), so it can't use the skip-DEL variant without resurrecting " +
+      "the busy-spin bug that fix specifically prevents. The complete fix (merging Bun.Terminal's " +
+      "read_fd/write_fd into one shared FilePoll registration, eliminating the dup-sharing " +
+      "precondition entirely) is a much larger rewrite of Bun.Terminal's I/O scheduling, out of " +
+      "scope here.",
+    applies: cfg => cfg.abi === "ohos",
+    expectedToBeFixed: () => {
+      // Kernel behavior, not a toolchain/library version — no reliable
+      // signal to check. Re-test by removing the skip_ctl_del threading
+      // from FilePoll::{unregister_with_fd,unregister_with_fd_impl,
+      // deinit_possibly_defer} in src/io/posix_event_loop.rs and running
+      // test/js/bun/terminal/terminal-spawn.test.ts repeatedly on a newer
+      // OHOS SDK/device.
+      return false;
+    },
+    cleanup:
+      "Remove skip_ctl_del threading from FilePoll's " +
+      "deinit_force_unregister_skip_ctl_del/deinit_possibly_defer/" +
+      "unregister_with_fd/unregister_with_fd_impl in " +
+      "src/io/posix_event_loop.rs, the FilePollRef wrapper in src/io/lib.rs, " +
+      "the close_fd branch in PollOrFd::close_impl (src/io/pipes.rs), the " +
+      "Windows stub in src/io/windows_event_loop.rs, and this entry.",
+  },
 ];
 
 /**
