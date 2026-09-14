@@ -677,6 +677,68 @@ export const workarounds: Workaround[] = [
       "the close_fd branch in PollOrFd::close_impl (src/io/pipes.rs), the " +
       "Windows stub in src/io/windows_event_loop.rs, and this entry.",
   },
+  {
+    id: "ohos-spawn-buffer-memfd-eacces",
+    issue: "https://gitee.com/openharmony (no tracked issue — kernel fstat(2) on memfd_create() fds)",
+    description:
+      "Same root cause as ohos-fstat-eacces-on-memfd (this kernel's fstat(2) returns EACCES for a " +
+      "memfd_create()'d fd even though pread/pwrite on the same fd work fine), hit from a new angle: " +
+      "a memfd-backed PosixStdio::Buffer fast path (spawn_process.rs, output capture) handed to a " +
+      "spawned child as its stdout/stderr. A child that does its own fstat on an inherited stdio fd " +
+      "during startup (confirmed: Node's own libuv handle-type classification) gets the unexpected " +
+      "EACCES and aborts (SIGABRT) rather than degrading gracefully the way bun's own JS-spawn " +
+      "read-back path (sys/file.rs) already does. Root-caused via a `bash -c \"what-bin\"` lifecycle " +
+      "install script that crashed deterministically under bun's spawn but never outside it -- four " +
+      "targeted file-based instrumentation points (bun-exec entry, shell PATH resolution, pre-spawn, " +
+      "pre/post posix_spawn) narrowed it to the memfd-backed stdio bun handed to the bash child, not " +
+      "anything in bun's own spawn code. Falls through to the existing socketpair path instead.",
+    applies: cfg => cfg.abi === "ohos",
+    expectedToBeFixed: () => {
+      // Kernel behavior, not a toolchain/library version — no reliable
+      // signal to check. Re-test by removing the OHOS exclusion from the
+      // 'use_memfd block in PosixStdio::Buffer (spawn_process.rs) and
+      // running test/cli/install/bun-add-filter.test.ts's "--trust
+      // --filter writes trustedDependencies" case (installs a package
+      // whose lifecycle script resolves to a #!/usr/bin/env node bin
+      // symlink) on a newer OHOS SDK/device.
+      return false;
+    },
+    cleanup:
+      "Remove the OHOS exclusion from the 'use_memfd block in " +
+      "PosixStdio::Buffer, spawn_process.rs (and its matching CStr-import " +
+      "and unused_labels cfg tweaks), and this entry. Leave the shebang " +
+      "expansion in the same file alone -- unrelated, independently " +
+      "justified fix, not part of this workaround.",
+  },
+  {
+    id: "ohos-spawn-stdin-blob-memfd-eacces",
+    issue: "https://gitee.com/openharmony (no tracked issue — kernel fstat(2) on memfd_create() fds)",
+    description:
+      "Same bug as ohos-spawn-buffer-memfd-eacces, mirrored on the stdin side: Stdio::Blob's " +
+      "use_memfd() (src/runtime/api/bun/spawn/stdio.rs) memfd-backs a pre-buffered stdin (a Blob or " +
+      "a fully-buffered ReadableStream) for a spawned child; the child's own fstat on that inherited " +
+      "fd gets EACCES. Found via the installed-bun A/B sweep: sourcemap-simd.test.ts, " +
+      "spawn-stdin-readable-stream-integration.test.ts, and html-rewriter.test.js all spawn a child " +
+      "with Blob/ReadableStream stdin and crashed on the child's own EACCES before doing anything " +
+      "useful -- sourcemap-simd.test.ts in particular had been misdiagnosed earlier this session as " +
+      "'a pre-existing SIMD decode correctness bug unrelated to spawn' (see " +
+      "project_ohos_spawn_wait_hang_pattern memory's correction) before this was found.",
+    applies: cfg => cfg.abi === "ohos",
+    expectedToBeFixed: () => {
+      // Kernel behavior, not a toolchain/library version — no reliable
+      // signal to check. Re-test by removing the OHOS exclusion from
+      // Stdio::can_use_memfd()/use_memfd() in
+      // src/runtime/api/bun/spawn/stdio.rs and running
+      // test/js/node/module/sourcemap-simd.test.ts on a newer OHOS
+      // SDK/device.
+      return false;
+    },
+    cleanup:
+      "Remove the OHOS exclusion from Stdio::can_use_memfd()/use_memfd() " +
+      "in src/runtime/api/bun/spawn/stdio.rs (and the matching cfg " +
+      "narrowing on byte_slice()/the VecExt import/Capture::buf's " +
+      "allow(dead_code)), and this entry.",
+  },
 ];
 
 /**
