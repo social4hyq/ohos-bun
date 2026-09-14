@@ -299,7 +299,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # --- js/third_party: HTTP2 / gRPC / pnpm / next-auth ---
 # All failures are networking-related: HTTP2 test server returns 403 on OHOS;
 # gRPC DNS resolution; pnpm directory traversal; next-auth server action timeout.
-[ OPENHARMONY ] test/js/third_party/grpc-js/test-resolver.test.ts [ Flaky ] # gRPC DNS resolver (2 tests)
 [ OPENHARMONY ] test/js/third_party/next-auth/next-auth.test.ts [ Flaky ] # server action timeout + unsupported OS (1 test)
 
 # ─────────────────────────────────────────────────────────────
@@ -510,8 +509,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 [ OPENHARMONY ] test/regression/issue/24742.test.ts [ Failure ] # class C 未深究：bun build --compile 的 Nix-store PT_INTERP 归一化检测——用 patchelf 伪造 /nix/store 解释器路径后应被改写回标准 FHS 路径，实际读回空字符串；纯 Nix 场景，OHOS 部署不涉及 Nix，真实价值低，未继续深挖具体机制
 [ OPENHARMONY ] test/regression/issue/29290.test.ts [ Failure ] # class C 未深究：同 24742，bun build --compile 的 Nix-store 解释器归一化，未继续深挖
 [ OPENHARMONY ] test/js/valkey/integration/complex-operations.test.ts [ Failure ] # class D: Redis 连不上（valkey/Docker 不可用）
-[ OPENHARMONY ] test/js/third_party/grpc-js/test-server.test.ts [ Failure ] # T49 修复后仍偶发 ECONNRESET（grpc 时序敏感，bun-g2 实测 fail/pass 摇摆）
-[ OPENHARMONY ] test/js/third_party/grpc-js/test-outlier-detection.test.ts [ Failure ] # class D: gRPC outlier 90s timeout（网络/慢）
 [ OPENHARMONY ] test/integration/expo-app/expo.test.ts [ Failure ] # class D: expo 构建 exit≠0（构建慢/失败）
 [ OPENHARMONY ] test/js/node/process/process.test.js [ Failure ] # 2026-09-14 复核，4/174：①硬编码 win32/darwin/linux 平台白名单不认 "openharmony"（同 architecture-match/os.test 那类 process.platform fallout）②process.release.sourceUrl 硬编码 linux-aarch64.zip，实际正确产出 openharmony-aarch64.zip（URL 本身没问题，是测试期望值没跟上平台字符串改动）③ICU_VERSIONS 表缺 "openharmony-arm64" 键，非真实 ICU 版本回归④测试硬编码期望 node compat 版本 v26.3.0，本分支已到 v26.8.2（版本漂移，非 bug）——四者均为测试自身跟不上平台字符串/版本号变化，非产品缺陷
 [ OPENHARMONY ] test/cli/install/bun-security-scanner-matrix-with-node-modules.test.ts [ Failure ] # class C: exitCode mismatch（OHOS env）
