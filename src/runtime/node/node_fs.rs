@@ -4614,7 +4614,17 @@ impl NodeFS {
                 slice = &slice[written..];
             }
         }
-        if !broke {
+        // `stat_size == 0` is this function's "unknown size" sentinel (see the
+        // `remain = stat_size as u64` init above: it makes the capped loop a
+        // no-op and everything is copied here instead). For a real, known
+        // `stat_size`, once the capped loop above has copied exactly that many
+        // bytes (`remain` reached 0 without early EOF, so `broke` is false)
+        // there is nothing left to copy -- falling through to this "keep
+        // reading until true EOF" loop would copy the rest of a *longer*
+        // source past the caller's requested length. `broke` alone doesn't
+        // distinguish "finished the known cap" from "don't have a cap", so it
+        // must gate on `stat_size == 0`, not `!broke`.
+        if !broke && stat_size == 0 {
             'outer: loop {
                 let amt = match Syscall::read(src_fd, buf) {
                     Ok(result) => result,
