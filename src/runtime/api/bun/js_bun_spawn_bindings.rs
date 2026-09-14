@@ -998,6 +998,28 @@ fn spawn_maybe_sync(
         }
     }
 
+    // OHOS: an exec'd `node` child gets the real musl libc, not the ohos-compat-shim symbols linked into *this* executable, so its os.userInfo() throws ENOENT for the app-sandbox uid -- see ohos_ld_preload.rs.
+    #[cfg(target_env = "ohos")]
+    if let Some(a0) = argv0 {
+        // SAFETY: `a0` at this point always points at NUL-terminated storage owned by `cstr_storage` (get_argv0's `argv0_result.argv0`) that outlives this call.
+        let a0_bytes = unsafe { CStr::from_ptr(a0) }.to_bytes();
+        if let Some(new_ld_preload) = crate::api::ohos_ld_preload::compute(a0_bytes, &env_array) {
+            let is_ld_preload_key = |ptr: *const c_char| -> bool {
+                if ptr.is_null() {
+                    return false;
+                }
+                // SAFETY: same invariant as above -- every live entry here is NUL-terminated storage that outlives this call.
+                let bytes = unsafe { CStr::from_ptr(ptr) }.to_bytes();
+                let key_end = strings::index_of_char_usize(bytes, b'=').unwrap_or(bytes.len());
+                &bytes[..key_end] == b"LD_PRELOAD"
+            };
+            env_array.retain(|&ptr| !is_ld_preload_key(ptr));
+            let line = ZBox::from_vec(new_ld_preload);
+            env_array.push(line.as_ptr());
+            cstr_storage.push(line);
+        }
+    }
+
     env_array.push(core::ptr::null());
     argv.push(core::ptr::null());
 

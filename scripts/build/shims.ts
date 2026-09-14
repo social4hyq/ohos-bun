@@ -199,6 +199,20 @@ export function registerShimRules(n: Ninja, cfg: Config): void {
       command: `${q(cfg.cc)} $flags -fPIC -O2 -c $in -o $out`,
       description: "shim $out",
     });
+
+    // Standalone `.so` build of the same source, for LD_PRELOAD onto an
+    // exec'd `node` child (see ohos_ld_preload.rs) -- the embedded .o above
+    // only interposes symbols *this* executable calls, never a spawned
+    // child's own dynamic-musl libc.
+    n.rule("shim_cc_so", {
+      // -fvisibility=default AFTER $flags overrides globalFlags'
+      // -fvisibility=hidden (see flags.ts) -- an LD_PRELOAD interposer's
+      // symbols must be default-visible in the dynamic symbol table for
+      // the loader to prefer them over libc's, unlike every other TU in
+      // this build where hidden visibility is the right default.
+      command: `${q(cfg.cc)} $flags -fvisibility=default -shared -fPIC -O2 $in -o $out -ldl`,
+      description: "shim-so $out",
+    });
   }
 }
 
@@ -282,6 +296,20 @@ export function emitShims(n: Ninja, cfg: Config): ShimLinkOpts {
     // it), so it interposes libc regardless of link-line position.
     ldflags.push(out);
     implicitInputs.push(out);
+
+    // Standalone `.so` sibling, for ohos_ld_preload.rs's LD_PRELOAD onto an
+    // exec'd `node` child. Not a link input (would duplicate-define every
+    // interposed symbol against the .o above) -- only an implicit build
+    // dependency, so `ninja <exe>` also produces it alongside the binary at
+    // a path ohos_ld_preload.rs's runtime lookup can find next to argv[0].
+    const soOut = resolve(cfg.buildDir, "libohos_compat_preload.so");
+    n.build({
+      outputs: [soOut],
+      rule: "shim_cc_so",
+      inputs: [src],
+      vars: { flags: computeDepFlags(cfg).cflags.join(" ") },
+    });
+    implicitInputs.push(soOut);
   }
 
   return { ldflags, implicitInputs };

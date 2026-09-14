@@ -417,6 +417,224 @@ export const workarounds: Workaround[] = [
       "read_to_end_with_array_list back to the `?` operator on " +
       "self.get_end_pos(), and this entry.",
   },
+  {
+    id: "ohos-waiter-thread-default",
+    issue: "https://gitee.com/openharmony (no tracked issue — kernel pidfd/epoll notification behavior)",
+    description:
+      "The HongMeng kernel's pidfd + shared-epoll child-exit notification path never resolves: " +
+      "a child zombies but the epoll loop thread never wakes for it, so anything waiting on " +
+      "`Bun.spawn`/internal spawn to detect process exit hangs until the caller's own timeout " +
+      "kills it. `SHOULD_USE_WAITER_THREAD` (src/spawn_sys/lib.rs) already existed upstream as a " +
+      "fallback flag for Linux hosts without pidfd support, routing child-exit detection through " +
+      "a dedicated waiter thread instead of the shared epoll loop — just needed defaulting to " +
+      "true on OHOS instead of false. Verified: test/cli/install/bun-pm-why.test.ts went from " +
+      "13/28 failing (each hanging to its own timeout boundary) to 28/28 clean; a sleep-child " +
+      "CPU-sampling probe confirmed the waiter thread genuinely blocks on wait4() rather than " +
+      "busy-polling (no utime/stime growth across a 2s idle window).",
+    applies: cfg => cfg.abi === "ohos",
+    expectedToBeFixed: () => {
+      // Kernel behavior, not a toolchain/library version — no reliable
+      // signal to check. Re-test by flipping SHOULD_USE_WAITER_THREAD's
+      // OHOS default back to false in src/spawn_sys/lib.rs and running
+      // test/cli/install/bun-pm-why.test.ts on a newer OHOS SDK/device.
+      return false;
+    },
+    cleanup:
+      'Change `AtomicBool::new(cfg!(target_env = "ohos"))` back to ' +
+      "`AtomicBool::new(false)` for SHOULD_USE_WAITER_THREAD in " +
+      "src/spawn_sys/lib.rs, and this entry.",
+  },
+  {
+    id: "ohos-no-orphans-wait-signalfd-skip",
+    issue: "https://gitee.com/openharmony (no tracked issue — kernel signalfd behavior under --no-orphans)",
+    description:
+      "src/spawn/process.rs's wait_linux_signalfd path (used only for `--no-orphans`'s " +
+      "ParentDeathWatchdog machinery) hangs on this kernel the same way the default pidfd/epoll " +
+      "path does (see ohos-waiter-thread-default) — skipped on OHOS in favor of a poll+wait4 loop " +
+      "plus independent pidfd/ppid-polling for parent-death detection. Real and independently " +
+      "verified, but turned out NOT to be the actual cause of no-orphans.test.ts's hangs (see " +
+      "ohos-proc-children-fallback for that) — kept because it's still a genuine gap the default " +
+      "signalfd path would hit on this kernel.",
+    applies: cfg => cfg.abi === "ohos",
+    expectedToBeFixed: () => {
+      // Kernel behavior, not a toolchain/library version — no reliable
+      // signal to check. Re-test by removing the OHOS skip around
+      // wait_linux_signalfd in src/spawn/process.rs and running
+      // test/cli/run/no-orphans.test.ts on a newer OHOS SDK/device.
+      return false;
+    },
+    cleanup:
+      "Remove the OHOS-specific skip of wait_linux_signalfd (and its " +
+      "poll+wait4/pidfd-polling replacement) in src/spawn/process.rs, and " +
+      "this entry.",
+  },
+  {
+    id: "ohos-spawn-fork-not-vfork-pwd",
+    issue: "https://gitee.com/openharmony (no tracked issue — SELinux/vfork shared-address-space behavior)",
+    description:
+      "src/jsc/bindings/bun-spawn.cpp's posix_spawn_bun (the fork/exec funnel every spawn goes " +
+      "through) needs two OHOS-specific behaviors, both previously discovered and fixed on the " +
+      "ohos-aarch64 reference branch but never ported to this from-scratch rebuild: (1) use " +
+      "fork() instead of vfork() — this kernel's SELinux policy makes vfork's shared-address-space " +
+      "child fragile (self-pipe exec-failure detection + a fork fallback if vfork itself fails); " +
+      "(2) after chdir() in the child, explicitly sync $PWD in the child's env (drop any stale/ " +
+      "caller-set PWD, append the correct one) — see project_ohos_bun_spawn_cwd_getcwd_bug: " +
+      "chdir()-then-exec() leaves the exec'd binary's own getcwd() broken (EACCES) for EL2-sandbox " +
+      "paths, and shells/tools trust an inherited $PWD over calling getcwd() themselves. Verified " +
+      "the PWD fix independently (bash -c 'pwd; echo $PWD' clean, no EACCES); did not fix " +
+      "no-orphans.test.ts's hangs (that was ohos-proc-children-fallback) despite being the most " +
+      "likely-looking candidate at the time.",
+    applies: cfg => cfg.abi === "ohos",
+    expectedToBeFixed: () => {
+      // Kernel/SELinux behavior, not a toolchain/library version — no
+      // reliable signal to check. Re-test by reverting to vfork() and
+      // removing the PWD-sync block in posix_spawn_bun
+      // (src/jsc/bindings/bun-spawn.cpp) and running Bun.spawn({cwd:
+      // "..."}) followed by a child that shells out and reads $PWD, on a
+      // newer OHOS SDK/device.
+      return false;
+    },
+    cleanup:
+      "Revert posix_spawn_bun's OHOS branch (fork()-not-vfork(), the " +
+      "PWD-sync-after-chdir block, cgroup-skip, pthread_setcancelstate " +
+      "skip) in src/jsc/bindings/bun-spawn.cpp, and this entry.",
+  },
+  {
+    id: "ohos-proc-children-fallback",
+    issue: "https://gitee.com/openharmony (no tracked issue — kernel missing CONFIG_PROC_CHILDREN)",
+    description:
+      "src/io/ParentDeathWatchdog.rs's list_child_pids_linux() enumerates a process's children via " +
+      "/proc/<pid>/task/<tid>/children — a Linux procfs feature gated on the kernel config " +
+      "CONFIG_PROC_CHILDREN, which this kernel doesn't have. The function didn't distinguish " +
+      "'read failed because the feature is absent' from 'read succeeded and the list is genuinely " +
+      "empty', so it silently returned 0 children on every call. This was the true root cause of " +
+      "no-orphans.test.ts's two hangs (not PR_SET_CHILD_SUBREAPER, which works correctly on this " +
+      "kernel — confirmed via a PR_GET_CHILD_SUBREAPER read-back showing value=1): " +
+      "kill_subreaper_adoptees() could never find the escaped setsid daemon it was supposed to " +
+      "kill, so it kept the spawned process's inherited stderr pipe open forever, hanging the " +
+      "test's `Promise.all([...stderr.text(), proc.exited])` even though proc.exited itself " +
+      "resolved quickly. Fixed by tracking whether any /proc/<pid>/task/<tid>/children read ever " +
+      "actually succeeded; if none did across the whole scan, fall back to a full /proc walk " +
+      "matching each process's own /proc/<pid>/stat ppid field. Verified: no-orphans.test.ts's two " +
+      "30s-timeout hangs resolved, file time 60+s -> 3.42s, no PPID=1 daemon leftover after the run.",
+    applies: cfg => cfg.abi === "ohos",
+    expectedToBeFixed: () => {
+      // Kernel-config behavior, not a toolchain/library version — no
+      // reliable signal to check from userspace (CONFIG_PROC_CHILDREN
+      // isn't queryable without root or a matching /proc/config.gz). Re-test
+      // by reading /proc/self/task/<tid>/children directly on a newer OHOS
+      // SDK/device and checking it actually returns data, or by removing
+      // the children_file_usable fallback in
+      // src/io/ParentDeathWatchdog.rs's list_child_pids_linux() and running
+      // test/cli/run/no-orphans.test.ts.
+      return false;
+    },
+    cleanup:
+      "Remove the children_file_usable tracking + list_child_pids_by_scan() " +
+      "fallback in src/io/ParentDeathWatchdog.rs's list_child_pids_linux(), " +
+      "and this entry.",
+  },
+  {
+    id: "ohos-standalone-graph-elf-lookup",
+    issue: "https://gitee.com/openharmony (no tracked issue — OHOS dynamic linker maps the ELF header non-executable)",
+    description:
+      "src/standalone_graph/StandaloneModuleGraph.rs's elf::get_data() -- called unconditionally " +
+      "by every `bun build --compile` standalone executable at startup to locate its own embedded " +
+      "`.bun` payload -- used the default (non-OHOS) implementation, which resolves an exported " +
+      "symbol (Bun__getStandaloneModuleGraphELFVaddr) plus a PIE load-bias lookup via " +
+      "find_loaded_module. This never resolves on OHOS: the dynamic linker here maps the ELF " +
+      "header non-executable (`r--p`), which the default lookup path doesn't anticipate. Replaced " +
+      "with an OHOS-specific implementation: open /proc/self/exe, parse ELF section headers " +
+      "directly to locate `.bun` by name, mmap(MAP_PRIVATE) that byte range; when /proc/self/exe " +
+      "open fails (hmdfs can deny it), fall back to parsing /proc/self/maps for the PIE load base " +
+      "(matching the first file-backed mapping at file offset 0 -- can't match on exec permission " +
+      "since OHOS maps it r--p, not r-xp). Also added ftruncate(fd, 0) before rewriting a cloned " +
+      "executable's ELF data in inject() (clears COW/reflink state left by copy_file_range, " +
+      "otherwise a later write can land on stale disk pages) and fsync() after writing (the " +
+      "subsequent move_file_z_with_handle copy uses copy_file_range, which reads from disk, not " +
+      "page cache). Both real, verified gaps (confirmed via a direct diff against the fork's own " +
+      "ohos-aarch64 reference branch, down to only rustfmt-level residue), but do NOT fix the " +
+      "still-open Footer/Banner compile+spawn hang tracked in test/expectations.txt -- that one is " +
+      "a separate, unresolved SIGKILL-vs-codesign-verification race.",
+    applies: cfg => cfg.abi === "ohos",
+    expectedToBeFixed: () => {
+      // Kernel/linker behavior, not a toolchain/library version — no
+      // reliable signal to check. Re-test by reverting elf::get_data() to
+      // the default (non-OHOS) implementation and running
+      // test/bundler/bundler_compile.test.ts's ELF-section-lookup cases on
+      // a newer OHOS SDK/device.
+      return false;
+    },
+    cleanup:
+      "Delete the `#[cfg(target_env = \"ohos\")] mod imp` block in " +
+      "StandaloneModuleGraph.rs's `mod elf`, and the ftruncate/fsync calls " +
+      "in inject(), and this entry.",
+  },
+  {
+    id: "ohos-pipewriter-idle-busy-spin",
+    issue: "https://gitee.com/openharmony (no tracked issue — kernel EPOLLONESHOT/CTL_DEL behavior)",
+    description:
+      "src/io/PipeWriter.rs's PosixPipeWriter::on_poll(), on an empty-buffer/non-hangup EPOLLOUT " +
+      "wake, did nothing OHOS-specific -- the epoll registration stayed armed and kept re-firing " +
+      "EPOLLOUT forever with nothing to write, pinning the event-loop thread (and, as a downstream " +
+      "consequence, mimalloc's scavenger thread) at ~100% CPU even while fully idle. A pipe-idle " +
+      "probe (spawn a child, drain 50 written chunks, sample /proc/<pid>/stat over an 11s idle " +
+      "window) measured 16.45s of CPU time in that window before the fix. Two-layer fix, both " +
+      "load-bearing (a prior attempt on the ohos-aarch64 reference branch to delete just this code " +
+      "was reverted after real-device A/B testing showed the busy-spin came back): (1) force- " +
+      "unregister the poll registration on an empty-buffer wake -- this kernel doesn't honor " +
+      "EPOLLONESHOT auto-disarm, so an armed registration re-fires the same wake indefinitely; (2) " +
+      "a same-fd wake-streak counter with a small sleep backoff, since some kernels here keep " +
+      "delivering EPOLLOUT even after CTL_DEL succeeds (unregister alone isn't fully reliable). " +
+      "Verified fixed: 16.45s -> 0.04s over the same window, zero threads with >0.01s CPU delta " +
+      "across 5 samples.",
+    applies: cfg => cfg.abi === "ohos",
+    expectedToBeFixed: () => {
+      // Kernel behavior, not a toolchain/library version — no reliable
+      // signal to check. Re-test by removing the force-unregister +
+      // wake-streak backoff from PosixPipeWriter::on_poll() in
+      // src/io/PipeWriter.rs and running the pipe-idle CPU probe (spawn a
+      // child that writes then goes idle, sample /proc/<pid>/stat
+      // utime+stime over an 11s window) on a newer OHOS SDK/device.
+      return false;
+    },
+    cleanup:
+      "Remove the two `#[cfg(target_env = \"ohos\")]` blocks (force- " +
+      "unregister + wake-streak backoff) from PosixPipeWriter::on_poll() " +
+      "in src/io/PipeWriter.rs, and this entry.",
+  },
+  {
+    id: "ohos-ld-preload-node",
+    issue: "https://gitee.com/openharmony (no tracked issue — app-sandbox uid has no /etc/passwd entry)",
+    description:
+      "A `node`-like child exec'd by bun (Bun.spawn/Bun.$/bun run scripts) gets the app-sandbox " +
+      "uid's real dynamic-musl libc, not the ohos-compat-shim symbols linked directly into bun's " +
+      "own executable (see ohos-compat-shim-embed), so its os.userInfo() throws ENOENT (uids like " +
+      "20020101 have no /etc/passwd record). Fixed by compiling ohos_compat_shim.c a second way " +
+      "(-shared -fPIC, scripts/build/shims.ts's shim_cc_so rule) into a standalone " +
+      "libohos_compat_preload.so next to the executable, and injecting LD_PRELOAD=<path> onto " +
+      "node-like children (argv0 basename match: node/nodejs/nodeNN/npm/npx/corepack/yarn/pnpm/ " +
+      "pnpx) in src/runtime/api/bun/ohos_ld_preload.rs, called from both js_bun_spawn_bindings.rs " +
+      "and shell/subproc.rs. Needed an explicit -fvisibility=default override in the shim_cc_so " +
+      "rule -- globalFlags' -fvisibility=hidden (correct default for every other translation unit " +
+      "in this build) hides getpwuid_r from the .so's dynamic symbol table otherwise, silently " +
+      "defeating the whole interposition (caught via llvm-nm -D showing a local `t` symbol instead " +
+      "of global `T`). Escape hatch: BUN_OHOS_NO_LD_PRELOAD_NODE=1.",
+    applies: cfg => cfg.abi === "ohos",
+    expectedToBeFixed: () => {
+      // Sandbox/kernel behavior (no /etc/passwd for app-sandbox uids), not a
+      // toolchain/library version — no reliable signal to check. Re-test by
+      // removing the LD_PRELOAD injection and running `Bun.spawnSync` (or
+      // `Bun.$`) against the real installed node binary's
+      // `os.userInfo()` on a newer OHOS SDK/device.
+      return false;
+    },
+    cleanup:
+      "Delete src/runtime/api/bun/ohos_ld_preload.rs, its two call sites in " +
+      "js_bun_spawn_bindings.rs and shell/subproc.rs, the shim_cc_so rule " +
+      "and libohos_compat_preload.so build edge in scripts/build/shims.ts, " +
+      "and this entry.",
+  },
 ];
 
 /**

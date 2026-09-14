@@ -97,6 +97,11 @@ pub mod bun_subprocess;
 #[path = "api/bun/js_bun_spawn_bindings.rs"]
 pub mod js_bun_spawn_bindings;
 
+// Gives an exec'd `node` child a working os.userInfo() -- the embedded ohos-compat-shim only covers this process, not a spawned child (see ohos_ld_preload.rs).
+#[cfg(target_env = "ohos")]
+#[path = "api/bun/ohos_ld_preload.rs"]
+pub mod ohos_ld_preload;
+
 // Bun.Terminal — PTY/ConPTY. JsRef lifecycle + BufferedReader/StreamingWriter
 // generic owner wiring (~120 jsc refs).
 #[path = "api/bun/Terminal.rs"]
