@@ -293,7 +293,9 @@ pub mod fs {
                 Some(d) => DirnameStore::instance().append_slice(d)?,
                 None => {
                     let mut buf = bun_paths::PathBuffer::default();
-                    DirnameStore::instance().append_slice(bun_core::getcwd(&mut buf)?.as_bytes())?
+                    // getcwd_honest: the ohos-compat-shim's getcwd hides a deleted cwd by substituting $HOME; this site wants the real error.
+                    DirnameStore::instance()
+                        .append_slice(bun_core::getcwd_honest(&mut buf)?.as_bytes())?
                 }
             };
             // Seed the lower-tier `bun_paths::fs::FileSystem` singleton with the
