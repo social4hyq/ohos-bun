@@ -512,7 +512,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 [ OPENHARMONY ] test/regression/issue/26249.test.ts [ Failure ] # 同 20144：cc() 的 "library 'c' not found" 根因，第二个受影响样本，见 environment_ohos_tcc_libc_not_found 记忆
 [ OPENHARMONY ] test/regression/issue/24742.test.ts [ Failure ] # class C 未深究：bun build --compile 的 Nix-store PT_INTERP 归一化检测——用 patchelf 伪造 /nix/store 解释器路径后应被改写回标准 FHS 路径，实际读回空字符串；纯 Nix 场景，OHOS 部署不涉及 Nix，真实价值低，未继续深挖具体机制
 [ OPENHARMONY ] test/regression/issue/29290.test.ts [ Failure ] # class C 未深究：同 24742，bun build --compile 的 Nix-store 解释器归一化，未继续深挖
-[ OPENHARMONY ] test/js/node/vm/happy-dom-vm-16277.test.ts [ Failure ] # class D: ECONNREFUSED 外网 69.171.235.22:443（沙盒禁出站）
 [ OPENHARMONY ] test/js/valkey/integration/complex-operations.test.ts [ Failure ] # class D: Redis 连不上（valkey/Docker 不可用）
 [ OPENHARMONY ] test/js/third_party/grpc-js/test-server.test.ts [ Failure ] # T49 修复后仍偶发 ECONNRESET（grpc 时序敏感，bun-g2 实测 fail/pass 摇摆）
 [ OPENHARMONY ] test/js/third_party/grpc-js/test-outlier-detection.test.ts [ Failure ] # class D: gRPC outlier 90s timeout（网络/慢）
