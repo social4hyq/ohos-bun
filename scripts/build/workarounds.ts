@@ -763,6 +763,40 @@ export const workarounds: Workaround[] = [
       '`{ ".": WASM_CWD || process.cwd(), "/": WASM_ROOT_DIR || "/" }` form, ' +
       "and this entry.",
   },
+  {
+    id: "ohos-getcwd-honest",
+    issue: "https://gitee.com/openharmony (no tracked issue — ohos-compat-shim design tradeoff, not a kernel bug)",
+    description:
+      "ohos-compat-shim's getcwd() LD_PRELOAD interposer silently substitutes $HOME when the real " +
+      "cwd has been rmdir'd out from under the process (a reasonable default for most callers, " +
+      "keeping them from crashing on a bare ENOENT) -- but a few startup-path call sites need the " +
+      "honest failure instead, so a deleted cwd can be reported as a clean error rather than " +
+      "silently running with the wrong directory. Added bun_core::getcwd_honest() (re-checks via " +
+      "readlink(\"/proc/self/cwd\") + stat(), since this kernel's readlink ENOENTs directly on a " +
+      "deleted cwd rather than Linux's \" (deleted)\" suffix) and bun_sys::process_cwd() (same " +
+      "check, duplicated because bun_sys depends on bun_core) and wired them into the three call " +
+      "sites that need them: resolver/lib.rs's FileSystem::init_with_force (Transpiler::init's " +
+      "very first getcwd, exercised by a compiled standalone executable's startup), " +
+      "runtime/cli/Arguments.rs's absolute_working_dir resolution (install/test/build via the " +
+      "normal CLI), and node_process.rs's process.cwd() JS binding. Also added the same re-check " +
+      "to the existing getcwd_or_exe_dir() fallback, which was tolerating a deleted cwd via the " +
+      "shim's fake-success path instead of genuinely falling back to the executable's directory.",
+    applies: cfg => cfg.abi === "ohos",
+    expectedToBeFixed: () => {
+      // Depends on ohos-compat-shim's own getcwd() interposer design, not a
+      // kernel/toolchain version -- no reliable signal to check. Re-test by
+      // reverting all three call sites to plain bun_core::getcwd() /
+      // bun_sys::getcwd() and running
+      // test/bundler/bun-build-compile.test.ts -t "exits cleanly instead of
+      // crashing" on a newer ohos-compat-shim build.
+      return false;
+    },
+    cleanup:
+      "Remove getcwd_honest()/cwd_is_deleted_ohos() from src/bun_core/util.rs, " +
+      "process_cwd()/cwd_is_deleted() from src/sys/lib.rs, revert the three " +
+      "call sites (resolver/lib.rs, runtime/cli/Arguments.rs, " +
+      "runtime/node/node_process.rs) back to plain getcwd(), and this entry.",
+  },
 ];
 
 /**
