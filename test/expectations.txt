@@ -410,7 +410,7 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # All 4 sub-tests time out at 5000ms when run standalone. Same root cause as
 # project_execve_pthread_create_sigsegv memory (mitigation attempts reverted,
 # PR #497/#499) — not new, not caused by this round's changes.
-[ OPENHARMONY ] test/js/node/process/process-execve.test.ts [ Failure ] # GC-suspend-handshake races execve's kernel-side thread teardown; see project_execve_pthread_create_sigsegv
+[ OPENHARMONY ] test/js/node/process/process-execve.test.ts [ Flaky ] # 2026-09-14 复核：本 session 的 spawn 类修复（waiter-thread 默认值/posix_spawn_bun OHOS 分支）之后，11/12 子测试已稳定通过（此前记录是"全部 4 个子测试 5000ms 必超时"，已过时）；唯一仍不稳定的 "does not make pthread_create fail on other threads while the exec runs" 压力测试隔离重跑 6 次 2 pass/4 fail(~33%)，从"确定性超时"变成"间歇性 race"，仍是 GC-suspend-handshake 撞 execve 内核侧线程回收这同一个根因（见 project_execve_pthread_create_sigsegv），未解决但已显著改善，未继续深挖
 
 # --- js/third_party: packages with prebuilt native bindings, no OHOS target ---
 # 2026-08-29 re-check: upstream/community landscape moved since this block was
@@ -502,8 +502,7 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 [ OPENHARMONY ] test/js/node/tty.test.ts [ Failure ] # class B: TTY 90s timeout（setRawMode/PTY seccomp）
 [ OPENHARMONY ] test/js/node/test/parallel/test-child-process-exec-timeout-expire.js [ Failure ] # class B: exec 信号差异（OHOS 返 null signal + 143，Linux 不同）
 [ OPENHARMONY ] test/js/node/test/sequential/test-child-process-execsync.js [ Failure ] # class B: exec 时序/信号差异（OHOS）
-[ OPENHARMONY ] test/js/node/test/parallel/test-module-loading-error.js [ Failure ] # 结构性：OHOS 内核签名校验在 ELF 格式解析之前拦截 dlopen()，对损坏/伪造的 .node fixture 一律报 Permission denied，而不是 Linux 期望的 "file too short"/"Exec format error"；无论文件是否真的是 ELF 都会被先拦，不可能在用户态区分（2026-09-13 复测确认：ohos_sign 自身对该 7 字节垃圾 fixture 签名尝试静默失败，dlopen() 仍走原始未签名文件，返回的 Permission denied 来自内核本身）
-[ OPENHARMONY ] test/regression/issue/15753.test.ts [ Failure ] # 结构性：同 test-module-loading-error 一类——期望 bun 自身的 glibc-DT_NEEDED 探测先报"linked against glibc"，但 OHOS dlopen 的签名拦截先一步报 Permission denied，掩盖了本该看到的诊断信息
+[ OPENHARMONY ] test/regression/issue/15753.test.ts [ Failure ] # 结构性：期望 bun 自身的 glibc-DT_NEEDED 探测先报"linked against glibc"，但 OHOS dlopen 的签名拦截先一步报 Permission denied，掩盖了本该看到的诊断信息（2026-09-14 复核：test-module-loading-error.js 曾被归为同一类已从本文件移除——那个测试碰巧因 process.platform==="openharmony" 不在其平台消息表里，自身逻辑退化成"任意错误消息都接受"而意外转绿，并不是同一个根因被修复；这里仍是真实的 Permission denied 掩盖诊断信息，未解决）
 [ OPENHARMONY ] test/regression/issue/20144/20144.test.ts [ Failure ] # bun:ffi cc()（TinyCC JIT 编译）在此设备上恒失败："library 'c' not found"——纯 musl 系统只有合一的 ld-musl-aarch64.so.1，没有按约定命名的 libc.so 文件，加搜索路径也无用；见 environment_ohos_tcc_libc_not_found 记忆，未修复（需符号链接或改 TCC 链接器逻辑，留待专项）
 [ OPENHARMONY ] test/regression/issue/26249.test.ts [ Failure ] # 同 20144：cc() 的 "library 'c' not found" 根因，第二个受影响样本，见 environment_ohos_tcc_libc_not_found 记忆
 [ OPENHARMONY ] test/regression/issue/24742.test.ts [ Failure ] # class C 未深究：bun build --compile 的 Nix-store PT_INTERP 归一化检测——用 patchelf 伪造 /nix/store 解释器路径后应被改写回标准 FHS 路径，实际读回空字符串；纯 Nix 场景，OHOS 部署不涉及 Nix，真实价值低，未继续深挖具体机制
