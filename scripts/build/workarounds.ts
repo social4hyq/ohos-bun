@@ -739,6 +739,30 @@ export const workarounds: Workaround[] = [
       "narrowing on byte_slice()/the VecExt import/Capture::buf's " +
       "allow(dead_code)), and this entry.",
   },
+  {
+    id: "ohos-wasi-root-preopen-eacces",
+    issue: "https://gitee.com/openharmony (no tracked issue — app sandbox denies open(\"/\"))",
+    description:
+      "`bun <file>.wasm` (src/js/wasi-runner.js) unconditionally preopened \"/\" for the WASI " +
+      "instance; the app sandbox denies open(\"/\") with EACCES, so the WASI constructor itself " +
+      "throws before the wasm module ever runs. Fixed by probing fs.openSync(\"/\", \"r\") first " +
+      "and only adding the \"/\" preopen if that actually succeeds (an EISDIR from the probe still " +
+      "counts as openable and keeps it) -- an explicit WASM_ROOT_DIR env var is honored verbatim, " +
+      "skipping the probe. wasm programs that don't need root filesystem access are unaffected and " +
+      "still get their \".\" (cwd) preopen.",
+    applies: cfg => cfg.abi === "ohos",
+    expectedToBeFixed: () => {
+      // Sandbox policy, not a toolchain/library version — no reliable
+      // signal to check. Re-test by removing the probe (go back to an
+      // unconditional "/" preopen) in src/js/wasi-runner.js and running
+      // test/js/bun/wasm/wasi.test.js on a newer OHOS SDK/device.
+      return false;
+    },
+    cleanup:
+      "Revert wasi-runner.js's preopens construction to the unconditional " +
+      '`{ ".": WASM_CWD || process.cwd(), "/": WASM_ROOT_DIR || "/" }` form, ' +
+      "and this entry.",
+  },
 ];
 
 /**
