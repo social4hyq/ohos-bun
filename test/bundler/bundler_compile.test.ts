@@ -1922,4 +1922,4 @@ test("a standalone executable does not run a synchronous full GC after loading i
   expect(stderr).toMatch(/\[GC<(0x)?[0-9a-fA-F]+>: starting /); // %p: "0x7f…" on POSIX, "00007FF6…" on Windows
   expect(stderr).not.toContain("FullCollection");
   expect(exitCode).toBe(0);
-});
+}, 30_000); // OHOS: compile+run for this case takes ~2.5-10s depending on load, well past the 5s default -- not a hang, see environment_ohos_slow_compile_default_timeout

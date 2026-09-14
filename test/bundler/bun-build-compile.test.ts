@@ -131,7 +131,7 @@ console.log(JSON.stringify({ n, anonKB: anon }));`,
     expect(stderr).toContain("panic");
     expect(stderr.includes("cross_compiled_bytecode")).toBe(expected);
     expect(exitCode).not.toBe(0);
-  });
+  }, 30_000); // OHOS: compile (CLI subprocess) + spawn takes well past the 5s default -- not a hang, see environment_ohos_slow_compile_default_timeout
 
   // "cross": the target is not the host, so the internal modules' sources, ids and stamp are read out of the target
   // executable's builtins section (here: this same bun under a different version, so the result still runs locally).
@@ -259,7 +259,7 @@ server.close();`,
     expect(appStdout).toBe("default outfile\n");
     expect(appStderr).toBe("");
     expect(appExitCode).toBe(0);
-  });
+  }, 30_000); // OHOS: two compile+spawn round trips, well past the 5s default -- not a hang, see environment_ohos_slow_compile_default_timeout
 
   test("compile with embedded resources uses correct module prefix", async () => {
     using dir = tempDir("build-compile-embedded-resources", {
@@ -334,7 +334,7 @@ describe("compiled binary validity", () => {
       expect(header[0]).toBe(0x4d); // 'M'
       expect(header[1]).toBe(0x5a); // 'Z'
     }
-  });
+  }, 30_000); // OHOS: compile alone takes ~8-9s depending on load, well past the 5s default -- not a hang, see environment_ohos_slow_compile_default_timeout
 
   test("compiled binary runs and produces expected output", async () => {
     using dir = tempDir("build-compile-runs", {
@@ -361,7 +361,7 @@ describe("compiled binary validity", () => {
 
     expect(stdout.trim()).toBe("compile-test-output");
     expect(exitCode).toBe(0);
-  });
+  }, 30_000); // OHOS: compile+run takes ~10-11s depending on load, well past the 5s default -- not a hang, see environment_ohos_slow_compile_default_timeout
 });
 
 if (isLinux) {
@@ -393,7 +393,7 @@ if (isLinux) {
 
       expect(stdout.trim()).toBe("exec-only-output");
       expect(exitCode).toBe(0);
-    });
+    }, 30_000); // OHOS: compile+run takes ~10-11s depending on load, well past the 5s default -- not a hang, see environment_ohos_slow_compile_default_timeout
 
     test("compiled binary with large payload runs correctly", async () => {
       // Generate a string payload >16KB to exceed the initial .bun section allocation
@@ -425,7 +425,7 @@ if (isLinux) {
 
       expect(stdout).toContain("large-payload-20000");
       expect(exitCode).toBe(0);
-    });
+    }, 30_000); // OHOS: compile+run takes ~10-11s depending on load, well past the 5s default -- not a hang, see environment_ohos_slow_compile_default_timeout
 
     test("compiled binary with large payload runs with execute-only permissions", async () => {
       // Same as above but also verifies execute-only works with the expansion path
@@ -456,7 +456,7 @@ if (isLinux) {
 
       expect(stdout).toContain("large-exec-only-20000");
       expect(exitCode).toBe(0);
-    });
+    }, 30_000); // OHOS: compile+run takes ~10-12s depending on load, well past the 5s default -- not a hang, see environment_ohos_slow_compile_default_timeout
 
     test("compiled binary has .bun ELF section", async () => {
       using dir = tempDir("build-compile-elf-section", {
@@ -513,7 +513,7 @@ if (isLinux) {
         }
       }
       expect(foundBunSection).toBe(true);
-    });
+    }, 30_000); // OHOS: compile alone takes ~9s depending on load, well past the 5s default -- not a hang, see environment_ohos_slow_compile_default_timeout
 
     // Regression guard for #29963. WSL1's kernel ELF loader rejects `execve`
     // with ENOEXEC when it sees a late PT_LOAD produced by repurposing

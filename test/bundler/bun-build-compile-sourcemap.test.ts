@@ -57,9 +57,13 @@ main();`,
     ["inline" as const, "inline"],
     [true as const, "true"],
     ["external" as const, "external"],
-  ])("compile with sourcemap: %s should work", async (sourcemapValue, testName) => {
-    await testSourcemapOption(sourcemapValue, testName);
-  });
+  ])(
+    "compile with sourcemap: %s should work",
+    async (sourcemapValue, testName) => {
+      await testSourcemapOption(sourcemapValue, testName);
+    },
+    30_000, // OHOS: compile+run takes ~8-11s depending on load, well past the 5s default -- not a hang, see environment_ohos_slow_compile_default_timeout
+  );
 
   test("compile without sourcemap should show bundled paths", async () => {
     using dir = tempDir("build-compile-no-sourcemap", helperFiles);
@@ -92,7 +96,7 @@ main();`,
 
     // Verify it failed (the error was thrown)
     expect(exitCode).not.toBe(0);
-  });
+  }, 30_000); // OHOS: compile+run takes ~8-11s depending on load, well past the 5s default -- not a hang, see environment_ohos_slow_compile_default_timeout
 
   test("compile with sourcemap: external writes .map file to disk", async () => {
     using dir = tempDir("build-compile-sourcemap-external-file", helperFiles);
@@ -124,7 +128,7 @@ main();`,
     expect(mapContent.sources).toBeArray();
     expect(mapContent.sources.length).toBeGreaterThan(0);
     expect(mapContent.mappings).toBeString();
-  });
+  }, 30_000); // OHOS: compile alone takes ~8s depending on load, well past the 5s default -- not a hang, see environment_ohos_slow_compile_default_timeout
 
   test("compile without sourcemap does not write .map file", async () => {
     using dir = tempDir("build-compile-no-sourcemap-file", {
@@ -146,7 +150,7 @@ main();`,
     // No sourcemap outputs should be in the result
     const sourcemapOutputs = result.outputs.filter((o: any) => o.kind === "sourcemap");
     expect(sourcemapOutputs.length).toBe(0);
-  });
+  }, 30_000); // OHOS: compile alone takes ~8s depending on load, well past the 5s default -- not a hang, see environment_ohos_slow_compile_default_timeout
 
   test("compile with splitting and external sourcemap writes multiple .map files", async () => {
     using dir = tempDir("build-compile-sourcemap-splitting", {
@@ -208,7 +212,7 @@ export function greet() {
 
     expect(stdout).toContain("hello from lazy module");
     expect(exitCode).toBe(0);
-  });
+  }, 30_000); // OHOS: compile+run takes ~8-11s depending on load, well past the 5s default -- not a hang, see environment_ohos_slow_compile_default_timeout
 
   test("compile with --outfile subdir/myapp writes .map next to executable", async () => {
     using dir = tempDir("build-compile-sourcemap-outfile-subdir", helperFiles);
@@ -253,7 +257,7 @@ export function greet() {
 
     // Verify no .map was written into the doubled path subdir/subdir/
     expect(await Bun.file(join(String(dir), "subdir", "subdir", "myapp.map")).exists()).toBe(false);
-  });
+  }, 30_000); // OHOS: compile alone (CLI subprocess) takes ~8s depending on load, well past the 5s default -- not a hang, see environment_ohos_slow_compile_default_timeout
 
   test("compile with multiple source files", async () => {
     using dir = tempDir("build-compile-sourcemap-multiple-files", {
@@ -304,5 +308,5 @@ main();`,
 
     // Verify it failed (the error was thrown)
     expect(exitCode).not.toBe(0);
-  });
+  }, 30_000); // OHOS: compile+run takes ~8-11s depending on load, well past the 5s default -- not a hang, see environment_ohos_slow_compile_default_timeout
 });

@@ -122,5 +122,5 @@ describe("Bun.build compile with wasm", () => {
     expect(stdout).toContain("WASM result: 5");
     expect(stdout).toContain("WASM module loaded successfully");
     expect(stderr).toBe("");
-  });
+  }, 30_000); // OHOS: compile+run takes ~8-11s depending on load, well past the 5s default -- not a hang, see environment_ohos_slow_compile_default_timeout
 });
