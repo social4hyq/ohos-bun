@@ -374,19 +374,25 @@ impl FilePoll {
     // put back via `Store::put`; Drop would be wrong here.
     pub fn deinit(&mut self) {
         let ctx = get_vm_ctx(self.allocator_type);
-        self.deinit_possibly_defer(ctx, false);
+        self.deinit_possibly_defer(ctx, false, false);
     }
 
     pub(crate) fn deinit_force_unregister(&mut self) {
         let ctx = get_vm_ctx(self.allocator_type);
-        self.deinit_possibly_defer(ctx, true);
+        self.deinit_possibly_defer(ctx, true, false);
     }
 
-    fn deinit_possibly_defer(&mut self, vm: EventLoopCtx, force_unregister: bool) {
+    /// Like [`Self::deinit_force_unregister`], but skips the explicit CTL_DEL — only safe when the caller `close(fd)`s immediately after (linux/android only; see `unregister_with_fd_impl`).
+    pub(crate) fn deinit_force_unregister_skip_ctl_del(&mut self) {
+        let ctx = get_vm_ctx(self.allocator_type);
+        self.deinit_possibly_defer(ctx, true, true);
+    }
+
+    fn deinit_possibly_defer(&mut self, vm: EventLoopCtx, force_unregister: bool, skip_ctl_del: bool) {
         // `loop_mut()` is the crate-private nonnull-asref accessor (single
         // deref in `EventLoopCtx`); the `&mut Loop` is consumed by `unregister`
         // and dropped before any `&mut Store` is materialised.
-        let _ = self.unregister(vm.loop_mut(), force_unregister);
+        let _ = self.unregister_with_fd(vm.loop_mut(), self.fd, force_unregister, skip_ctl_del);
 
         self.owner.clear();
         let was_ever_registered = self.flags.contains(Flags::WasEverRegistered);
@@ -406,7 +412,7 @@ impl FilePoll {
     }
 
     pub fn deinit_with_vm(&mut self, vm: EventLoopCtx) {
-        self.deinit_possibly_defer(vm, false);
+        self.deinit_possibly_defer(vm, false, false);
     }
 
     pub fn is_registered(&self) -> bool {
@@ -857,7 +863,7 @@ impl FilePoll {
     }
 
     pub fn unregister(&mut self, loop_: &mut Loop, force_unregister: bool) -> sys::Result<()> {
-        self.unregister_with_fd(loop_, self.fd, force_unregister)
+        self.unregister_with_fd(loop_, self.fd, force_unregister, false)
     }
 
     pub(crate) fn unregister_with_fd(
@@ -865,6 +871,7 @@ impl FilePoll {
         loop_: &mut Loop,
         fd: Fd,
         force_unregister: bool,
+        skip_ctl_del: bool,
     ) -> sys::Result<()> {
         // Note: compute the syscall result first, then unconditionally
         // deactivate. Avoids a raw-pointer scopeguard.
@@ -874,7 +881,7 @@ impl FilePoll {
             target_os = "macos",
             target_os = "freebsd"
         ))]
-        let result = self.unregister_with_fd_impl(loop_, fd, force_unregister);
+        let result = self.unregister_with_fd_impl(loop_, fd, force_unregister, skip_ctl_del);
         #[cfg(not(any(
             target_os = "linux",
             target_os = "android",
@@ -882,7 +889,7 @@ impl FilePoll {
             target_os = "freebsd"
         )))]
         let result: sys::Result<()> = {
-            let _ = (fd, force_unregister);
+            let _ = (fd, force_unregister, skip_ctl_del);
             sys::Result::Ok(())
         };
         self.deactivate(loop_);
@@ -900,8 +907,12 @@ impl FilePoll {
         loop_: &mut Loop,
         fd: Fd,
         force_unregister: bool,
+        skip_ctl_del: bool,
     ) -> sys::Result<()> {
         debug_assert!(fd.native() >= 0 && fd != INVALID_FD);
+        // linux/android only below; kqueue has no equivalent dup-sharing bug to work around.
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        let _ = skip_ctl_del;
 
         if !(self.flags.contains(Flags::PollReadable)
             || self.flags.contains(Flags::PollWritable)
@@ -961,17 +972,20 @@ impl FilePoll {
 
         #[cfg(any(target_os = "linux", target_os = "android"))]
         {
-            use bun_sys::linux::{self, EPOLL};
-            // CTL_DEL keys on fd alone, so both directions are removed together.
-            // SAFETY: FFI syscall; null event is valid for CTL_DEL on Linux ≥2.6.9.
-            let ctl = unsafe {
-                linux::epoll_ctl(watcher_fd, EPOLL::CTL_DEL, fd.native(), ptr::null_mut())
-            };
+            // `skip_ctl_del`: the caller is about to close(fd), which removes the registration implicitly; on OHOS an explicit CTL_DEL on a dup-shared open file description permanently orphans the sibling's epoll entry, so skip it while the fd is closing.
+            if !skip_ctl_del {
+                use bun_sys::linux::{self, EPOLL};
+                // CTL_DEL keys on fd alone, so both directions are removed together.
+                // SAFETY: FFI syscall; null event is valid for CTL_DEL on Linux ≥2.6.9.
+                let ctl = unsafe {
+                    linux::epoll_ctl(watcher_fd, EPOLL::CTL_DEL, fd.native(), ptr::null_mut())
+                };
 
-            match sys::get_errno(ctl) {
-                sys::E::SUCCESS => {}
-                e if deregistration_already_gone(e) => {}
-                e => return sys::Result::Err(sys::Error::from_code(e, sys::Tag::epoll_ctl)),
+                match sys::get_errno(ctl) {
+                    sys::E::SUCCESS => {}
+                    e if deregistration_already_gone(e) => {}
+                    e => return sys::Result::Err(sys::Error::from_code(e, sys::Tag::epoll_ctl)),
+                }
             }
         }
         #[cfg(target_os = "macos")]
