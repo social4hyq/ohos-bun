@@ -1,4 +1,4 @@
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(all(any(target_os = "linux", target_os = "android"), not(target_env = "ohos")))]
 use bun_collections::VecExt;
 use bun_jsc::{self as jsc, JSGlobalObject, JSValue, JsResult};
 #[cfg(windows)]
@@ -36,7 +36,12 @@ pub struct Capture {
     // BACKREF: raw pointer to a capture buffer owned by the shell interpreter.
     // The shell keeps the buffer alive for the lifetime
     // of the spawned process; this struct never frees it.
+    // OHOS: only read by byte_slice(), which is excluded there (memfd
+    // fstat EACCES, see the can_use_memfd/use_memfd cfg gates below) --
+    // the field itself stays cross-platform-uniform rather than adding a
+    // third cfg variant of Capture.
     #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg_attr(target_env = "ohos", allow(dead_code))]
     pub(crate) buf: *mut Vec<u8>,
 }
 
@@ -101,7 +106,7 @@ impl ToSpawnOptsError {
 }
 
 impl Stdio {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(all(any(target_os = "linux", target_os = "android"), not(target_env = "ohos")))]
     pub(crate) fn byte_slice(&self) -> &[u8] {
         match self {
             // SAFETY: `buf` is a live backref owned by the caller (shell); the
@@ -114,12 +119,16 @@ impl Stdio {
     }
 
     pub(crate) fn can_use_memfd(&self) -> bool {
-        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        // OHOS: a memfd-backed fd reports EACCES from fstat(2) in the child that
+        // inherits it (see environment_ohos_fstat_eacces_on_memfd) -- the same
+        // kernel bug as the Buffer-stdio fast path in spawn_process.rs, hit here
+        // on the stdin side instead. Fall through to the non-memfd path below.
+        #[cfg(not(all(any(target_os = "linux", target_os = "android"), not(target_env = "ohos"))))]
         {
             return false;
         }
 
-        #[cfg(any(target_os = "linux", target_os = "android"))]
+        #[cfg(all(any(target_os = "linux", target_os = "android"), not(target_env = "ohos")))]
         match self {
             Self::Blob(blob) => !blob.needs_to_read_file(),
             Self::Memfd(_) => true,
@@ -130,13 +139,13 @@ impl Stdio {
     }
 
     pub(crate) fn use_memfd(&mut self, index: u32) -> bool {
-        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        #[cfg(not(all(any(target_os = "linux", target_os = "android"), not(target_env = "ohos"))))]
         {
             let _ = index;
             return false;
         }
 
-        #[cfg(any(target_os = "linux", target_os = "android"))]
+        #[cfg(all(any(target_os = "linux", target_os = "android"), not(target_env = "ohos")))]
         {
             use crate::api::bun_process::spawn_sys;
             if !spawn_sys::can_use_memfd() {
