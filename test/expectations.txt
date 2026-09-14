@@ -389,6 +389,22 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 [ OPENHARMONY ] test/js/node/test/parallel/test-dgram-socket-buffer-size.js [ Failure ] # common.isLinux gates the doubled-buffer-size expectation
 [ OPENHARMONY ] test/js/node/test/parallel/test-dgram-bind-fd.js [ Failure ] # same common.isLinux buffer-size gate as test-dgram-socket-buffer-size.js
 [ OPENHARMONY ] test/js/node/test/parallel/test-process-constants-noatime.js [ Failure ] # common.isLinux gates whether O_NOATIME should be present
+[ OPENHARMONY ] test/js/bun/util/mmap.test.js [ Failure ] # `process.platform === "linux" ? 4096 : 1024` picks the macOS PATH_MAX=1024 branch; the resulting 1023-char single path *component* is still under Bun's own 4096-byte pre-check (correct for OHOS's real Linux-kernel PATH_MAX) so the raw open() syscall runs and the kernel rejects it with ENAMETOOLONG (NAME_MAX=255) instead of Bun's friendly pre-check firing — same root cause, different failure shape than the other common.isLinux/platform-allowlist entries above
+
+# --- js/node/cluster: process.send()/process.disconnect() IPC race, pre-existing ---
+# Every worker forked calls process.send("hello") immediately followed by
+# server.close()+process.disconnect() in the same tick; disconnect() appears
+# to race the queued IPC write and can drop the message before it's flushed,
+# so the primary's `workers` counter under-counts (varies run to run: 8-13
+# of N workers actually get counted, though all N do cluster.on("exit")
+# cleanly — the workers aren't lost, just their "hello" message is).
+# Reproduces byte-for-byte on the installed production bun (1.4.2+744846f84,
+# the 106-patch series) with the same "N !== numCPUs" shape — confirmed via
+# `/storage/Users/currentUser/.harmonybrew/bin/bun test-docs-http-server.ts`
+# directly, 2026-09-14. Pre-existing on both old and new builds, not
+# OHOS-specific and not caused by any change in this branch — out of scope
+# for this porting effort (same class as test-child-process-cwd.js above).
+[ OPENHARMONY ] test/js/node/cluster/test-docs-http-server.ts [ Failure ] # process.send()/disconnect() IPC race drops "hello" for some workers; reproduces on old production bun too, not OHOS-specific
 
 # --- process.execve: known unresolved GC-suspend-handshake-vs-execve kernel race ---
 # All 4 sub-tests time out at 5000ms when run standalone. Same root cause as
