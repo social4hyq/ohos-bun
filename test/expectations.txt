@@ -256,13 +256,13 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # --- bunx TLS download failures ---
 # OHOS system CA store not in standard path → UNKNOWN_CERTIFICATE_VERIFICATION_ERROR
 # when bunx tries to install packages from npm live (eslint, @angular/cli).
-[ OPENHARMONY ] test/cli/install/bunx.test.ts [ Flaky ] # TLS cert errors on npm downloads from OHOS
+[ OPENHARMONY ] test/cli/install/bunx.test.ts [ Flaky ] # 2026-09-15 复核：现在整个文件在 beforeAll 就先炸——硬编码 `isWindows ? tmpdir() : "/tmp"` 扫描 `/tmp` 清理陈旧 bunx 缓存，OHOS 的 `/tmp` 是受限/只读目录，`readdirSync("/tmp")` 直接 EACCES，先于原来记录的 TLS cert 问题拦下整个文件；结构性同 environment_ohos_bun_node_dir_tmp_hardcoded 一类，未改测试（未验证是否该改用 os.tmpdir()/TMPDIR）
 
 
 # --- bun-install.test.ts git+https TLS flake ---
 # 1/189 tests clones git+https://github.com/mishoo/UglifyJS.git and hits
 # OHOS TLS unexpected-EOF. Rest of file passes (186 pass / 2 todo).
-[ OPENHARMONY ] test/cli/install/bun-install.test.ts [ Flaky ] # git+https clone hits OHOS TLS unexpected EOF (1/189 tests)
+[ OPENHARMONY ] test/cli/install/bun-install.test.ts [ Flaky ] # 2026-09-15 复核，13/241（此前记录 1/189，上游文件已增长）：全部是真实 GitHub 网络拉取（github.com/user/repo 各种 URL 形式 + git+https clone），沙盒出站网络不可靠，同一类结构性问题，非新增
 
 # --- bun-create.test.ts github template TLS flake ---
 # 2/13 tests fetch github templates over HTTPS and hit UNKNOWN_CERTIFICATE_VERIFICATION_ERROR
@@ -299,7 +299,7 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # --- js/third_party: HTTP2 / gRPC / pnpm / next-auth ---
 # All failures are networking-related: HTTP2 test server returns 403 on OHOS;
 # gRPC DNS resolution; pnpm directory traversal; next-auth server action timeout.
-[ OPENHARMONY ] test/js/third_party/next-auth/next-auth.test.ts [ Flaky ] # server action timeout + unsupported OS (1 test)
+[ OPENHARMONY ] test/js/third_party/next-auth/next-auth.test.ts [ Flaky ] # 2026-09-15 复核：next-swc 无 openharmony/arm64 原生绑定（"Trying to load next-swc for unsupported platforms"）+ Watchpack 向上扫描目录树找 git 根时撞 EL2 沙盒 EACCES（/、/data、/data/storage 逐级拒绝）；结构性缺口，非超时问题
 
 # ─────────────────────────────────────────────────────────────
 # Docker-dependent categories (2026-07-08)
