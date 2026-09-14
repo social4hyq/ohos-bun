@@ -201,14 +201,19 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # disproven 2026-07-26. Re-verified 2026-07-30 against r42: 76 pass / 0 fail.
 # Entry removed.
 #
-# bun-install-registry: 1/?? tests fails ("missing package on reinstall, some
-# with binaries") — output format differs by 2 lines from expected, real root
-# cause still uninvestigated. Keeping quarantine.
+# bun-install-registry: 2026-09-14 复核，247 pass/5 todo/2 fail/254 total——此前
+# 记录的"missing package on reinstall"失败已不再复现（可能已被本 session 的某个
+# fs/spawn 修复顺带解决）。当前唯二的失败是"bundledDependencies > git
+# dependencies"（bun.lock/bun.lockb 两种锁文件格式各一个），依赖真实 GitHub 网络
+# 拉取（一个走 https 的 dylan-conway/bundled-install-test，一个显式走
+# git+ssh://git@github.com/...——沙盒既无出站网络也无配置 SSH key），class D 网络
+# 依赖，非 OHOS 平台缺陷。Keeping quarantine.
 [ OPENHARMONY ] test/cli/install/bun-install-registry.test.ts [ Skip ] # "missing package on reinstall, some with binaries" output mismatch (class C, uninvestigated)
-# bun-upgrade: 2/8 tests fail. One: "recreates the staging directory" —
-# Expected false, Received true. Two: "verifies the downloaded release archive" —
-# OHOS has no bun release binary, so upgrade reports "not for this platform".
-# Both class D. Keeping quarantine.
+# bun-upgrade: 2026-09-14 复核，1-2/8 不稳定（两个候选：release-archive digest
+# 校验超时、"完成一次本地服务的 release 下载"报 "Failed to verify Bun (code:
+# ENOENT)"），此前记录的"recreates the staging directory"用例名已不匹配当前测试
+# 文件，可能已改名或该测试已修好——但核心原因不变：OHOS 没有真实发布的二进制可供
+# upgrade 下载校验。Class D，维持隔离。
 [ OPENHARMONY ] test/cli/install/bun-upgrade.test.ts [ Skip ] # OHOS has no bun release binary for upgrade download + staging dir recreation differs
 # bun-workspaces: 1/82 fails — "a copyfile install over a workspace's
 # hardlinked files does not empty the cache" asserts nlink > 1 after a
