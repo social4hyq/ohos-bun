@@ -511,3 +511,16 @@ OHOS 专属的既有 bug，已加 `skipIf(openharmony)`（不是本会话职责�
   可运行）；只在 ReactSSR 循环中于 `process.platform === "openharmony"` 使用
   `itBundledBase.skip`。目标复测为 7 skip / 0 fail。注释记录 production A/B
   证据与 `react-dom/server` 缺失根因。
+
+- **Phase D 真机必需项**：
+  - pipe-idle CPU 探针按 dev / production / dev / production / dev 交替跑完，
+    每次 50 写入、11 秒采样窗口。dev 父/子 CPU 秒为 0.06/0.10、0.05/0.09、
+    0.05/0.08；production 为 0.06/0.10、0.06/0.09，远低于修复前 16.45 秒
+    busy-spin 信号。日志：`logs/round-12-pipe-cpu-ab-20260916.log`。
+  - `Bun.spawnSync(["node", "-e", "require('os').userInfo()"] )` 的 dev 与
+    production A/B 均以 exit 0 返回 `hyq`；新分支无旧版裸 node 子进程
+    `os.userInfo()` 的 passwd/ENOENT 回归。日志：
+    `logs/round-12-node-userinfo-{dev,production}-20260916.log`。
+  - `brew test social4hyq/core/bun` 通过。该 formula 测试显式构造 unsigned
+    `.node` fixture，并在 hoisted 与 `--linker isolated` 两种布局中断言产物含
+    `.codesign`，因此现役生产 bottle 的 native addon 自签名回归覆盖仍有效。
