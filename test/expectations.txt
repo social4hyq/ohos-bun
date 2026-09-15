@@ -208,7 +208,7 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # 拉取（一个走 https 的 dylan-conway/bundled-install-test，一个显式走
 # git+ssh://git@github.com/...——沙盒既无出站网络也无配置 SSH key），class D 网络
 # 依赖，非 OHOS 平台缺陷。Keeping quarantine.
-[ OPENHARMONY ] test/cli/install/bun-install-registry.test.ts [ Skip ] # "missing package on reinstall, some with binaries" output mismatch (class C, uninvestigated)
+[ OPENHARMONY ] test/cli/install/bun-install-registry.test.ts [ Skip ] # class D: "bundledDependencies > git dependencies" (bun.lock + bun.lockb) needs real GitHub network (https clone + git+ssh with no key) — see refresh note above; old "missing package on reinstall" reason no longer reproduces
 # bun-upgrade: 2026-09-14 复核，1-2/8 不稳定（两个候选：release-archive digest
 # 校验超时、"完成一次本地服务的 release 下载"报 "Failed to verify Bun (code:
 # ENOENT)"），此前记录的"recreates the staging directory"用例名已不匹配当前测试
@@ -317,22 +317,17 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # expects @typescript/native-preview-openharmony-arm64 which doesn't exist.
 [ OPENHARMONY ] test/integration/bun-types/bun-types.test.ts [ Flaky ] # tsgo native binary unavailable for openharmony-arm64
 
-# --- regression: real-machine 2026-07-27 reconciliation ---
-# This whole block used to carry vague "[ Flaky ] # N tests" labels dated
-# from a --parallel-based test methodology. Real CI (ohos-full-test.yml)
-# deliberately does not use --parallel (single serial job, matches
-# Buildkite's own invocation style — see that workflow's header comment).
-# Isolated reruns (--retries=0, single file, no --parallel) of every entry
-# below other than the four kept underneath came back 100% clean: 17405,
-# 17294, 17244, prepare-stack-trace-crash, 18161,
-# test-process-stdout-async-iterator, 03844, 24742's sibling 22353 and
-# 23022-stack-trace-iterator, 14976, and ctrl-c.test.ts (the last one prints
-# a `shell-init: error retrieving current directory: getcwd: ...` line from
-# the still-unfixed-in-the-installed-binary T01 gap, but that's cosmetic
-# stderr noise and doesn't fail the test). All removed as stale.
-#
-# Four entries are kept below because they fail 100% deterministically
-# (not flaky) for real, still-uninvestigated reasons — see OHOS_TEST_TODO.md.
+# --- regression: real-machine 2026-07-27 reconciliation (pre-dates ohos-minimal) ---
+# Historical note carried over from the old ohos-aarch64 branch's expectations
+# file: a batch of vague "[ Flaky ] # N tests" labels from a --parallel-based
+# methodology were reconciled against serial reruns and mostly removed as
+# stale. It referenced "OHOS_TEST_TODO.md"/"OHOS_TEST_STATUS.md" for the four
+# entries that were kept, but neither doc exists on this from-scratch
+# ohos-minimal branch (never carried over) and the note didn't name the four
+# by path, so there's nothing left to reconcile against. Not acted on further:
+# every regression/* entry actually present below this point has since been
+# independently re-investigated and re-documented with a fresh, dated root
+# cause in this session (2026-09-14/15) regardless of this old note.
 
 # --- cli/hot + cli/inspect: OHOS unix socket / sourcemap timing ---
 # Patched in-place: inspect unix-domain-socket tests use tmpdirSync() on OHOS
