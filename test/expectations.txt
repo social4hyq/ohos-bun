@@ -446,6 +446,18 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # for this porting effort (same class as test-child-process-cwd.js above).
 [ OPENHARMONY ] test/js/node/cluster/test-docs-http-server.ts [ Failure ] # process.send()/disconnect() IPC race drops "hello" for some workers; reproduces on old production bun too, not OHOS-specific
 
+# ctrl-c.test.ts: 6/8 "kills on SIGINT in: 'bun <mode>'" tests spawn a real
+# installed vite dev server and expect it to be killed by the raw signal
+# (exitCode: null, signalCode: "SIGINT"); instead vite (or bun's --bun
+# node-compat layer running it) catches SIGINT and exits normally
+# (exitCode: 1, signalCode: null). Reproduces byte-for-byte on the installed
+# production bun (1.4.2+744846f84, the 106-patch series): same 2 pass/6 fail
+# shape, confirmed via `CI=1 <installed bun> test ctrl-c.test.ts`, 2026-09-15.
+# Pre-existing on both old and new builds, not OHOS-specific and not caused
+# by any change in this branch -- out of scope for this porting effort
+# (same class as test-docs-http-server.ts above).
+[ OPENHARMONY ] test/regression/issue/ctrl-c.test.ts [ Failure ] # 6/8 SIGINT-kills-vite tests expect signalCode:"SIGINT" but vite exits normally instead; reproduces on old production bun too, not OHOS-specific
+
 # --- process.execve: known unresolved GC-suspend-handshake-vs-execve kernel race ---
 # All 4 sub-tests time out at 5000ms when run standalone. Same root cause as
 # project_execve_pthread_create_sigsegv memory (mitigation attempts reverted,
