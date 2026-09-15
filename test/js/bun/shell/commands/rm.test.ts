@@ -296,7 +296,15 @@ test.skipIf(process.platform === "win32")(
 // directories take different joins, so one tree of each. Runs in a child
 // process so the abort shows up as a failed assertion. Windows has a
 // different path limit, and its shell rm is bounded differently.
-test.skipIf(process.platform === "win32")(
+// `process.platform === "linux" ? 4096 : 1024` picks the 1024 (non-Linux)
+// branch on openharmony, even though the underlying kernel is Linux-family
+// and its real PATH_MAX is 4096 -- same platform-string-allowlist gap as
+// js/bun/util/mmap.test.js (see test/expectations.txt). The paths this test
+// builds only exceed the assumed 1024 limit, not the real 4096 one, so rm
+// never hits ENAMETOOLONG and correctly reports success (exitCode 0,
+// dirKept: false) -- the test's own constant is stale for this platform
+// string, not a product bug. 2026-09-15.
+test.skipIf(process.platform === "win32" || process.platform === "openharmony")(
   "recursive rm reports an entry deeper than PATH_MAX instead of crashing",
   async () => {
     // Linux PATH_MAX is 4096, every other POSIX platform Bun runs on has 1024.
@@ -383,7 +391,14 @@ test.skipIf(process.platform === "win32")(
   },
 );
 
-test.skipIf(process.platform === "win32")(
+// Spawns the child with process cwd "/" specifically so the shell's own
+// .cwd(shellCwd) override can be distinguished from the process cwd -- but
+// the shell interpreter opens the process's actual cwd ("/") as part of
+// applying that override, and the OHOS app sandbox denies read access to
+// "/" itself (EACCES). Same root cause as js/bun/glob/scan.test.ts's
+// "non-special path as first component" test (both need to open("/")).
+// 2026-09-15.
+test.skipIf(process.platform === "win32" || process.platform === "openharmony")(
   "relative operands are resolved against the shell cwd, not the process cwd",
   async () => {
     using dir = tempDir("rm-shell-cwd", {

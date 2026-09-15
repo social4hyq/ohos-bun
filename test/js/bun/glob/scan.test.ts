@@ -681,7 +681,12 @@ describe("absolute path pattern", async () => {
     expect(entries.sort()).toEqual(files.slice(0, files.length - 1).sort());
   });
 
-  test("non-special path as first component", async () => {
+  // A pattern anchored at "/" makes Glob.scan() open("/") to walk the root
+  // directory; the OHOS app sandbox denies read access to "/" itself
+  // (EACCES), a structural restriction unrelated to glob matching logic.
+  // Same root cause as js/bun/shell/commands/rm.test.ts's "resolved against
+  // the shell cwd" test (both need to open("/")). 2026-09-15.
+  test.skipIf(process.platform === "openharmony")("non-special path as first component", async () => {
     const glob = new Glob("/**lol");
     const entries = await Array.fromAsync(glob.scan({ onlyFiles: false }));
     expect(entries).toEqual([]);
