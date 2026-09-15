@@ -225,6 +225,41 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # never exceeds 1 on this platform. Class D (structural).
 [ OPENHARMONY ] test/cli/install/bun-workspaces.test.ts [ Failure ] # link(2) is Permission denied on this filesystem; hardlink installs correctly fall back to copy but nlink stays 1
 
+# bun-workspaces-self-contained: same root cause as bun-workspaces.test.ts right
+# above (EL2 link(2) Permission denied, hardlink installs correctly fall back to
+# copy, nlink stays 1) -- just a different filename that the substring
+# "bun-workspaces.test.ts" doesn't match, so it slipped through uncovered.
+# 2026-09-15 full-baseline round 1 follow-up.
+[ OPENHARMONY ] test/cli/install/bun-workspaces-self-contained.test.ts [ Failure ] # same as bun-workspaces.test.ts: link(2) Permission denied, hardlink installs fall back to copy, nlink stays 1
+
+# migration/complex-workspace: fixture pins sharp@0.32.6 specifically to test an
+# old package-lock.json -> bun.lock migration path. sharp-libvips has never
+# published an openharmony-arm64v8 prebuilt for that old version (confirmed:
+# `sharp: Installation error: Prebuilt libvips 8.14.5 binaries are not yet
+# available for openharmony-arm64v8`), so the install itself fails and the
+# whole file cascades (0 pass / 21 fail, all downstream assertions depend on
+# the install succeeding). Different from the already-known sharp.test.ts gap
+# (that one is a beta build missing the jp2k codec) -- this is an older,
+# never-built-for-OHOS sharp version pinned specifically for the migration
+# fixture, class D. 2026-09-15 full-baseline round 1 follow-up.
+[ OPENHARMONY ] test/cli/install/migration/complex-workspace.test.ts [ Failure ] # fixture pins sharp@0.32.6, whose libvips has no openharmony-arm64v8 prebuilt; install fails, whole file cascades
+
+# child-process-rlimit-nofile: OHOS kernel's default RLIMIT_NOFILE differs from
+# Linux's (asserted "should raise the soft limit above 256, got 0"). This file
+# already had a stale explanatory comment ("js/node: RLIMIT_NOFILE" further
+# down) with no matching formal entry -- adding one now. 2026-09-15
+# full-baseline round 1 follow-up.
+[ OPENHARMONY ] test/js/node/child_process/child-process-rlimit-nofile.test.ts [ Failure ] # OHOS kernel default RLIMIT_NOFILE differs from Linux's
+
+# bun-listen-connect-args: uses a bare relative "xxx.sock" filename (no
+# directory prefix), which resolves against the process cwd -- the repo
+# checkout under /storage/Users/... (hmdfs), not EL2 tmp. Same root cause as
+# the already-documented "hmdfs disallows AF_UNIX bind -> EPERM" class (see
+# the cli/hot + cli/inspect comment above), just a different call site that
+# doesn't use tmpdirSync() so it wasn't covered. 2026-09-15 full-baseline
+# round 1 follow-up.
+[ OPENHARMONY ] test/js/bun/http/bun-listen-connect-args.test.ts [ Failure ] # hmdfs disallows AF_UNIX bind (EPERM); uses a bare relative .sock path that resolves against the hmdfs-backed repo cwd, not tmpdirSync()
+
 # next-pages: all 3 files import `bun:internal-for-testing` at module top
 # level, which doesn't exist in a release build (ENOENT, deterministic,
 # fails before any next-swc/puppeteer code runs) -- re-verified 2026-08-25,
