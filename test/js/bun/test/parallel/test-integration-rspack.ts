@@ -20,6 +20,26 @@ console.log([1]);
 expect(proc.signalCode).toBeNull();
 expect(proc.exitCode).toBe(0);
 
+if (process.platform === "openharmony") {
+  // rsbuild@1's ^1.7.1 range currently floats @rspack/core to 1.7.12, whose
+  // upstream @rspack/binding has no OHOS build at all (own JS platform
+  // switch in binding.js has no openharmony branch, so even an optional-
+  // dependency-level override would never be reached). The community port
+  // @ohos-ports/rspack-binding is a real-machine-verified OHOS build, but
+  // only published for 1.7.11; rspack's own runtime rejects a core/binding
+  // version mismatch, so core must be pinned to the exact matching release
+  // too. The scaffolded app's package.json has no override slot, so patch
+  // one in before install.
+  const pkgPath = join(cwd, "app", "package.json");
+  const pkg = await Bun.file(pkgPath).json();
+  pkg.resolutions = {
+    ...pkg.resolutions,
+    "@rspack/core": "1.7.11",
+    "@rspack/binding": "npm:@ohos-ports/rspack-binding@1.7.11-beta.1",
+  };
+  await Bun.write(pkgPath, JSON.stringify(pkg, null, 2));
+}
+
 proc = Bun.spawn({
   cmd: [bunExe(), "install"],
   stdio: ["ignore", "inherit", "inherit"],
