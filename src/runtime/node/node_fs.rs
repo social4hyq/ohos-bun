@@ -6987,14 +6987,23 @@ impl NodeFS {
             return Err(abort_err());
         }
 
-        let stat_ = Syscall::fstat(fd)?;
+        // OHOS: fstat() on a memfd can return EACCES even though pread(2) on
+        // the same fd works fine (same kernel quirk as
+        // read_to_end_with_array_list's SizeHint::UnknownSize handling in
+        // sys/file.rs). This is purely a size hint for how much more to
+        // read past the 256 KB already buffered above, so degrade to an
+        // unknown size (0) instead of failing the whole read.
+        let stat_st_size: i64 = match Syscall::fstat(fd) {
+            Ok(stat_) => stat_.st_size,
+            Err(_) => 0,
+        };
 
         // For certain files, the size might be 0 but the file might still have contents.
         // https://github.com/oven-sh/bun/issues/1220
         let max_size: u64 = args.max_size.map(|v| v as u64).unwrap_or(BLOB_SIZE_MAX);
         let has_max_size = args.max_size.is_some();
 
-        let size: u64 = (stat_.st_size as i64)
+        let size: u64 = (stat_st_size as i64)
             .min(max_size as i64) // Only used in DOMFormData
             .max(total as i64)
             .max(0) as u64

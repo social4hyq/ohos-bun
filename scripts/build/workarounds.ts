@@ -740,6 +740,34 @@ export const workarounds: Workaround[] = [
       "allow(dead_code)), and this entry.",
   },
   {
+    id: "ohos-readfilesync-memfd-fstat-eacces",
+    issue: "https://gitee.com/openharmony (no tracked issue — kernel fstat(2) on memfd_create() fds)",
+    description:
+      "Same root cause as ohos-fstat-eacces-on-memfd, a third distinct call site: " +
+      "node_fs.rs's read_file_with_options() tries to read a file in one shot (up to 256 KB) before " +
+      "calling fstat() at all; when that doesn't finish the whole file (e.g. a >256 KB memfd), it " +
+      "unconditionally fstat()s the fd with `?` to size-hint the rest of the read, with no tolerance " +
+      "for the EACCES this kernel returns for memfd_create()'d fds. sys/file.rs's " +
+      "read_to_end_with_array_list() already tolerates the identical failure for its own " +
+      "SizeHint::UnknownSize path (degrades to a small reservation) -- this call site just never got " +
+      "the same treatment. Found via test/js/node/fs/fs-oom.test.ts's \"large file show OOM without " +
+      "crashing\" suite (memfd_create'd a 16 MB+1 file, expected a synthetic-allocation-limit-induced " +
+      "ENOMEM, got the raw fstat EACCES instead since it now never even reached the allocation-limit " +
+      "check). Fixed the same way: treat a failed fstat as st_size=0 (unknown), letting the existing " +
+      "`.max(total as i64)` in the size computation and the incremental read loop handle the rest.",
+    applies: cfg => cfg.abi === "ohos",
+    expectedToBeFixed: () => {
+      // Same kernel behavior as the other memfd-fstat entries above — no
+      // reliable signal to check. Re-test by reverting node_fs.rs's
+      // stat_st_size fallback to a bare `Syscall::fstat(fd)?` and running
+      // test/js/node/fs/fs-oom.test.ts on a newer OHOS SDK/device.
+      return false;
+    },
+    cleanup:
+      "Revert read_file_with_options() in src/runtime/node/node_fs.rs to " +
+      "`let stat_ = Syscall::fstat(fd)?;` / `stat_.st_size`, and this entry.",
+  },
+  {
     id: "ohos-wasi-root-preopen-eacces",
     issue: "https://gitee.com/openharmony (no tracked issue — app sandbox denies open(\"/\"))",
     description:
