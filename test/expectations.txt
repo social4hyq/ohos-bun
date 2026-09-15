@@ -515,8 +515,23 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # for <stdint.h>'s bits/alltypes.h) when the env var resolves to an existing
 # directory -- best-effort, no-op when the SDK isn't installed. Verified via
 # the real runner (brew-fallback path, not a manually-set env var): 2/2 pass.
-[ OPENHARMONY ] test/regression/issue/24742.test.ts [ Failure ] # class C 未深究：bun build --compile 的 Nix-store PT_INTERP 归一化检测——用 patchelf 伪造 /nix/store 解释器路径后应被改写回标准 FHS 路径，实际读回空字符串；纯 Nix 场景，OHOS 部署不涉及 Nix，真实价值低，未继续深挖具体机制
-[ OPENHARMONY ] test/regression/issue/29290.test.ts [ Failure ] # class C 未深究：同 24742，bun build --compile 的 Nix-store 解释器归一化，未继续深挖
+# 24742/29290 (Nix-store PT_INTERP normalization): 2026-09-15 深挖查清机制
+# ——两个文件都在自己的测试 fixture 构造阶段（`patchelf --set-interpreter`
+# 后立刻自检 readInterp(readHead(fakeNixBun))）就先失败，还没跑到 bun 自己
+# 的 build --compile 归一化逻辑。根因：这两个文件的 readHead() 只读文件头
+# 4096 字节（注释自称"PT_INTERP always lives in the first ELF page"），但
+# 这个假设在本机构建的 bun-profile 上不成立——原始二进制里 PT_INTERP 字符串
+# （26 字节）后面紧挨着一段 OHOS 工具链插入的 "OHOS" ABI 标识 ELF note，
+# 几乎零 padding；patchelf 把解释器路径改长到 82 字节时原地放不下，只能在
+# 文件末尾（本例中是 offset ~264MB 处，超出 264MB 大小的文件本身）新开一个
+# segment 存放，PT_INTERP 的 p_offset 因此指向文件尾部而非头部。用 patchelf
+# --print-interpreter 独立验证过：patchelf 本身改写正确，纯粹是这两个测试
+# 自己的 4KB 读取窗口假设在这种（OHOS 特有的紧凑 ELF 布局）场景下不成立，
+# 不是 bun 产品代码的 bug，也不是 patchelf 的 bug。价值本就低（纯 Nix 场景，
+# OHOS 部署不涉及 Nix）+ 根因在测试自身的 fixture 断言而非产品代码，遵循
+# "不改测试绕 bug" 原则维持隔离，不改测试文件也不碰 bun 自己的 ELF 链接布局。
+[ OPENHARMONY ] test/regression/issue/24742.test.ts [ Failure ] # patchelf 把加长后的 PT_INTERP 重定位到文件尾部（OHOS 工具链在原字符串后紧跟一个 "OHOS" ABI note，无 padding 可扩展），测试自己的 readHead(4096) 窗口假设不成立，机制已查清见上方注释
+[ OPENHARMONY ] test/regression/issue/29290.test.ts [ Failure ] # 同 24742，同一个 readHead(4096) 窗口假设不成立，机制已查清见上方注释
 [ OPENHARMONY ] test/js/valkey/integration/complex-operations.test.ts [ Failure ] # class D: Redis 连不上（valkey/Docker 不可用）
 [ OPENHARMONY ] test/integration/expo-app/expo.test.ts [ Failure ] # class D: expo 构建 exit≠0（构建慢/失败）
 [ OPENHARMONY ] test/js/node/process/process.test.js [ Failure ] # 2026-09-14 复核，4/174：①硬编码 win32/darwin/linux 平台白名单不认 "openharmony"（同 architecture-match/os.test 那类 process.platform fallout）②process.release.sourceUrl 硬编码 linux-aarch64.zip，实际正确产出 openharmony-aarch64.zip（URL 本身没问题，是测试期望值没跟上平台字符串改动）③ICU_VERSIONS 表缺 "openharmony-arm64" 键，非真实 ICU 版本回归④测试硬编码期望 node compat 版本 v26.3.0，本分支已到 v26.8.2（版本漂移，非 bug）——四者均为测试自身跟不上平台字符串/版本号变化，非产品缺陷
