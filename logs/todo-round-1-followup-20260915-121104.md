@@ -109,6 +109,25 @@
 **至此老补丁交叉比对法命中 6/6 次尝试**（1 次正确判断"不该应用"，其余 5 次
 找到真实缺口），是这一轮最高价值的方法论收获。
 
+## 2026-09-15 第四轮：又一个重要方法论坑 + 1 个真实跨平台既有问题确认
+
+- **`OHOS_SYSROOT` 也是裸调用缺失的环境变量**（跟 `BUN_FEATURE_FLAG_INTERNAL_FOR_TESTING`/
+  `--timeout=90000` 同类）：`cc.test.ts` 裸调用显示 16/42 失败，补上
+  `export OHOS_SYSROOT=$(brew --prefix ohos-sdk)/native/sysroot` 后变成 1/42
+  ——15 个纯粹是方法论假象。**以后裸调用测试涉及 `bun:ffi` 时必须带这个变量**。
+  剩下真实的 1 个失败：TinyCC 词法分析器解析不了 OHOS SDK 头文件里 Clang 专有
+  的 `__attribute__((__availability__(ohos, introduced=12.0.0)))` 三段式版本号
+  （词法层面直接报错，不是"忽略未知属性"能绕过的）。查过老补丁系列确认没有
+  先例，是真实未解决的 TCC 局限，扩展了文件自己已有的 `it.todoIf` 约定。
+  commit `12e7359da3`。
+- **`ctrl-c.test.ts`**：6/8 "SIGINT 杀死 vite" 测试期望 `signalCode:"SIGINT"`，
+  实际 vite 自己（或 bun `--bun` 的 node 兼容层）捕获信号后正常退出
+  （`exitCode:1`）。A/B 对比装机生产 bun 确认逐字节复现同样的 2 pass/6 fail，
+  跨平台既有问题，非 OHOS 专属，超出移植范围，加隔离项。commit `4290f775f8`。
+
+**至此老补丁交叉比对法命中 6/7 次尝试**（1 次正确判断不该应用），另有 2 个
+环境变量类方法论坑被系统性修正（`CI=true`、`OHOS_SYSROOT`）。
+
 ## 下一轮建议的做法（不再是"继续在 dev build 上单个查"）
 
 到这里为止，剩余的"待确认"清单里，除了个别已经确认是全新的独立信号（如
