@@ -128,6 +128,40 @@
 **至此老补丁交叉比对法命中 6/7 次尝试**（1 次正确判断不该应用），另有 2 个
 环境变量类方法论坑被系统性修正（`CI=true`、`OHOS_SYSROOT`）。
 
+## 2026-09-15 第五轮：又清了 4 个，2 个深挖后判定"暂不追"
+
+- **`init.test.ts`**：4 个失败同 tsgo 缺口，隔离。commit（跟其他一起提交）。
+- **`inspect.test.ts`**（真实修复）：又一个 AF_UNIX-hmdfs 相对路径样本
+  （`.tmp` 硬编码目录，文件里其实已经在别处用了正确的 `tempDir()`），改用
+  EL2 tmpdir，4→0 fail。
+- **`hot.test.ts`**（真实修复）：`timeout = isDebug ? Infinity : 10_000` ——
+  expectations.txt 早就记录"该 10s→60s"但代码里从没真落地，这次真正应用了
+  OHOS 分支（60s/90s），1→0 fail。
+- **`pipeline_stack.test.ts`**（真实修复）：`cd / | pwd` 类用例撞上已经确认
+  好几次的"OHOS 沙箱拒绝访问根目录"，`TestBuilder` fluent API 没有
+  `skipIf`，用它已有的 `.todo()` 方法条件调用，2→0 fail。
+
+以上四个一起 commit `3d90323371`（init+inspect+hot）、`e4f5519e70`（pipeline_stack）。
+
+**深挖后判定"暂不追"的 2 项**：
+- **`process-stdin.test.ts` "a single read does not ingest the whole pipe"**：
+  真实的背压（backpressure）测试，41MB 实际增长 vs 16MB 预期上限，暗示
+  `Bun.stdin.stream()` 在这台设备上可能没有正确限流读取。顺着这条线索查了
+  `PipeReader.rs`/`posix_event_loop.rs` 的老补丁，发现一个之前完全没注意到
+  的机制——**OHOS 内核 epoll 有个真实缺陷：`epoll_ctl` 报成功但内核会静默
+  停止投递事件**，老补丁做了一个 `epoll_rearm_watchdog`（周期性冗余
+  `CTL_MOD` 唤醒）来恢复。但这个机制**仅针对 `Bun.Terminal` 的 PTY master
+  fd opt-in**（`PosixFlags::EPOLL_REARM_WATCH`），不适用于普通 pipe，跟
+  当前这个失败没有直接关联——没有投机式应用这么大的一套新机制。
+  真正的根因还没查到，先记录。
+- **`streams.test.js` "Bun.file() read text from pipe"**：90000ms 超时，用
+  `mkfifo` + bash 脚本写 65KB 数据，读端用 `Bun.file()`。检查过 FIFO 默认
+  buffer size（跟匿名 pipe 一样是标准 64KB，不是"翻倍"类问题），没找到明显
+  线索，未继续深挖。
+
+**当前累计**：老补丁交叉比对法 7/8 命中真实缺口或提供关键背景信息
+（1 次判断不该应用，1 次找到相关但不适用当前场景的机制）。
+
 ## 下一轮建议的做法（不再是"继续在 dev build 上单个查"）
 
 到这里为止，剩余的"待确认"清单里，除了个别已经确认是全新的独立信号（如
