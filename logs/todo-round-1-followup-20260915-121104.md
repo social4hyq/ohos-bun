@@ -45,6 +45,47 @@
   **这类失败不是产品 bug，是本地构建方法论的边界，本轮不再逐个"修复"，
   统一标记"需要走 formula 构建复测才能定论"。**
 
+## 2026-09-15 第三轮：老补丁交叉比对法——找到 5 个真实的、从零重做时漏掉的产品级回归
+
+在前面几轮"单测逐个查根因"的基础上，改用更高杠杆的方法：`kqueue` drain 测试
+的失败链接到一个真实的 socket 写错误丢失 bug 后，systematically 拿失败测试
+对应的源文件去 tap `Patches/bun/` 老补丁系列做交叉比对，一次性找到多处漏移植：
+
+1. **`socket_body.rs`（真实产品 bug，非 OHOS 专属）**：`internal_flush()` 有
+   ~9 个调用点，只有 1 个消费返回值报告致命写错误，其余 8 个 `let _ = ...`
+   丢弃。装机生产 bun（老 106-patch 系列）能正确报出 1 个 EPIPE，这次重做的
+   版本报 0 个错误、静默截断——A/B 对比 + 对照老补丁的 `pending_fatal_send_errno`
+   latch 设计确认是真实回归。移植时代码结构已比老补丁写作时多了 6 个
+   `NewSocket` 构造点（`Listener.rs` ×5、`node_net_binding.rs` ×1），编译器
+   报错后逐一核对补齐。commit `502cc89955`。
+2. **`SpawnSyncEventLoop.rs`**：OHOS 上"刚过期的绝对 deadline"算出的 duration
+   会绕成事实上无穷大的 epoll_wait 等待，老补丁做了 clamp，当前代码完全没有。
+   照抄验证无误后应用（未改变语义，纯粹是缺失）。没能解释当时在查的
+   `spawnsync-isolated-event-loop.test.ts` DRIFT 失败（那是独立问题），但
+   本身独立成立，予以保留。commit `51f471d612`。
+3. **`system_certs.rs`（重大修复）**：完全没有 OHOS 分支——通用的 Linux 发行版
+   证书路径列表在 OHOS 不存在，BoringSSL 默认路径也不存在，导致系统 CA 目录
+   扫描一个都加载不到。移植老补丁加了真实的 `/system/etc/security/certificates`
+   路径（设备上核实过真实存在有效证书）。`test-use-system-ca.test.ts` 从大范围
+   diff 不匹配变成 13/14 通过。commit `8955bd9469`。
+4. **`path_watcher.rs`（真实修复，但纠正了一次方法论错误）**：老补丁的完整版
+   （含跨读边界 poll 重试）第一次是直接照抄应用的（commit `d1a62b6fed`），
+   但随后发现代码库里已经有一个**不同设计**的既有修复
+   （`batch_has_rename_event`，"重分类"而非"跳过"，见
+   `environment_ohos_inotify_attrib_before_create` 记忆——之前误读为"部分缺失"，
+   实际是完整功能，只是没有跨读边界能力）。撤销重做（`df9f8c2113` revert
+   `d1a62b6fed`），改为在既有机制上**扩展**跨读边界重试能力，不引入第二套
+   并行逻辑。`fs.watch.test.ts` 7 fail → 2 fail。commit `393c151f8b`。
+   **教训**：即使找到了对应的老补丁，动手前也要先确认代码库里是不是已经用
+   别的设计解决了同一个根因——"参考老补丁"不等于"老补丁必然是唯一/正确的
+   落地形态"。
+
+**方法论沉淀**：`find /storage/.../Patches/bun/ -name "*.patch" | sed ...`
+拿到全部 107 个补丁的文件路径清单，跟失败测试大致对应的源文件名做人工比对，
+命中率相当高（5/5 尝试全部命中真实缺口）。下一轮可以继续按这个清单排查
+`run_command.rs`（对应 `cli/run/env.test.ts` 等）、`Coordinator.rs`（对应
+`cli/test/parallel.test.ts`）等尚未检查的匹配项。
+
 ## 下一轮建议的做法（不再是"继续在 dev build 上单个查"）
 
 到这里为止，剩余的"待确认"清单里，除了个别已经确认是全新的独立信号（如
