@@ -342,7 +342,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # gRPC DNS resolution; pnpm directory traversal; next-auth server action timeout.
 [ OPENHARMONY ] test/js/third_party/next-auth/next-auth.test.ts [ Flaky ] # 2026-09-15 复核：next-swc 无 openharmony/arm64 原生绑定（"Trying to load next-swc for unsupported platforms"）+ Watchpack 向上扫描目录树找 git 根时撞 EL2 沙盒 EACCES（/、/data、/data/storage 逐级拒绝）；结构性缺口，非超时问题
 [ OPENHARMONY ] test/js/third_party/pnpm/pnpm.test.ts [ Flaky ] # 2026-09-15：fixture install_fixture 依赖 vite@5.4.10 → esbuild@0.21.5，postinstall 抛 "Unsupported platform: openharmony arm64 LE"；esbuild 从 0.25.6 起才有 @esbuild/openharmony-arm64（registry 实测），0.21.5 早于该版本，结构性版本缺口非 bun 侧 bug；fixture 是三方 vite 脚手架产物非本仓测试断言，不属于"改测试绕过bug"范畴但改动成本/收益不对等，暂不追
-[ OPENHARMONY ] test/js/third_party/@napi-rs/canvas/napi-rs-canvas.test.ts [ Flaky ] # 2026-09-15：@napi-rs/canvas@0.1.91 无 openharmony-arm64 原生绑定（"Cannot find native binding"）；社区 @ohos-ports/napi-rs-canvas 已有真机验证过的 .node 产物（见记忆 reference_napi_rs_canvas_ohos_port_exists），接线需要 test/package.json resolutions + 签名，属独立 npm-porting 任务而非 bun 运行时修复，本轮不追
 [ OPENHARMONY ] test/js/third_party/vitest/vitest.test.ts [ Flaky ] # 2026-09-15：vitest@4.1.9 传递依赖解析到 vite→rollup@4.37.0（非本仓顶层 rollup 直接依赖，已单独确认 bump 到 4.50.2 可用），4.37.0 早于 rollup 4.50.0 才开始提供的 openharmony-arm64 原生绑定；test/node_modules 已存在满足条件的 rollup@4.62.2/4.63.1 但 vitest 自身依赖树未解析到它们，深挖需改 vitest/vite 版本锁定，成本大于收益，暂不追
 
 # ─────────────────────────────────────────────────────────────

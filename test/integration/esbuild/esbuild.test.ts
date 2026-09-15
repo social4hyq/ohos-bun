@@ -22,7 +22,7 @@ describe.concurrent("esbuild integration test", () => {
     const packageDir = dir + "";
 
     var { stdout, stderr, exited } = spawn({
-      cmd: [bunExe(), "install", "esbuild@0.19.8"],
+      cmd: [bunExe(), "install", "esbuild@0.25.11"],
       cwd: packageDir,
       stdout: "pipe",
       stdin: "pipe",
@@ -33,7 +33,7 @@ describe.concurrent("esbuild integration test", () => {
     var err = await stderr.text();
     var out = await stdout.text();
     expect(err).toContain("Saved lockfile");
-    expect(out).toContain("esbuild@0.19.8");
+    expect(out).toContain("esbuild@0.25.11");
     expect(await exited).toBe(0);
 
     ({ stdout, stderr, exited } = spawn({
@@ -48,11 +48,14 @@ describe.concurrent("esbuild integration test", () => {
     err = await stderr.text();
     out = await stdout.text();
     expect(err).toBe("");
-    expect(out).toContain("0.19.8");
+    expect(out).toContain("0.25.11");
     expect(await exited).toBe(0);
   });
 
-  test.skipIf(isWindowsArm64)("install and use estrella", async () => {
+  // estrella@1.4.1 bundles esbuild@^0.11.0 internally (predates OHOS
+  // support entirely), and estrella itself is unmaintained -- no newer
+  // version to bump to.
+  test.skipIf(isWindowsArm64 || process.platform === "openharmony")("install and use estrella", async () => {
     using dir = tempDir("esbuild-estrella-test", {
       "package.json": JSON.stringify({
         name: "bun-esbuild-estrella-test",
