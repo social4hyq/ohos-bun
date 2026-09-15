@@ -425,7 +425,12 @@ it("ReadableStream.prototype.values", async () => {
   expect(chunks.join("")).toBe("helloworld");
 });
 
-it.todoIf(isWindows || isMacOS)("Bun.file() read text from pipe", async () => {
+// OHOS: opening a FIFO for writing gets EACCES ("Permission denied") even
+// with mode 0o666 and the process owning the file -- confirmed with bun
+// entirely out of the picture: bare `bash -c 'echo hi >> $fifo'` against a
+// Python-created mkfifo() node fails identically. Kernel/fs-level FIFO
+// write-permission quirk, not a bun bug. 2026-09-15.
+it.todoIf(isWindows || isMacOS || process.platform === "openharmony")("Bun.file() read text from pipe", async () => {
   const fifoPath = join(tmpdirSync(), "bun-streams-test-fifo");
   try {
     unlinkSync(fifoPath);
