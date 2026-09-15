@@ -377,8 +377,15 @@ impl SpawnSyncEventLoop {
         let duration_storage: Option<Timespec>;
         let duration: Option<&Timespec> = match timeout {
             Some(ts) => {
-                duration_storage =
-                    Some(ts.duration(&Timespec::now(TimespecMockMode::ForceRealTime)));
+                let mut dur = ts.duration(&Timespec::now(TimespecMockMode::ForceRealTime));
+                // OHOS: a just-passed target wraps to an effectively-infinite
+                // epoll_wait duration, so clamp it; on other platforms
+                // negative durations are handled and a cap would wrongly
+                // clamp legitimate multi-day timeouts.
+                if cfg!(target_env = "ohos") && (dur.sec < 0 || dur.sec > 86_400) {
+                    dur = bun_core::Timespec::EPOCH;
+                }
+                duration_storage = Some(dur);
                 duration_storage.as_ref()
             }
             None => None,
