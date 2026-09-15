@@ -774,28 +774,40 @@ export const workarounds: Workaround[] = [
       "silently running with the wrong directory. Added bun_core::getcwd_honest() (re-checks via " +
       "readlink(\"/proc/self/cwd\") + stat(), since this kernel's readlink ENOENTs directly on a " +
       "deleted cwd rather than Linux's \" (deleted)\" suffix) and bun_sys::process_cwd() (same " +
-      "check, duplicated because bun_sys depends on bun_core) and wired them into the three call " +
+      "check, duplicated because bun_sys depends on bun_core) and wired them into the eight call " +
       "sites that need them: resolver/lib.rs's FileSystem::init_with_force (Transpiler::init's " +
       "very first getcwd, exercised by a compiled standalone executable's startup), " +
       "runtime/cli/Arguments.rs's absolute_working_dir resolution (install/test/build via the " +
-      "normal CLI), and node_process.rs's process.cwd() JS binding. Also added the same re-check " +
-      "to the existing getcwd_or_exe_dir() fallback, which was tolerating a deleted cwd via the " +
-      "shim's fake-success path instead of genuinely falling back to the executable's directory.",
+      "normal CLI), node_process.rs's process.cwd() JS binding, install_completions_command.rs's " +
+      "one call site, and package_manager_command.rs's four call sites (all part of the same " +
+      "\"report a deleted cwd as a fatal CLI error\" family -- found via " +
+      "test/cli/bun.test.ts's \"reports that PowerShell completions do not exist when $SHELL is " +
+      "pwsh\" sub-test, which explicitly rmdir's its cwd before exec'ing `bun completions` and " +
+      "expects the honest \"Could not get current working directory\" error). Also added the same " +
+      "re-check to the existing getcwd_or_exe_dir() fallback, which was tolerating a deleted cwd " +
+      "via the shim's fake-success path instead of genuinely falling back to the executable's " +
+      "directory. Deliberately NOT converted: ~14 other bun_sys::getcwd() call sites elsewhere " +
+      "(glob, shell interpreter, workspace/lockfile resolution, standalone module graph, JSC VM, " +
+      "markdown renderer, fetch, exec_command, bunfig/CLI arguments) -- those are best-effort " +
+      "cwd-for-display or internal bookkeeping uses where the shim's tolerant fallback is the " +
+      "correct behavior, not the \"report a fatal startup error\" pattern these eight share.",
     applies: cfg => cfg.abi === "ohos",
     expectedToBeFixed: () => {
       // Depends on ohos-compat-shim's own getcwd() interposer design, not a
       // kernel/toolchain version -- no reliable signal to check. Re-test by
-      // reverting all three call sites to plain bun_core::getcwd() /
+      // reverting all eight call sites to plain bun_core::getcwd() /
       // bun_sys::getcwd() and running
       // test/bundler/bun-build-compile.test.ts -t "exits cleanly instead of
-      // crashing" on a newer ohos-compat-shim build.
+      // crashing" and test/cli/bun.test.ts -t "PowerShell completions do
+      // not exist" on a newer ohos-compat-shim build.
       return false;
     },
     cleanup:
       "Remove getcwd_honest()/cwd_is_deleted_ohos() from src/bun_core/util.rs, " +
-      "process_cwd()/cwd_is_deleted() from src/sys/lib.rs, revert the three " +
+      "process_cwd()/cwd_is_deleted() from src/sys/lib.rs, revert the eight " +
       "call sites (resolver/lib.rs, runtime/cli/Arguments.rs, " +
-      "runtime/node/node_process.rs) back to plain getcwd(), and this entry.",
+      "runtime/node/node_process.rs, runtime/cli/install_completions_command.rs, " +
+      "runtime/cli/package_manager_command.rs x4) back to plain getcwd(), and this entry.",
   },
   {
     id: "ohos-tcc-sysroot",

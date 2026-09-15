@@ -229,7 +229,13 @@ impl InstallCompletionsCommand {
             shell = Shell::from_env(shell_name);
         }
 
-        let cwd_len = match bun_sys::getcwd(&mut cwd_buf) {
+        // OHOS: process_cwd() surfaces a rmdir'd cwd as ENOENT instead of the
+        // ohos-compat-shim's $HOME fallback; other platforms use plain getcwd().
+        #[cfg(target_env = "ohos")]
+        let cwd_result = bun_sys::process_cwd(&mut cwd_buf);
+        #[cfg(not(target_env = "ohos"))]
+        let cwd_result = bun_sys::getcwd(&mut cwd_buf);
+        let cwd_len = match cwd_result {
             Ok(len) => len,
             Err(_) => {
                 // don't fail on this if we don't actually need to
