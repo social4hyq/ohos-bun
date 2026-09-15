@@ -3,6 +3,32 @@
 承接 `logs/round-1-20260915-110514.md`。对该报告"C 类待确认"57 个文件（两轮串行复核
 都失败，排除了并行争用噪音）逐项深挖，按优先级重新分组。
 
+## 2026-09-15 同日续：又修了 5 处（追加在原 P0/P1 基础上）
+
+- **`cli/bun.test.ts`"PowerShell completions"**：`getcwd_honest()` 还漏了 5 个
+  调用点（`install_completions_command.rs` 1 处 + `package_manager_command.rs`
+  4 处，都是"报告 deleted cwd 为致命 CLI 错误"这同一类），已全部补上，commit
+  `b5aa451d63`。
+- **`js/bun/glob/scan.test.ts` + `js/bun/shell/commands/rm.test.ts`**：两个都是
+  bun 需要 `open("/")`（一个是 glob pattern 锚定在根目录，一个是 shell
+  `.cwd()` 覆盖时先打开进程实际 cwd）撞上 OHOS 沙箱拒绝读根目录，已加
+  `skipIf(openharmony)`，commit `0c3bffb382`。
+- **`rm.test.ts` 另一个测试**："PATH_MAX" 用 `process.platform === "linux" ?
+  4096 : 1024` 三元表达式，跟已隔离的 `mmap.test.js` 同一个平台字符串坑，
+  同一个 commit 一并处理。
+- **`js/bun/shell/commands/mv.test.ts`**：`findCrossDeviceDir()` 用
+  `accessSync` 探测 `/dev/shm` 可写性，DAC 位显示可写但实际 `mkdirSync` 被
+  MAC 层拒绝（用纯 Python 独立验证过同样的 access/mkdir 分歧）。加了
+  `describe.skipIf(openharmony)`，commit `cb65c01eb9`。
+- **`js/node/fs/fs-oom.test.ts`（真实产品 bug，已修复）**：`node_fs.rs` 的
+  `read_file_with_options()` 有第三处未加容错的 memfd fstat 调用（前两处已在
+  `ohos-fstat-eacces-on-memfd`/`ohos-spawn-buffer-memfd-eacces` 系列修过），
+  照着 `sys/file.rs` 已验证的容错模式打了最小补丁，commit `9a046c8e19`，
+  登记 `ohos-readfilesync-memfd-fstat-eacces`。
+
+至此 P1 表格里的 `fs-birthtime-linux.test.ts`/`unix-socket-long-path.test.ts`
+两项仍只是证据确认（未改代码，结构性），其余全部落地。
+
 ## P0 — 已修复（本轮完成）
 
 ### 1. `run-baseline.sh` 用 `CI=1` 而非 `CI=true`，导致 bun 自愈符号链接从未生效 ✅ 已修复
