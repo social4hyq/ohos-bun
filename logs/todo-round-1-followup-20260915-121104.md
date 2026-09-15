@@ -524,3 +524,8 @@ OHOS 专属的既有 bug，已加 `skipIf(openharmony)`（不是本会话职责�
   - `brew test social4hyq/core/bun` 通过。该 formula 测试显式构造 unsigned
     `.node` fixture，并在 hoisted 与 `--linker isolated` 两种布局中断言产物含
     `.codesign`，因此现役生产 bottle 的 native addon 自签名回归覆盖仍有效。
+  - PipeWriter / epoll 的直接回归用例
+    `spawn-pipe-stale-fd-unregister.test.ts` 与
+    `spawn-pipe-read-error-leak.test.ts` 为 3 pass / 0 fail：注册 fd 被关闭时的
+    `FilePoll` teardown、真实 read error 与注入 read error 后的 `PipeReader`
+    释放均正常。日志：`logs/round-12-pipe-epoll-regressions-20260916.log`。
