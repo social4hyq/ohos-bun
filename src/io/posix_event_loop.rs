@@ -662,6 +662,9 @@ impl FilePoll {
                 self.deactivate(loop_);
                 return errno;
             }
+            if flag == Flags::Readable && self.flags.contains(Flags::EpollRearmWatch) {
+                epoll_rearm_watchdog::track(watcher_fd, fd.native(), flags, event.u64);
+            }
         }
         #[cfg(target_os = "macos")]
         {
@@ -913,6 +916,10 @@ impl FilePoll {
         // linux/android only below; kqueue has no equivalent dup-sharing bug to work around.
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
         let _ = skip_ctl_del;
+        // Unconditional and cheap when untracked, so a closed/reused fd
+        // number is never left poking a stale watchdog entry.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        epoll_rearm_watchdog::untrack(fd.native());
 
         if !(self.flags.contains(Flags::PollReadable)
             || self.flags.contains(Flags::PollWritable)
@@ -1223,9 +1230,115 @@ pub enum Flags {
     IgnoreUpdates,
 
     Socket,
+
+    /// Opt-in only (set before the first registration; currently only
+    /// Bun.Terminal's PTY master): OHOS's epoll reports CTL_ADD/CTL_MOD
+    /// success but can silently stop delivering events afterward. Enrolls
+    /// the fd in `epoll_rearm_watchdog`'s redundant-CTL_MOD recovery.
+    EpollRearmWatch,
 }
 
 pub type FlagsSet = enumset::EnumSet<Flags>;
+
+/// Userspace recovery for an OHOS kernel epoll defect: `epoll_ctl` reports
+/// success but the kernel can silently stop delivering events for that fd
+/// afterward. A redundant `epoll_ctl(CTL_MOD)` from this thread unsticks it.
+/// Only fds opted in via `Flags::EpollRearmWatch` are tracked. Backoff: any
+/// real registration activity resets the poke interval to
+/// `BASE_POKE_INTERVAL`; watchdog pokes double it up to `MAX_POKE_INTERVAL`.
+/// A healthy, actively-read fd never accrues a poke -- the redundant
+/// CTL_MOD is a harmless no-op either way.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+mod epoll_rearm_watchdog {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, Once, OnceLock};
+    use std::time::{Duration, Instant};
+
+    const BASE_POKE_INTERVAL: Duration = Duration::from_millis(250);
+    const MAX_POKE_INTERVAL: Duration = Duration::from_millis(1000);
+    const TICK: Duration = Duration::from_millis(100);
+
+    struct Entry {
+        watcher_fd: i32,
+        events: u32,
+        // Kernel event userdata: the FilePoll pointer. CTL_MOD replaces it
+        // wholesale, so it must round-trip byte-for-byte.
+        userdata: u64,
+        last_activity: Instant,
+        interval: Duration,
+    }
+
+    fn table() -> &'static Mutex<HashMap<i32, Entry>> {
+        static TABLE: OnceLock<Mutex<HashMap<i32, Entry>>> = OnceLock::new();
+        TABLE.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    /// Called after every successful ADD/MOD on an `EpollRearmWatch` fd:
+    /// resets it to the base interval, so an actively-read fd never accrues
+    /// a poke.
+    pub(crate) fn track(watcher_fd: i32, fd: i32, events: u32, userdata: u64) {
+        {
+            let mut t = table().lock().unwrap_or_else(|e| e.into_inner());
+            t.insert(
+                fd,
+                Entry {
+                    watcher_fd,
+                    events,
+                    userdata,
+                    last_activity: Instant::now(),
+                    interval: BASE_POKE_INTERVAL,
+                },
+            );
+        }
+        static STARTED: Once = Once::new();
+        STARTED.call_once(|| {
+            let _ = std::thread::Builder::new()
+                .name("bun-epoll-rearm-wd".into())
+                .spawn(run);
+        });
+    }
+
+    /// Called on every unregister (cheap no-op when untracked), so a closed
+    /// or reused fd never keeps a stale watchdog entry.
+    pub(crate) fn untrack(fd: i32) {
+        if let Ok(mut t) = table().lock() {
+            t.remove(&fd);
+        }
+    }
+
+    fn run() {
+        use bun_sys::linux::{self, EPOLL};
+        loop {
+            std::thread::sleep(TICK);
+            let now = Instant::now();
+            // Collect due pokes under the lock; issue the syscalls after
+            // releasing it.
+            let due: Vec<(i32, i32, u32, u64)> = {
+                let mut t = match table().lock() {
+                    Ok(t) => t,
+                    Err(e) => e.into_inner(),
+                };
+                let mut due = Vec::new();
+                for (&fd, entry) in t.iter_mut() {
+                    if now.duration_since(entry.last_activity) >= entry.interval {
+                        due.push((entry.watcher_fd, fd, entry.events, entry.userdata));
+                        entry.last_activity = now;
+                        entry.interval = (entry.interval * 2).min(MAX_POKE_INTERVAL);
+                    }
+                }
+                due
+            };
+            for (watcher_fd, fd, events, userdata) in due {
+                let mut event = linux::epoll_event { events, u64: userdata };
+                // SAFETY: epoll_ctl is documented safe to call concurrently
+                // with epoll_wait/pwait on the same epfd; a failure (likely
+                // ENOENT after an unregister) is inert.
+                let _ =
+                    unsafe { linux::epoll_ctl(watcher_fd, EPOLL::CTL_MOD, fd, &raw mut event) };
+            }
+        }
+    }
+}
 
 impl Flags {
     #[cfg(any(target_os = "macos", target_os = "freebsd"))]

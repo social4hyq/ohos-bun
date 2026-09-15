@@ -210,6 +210,11 @@ bitflags::bitflags! {
         const USE_PREAD                = 1 << 8;
         const IS_PAUSED                = 1 << 9;
         const KEEP_ALIVE               = 1 << 10; // default true
+        /// Opt-in, set before the first `start()`: enrolls the underlying
+        /// `FilePoll` in `posix_event_loop`'s epoll-rearm watchdog (OHOS's
+        /// epoll can silently stop delivering events after a successful
+        /// CTL_ADD/CTL_MOD). Currently only Bun.Terminal's PTY master reader.
+        const EPOLL_REARM_WATCH        = 1 << 11;
     }
 }
 
@@ -528,6 +533,10 @@ impl PosixBufferedReader {
             return Ok(());
         };
         poll.set_owner(Owner::new(PollTag::BufferedReader, owner_ptr.cast()));
+
+        if self.flags.contains(PosixFlags::EPOLL_REARM_WATCH) {
+            poll.set_flag(FilePollFlag::EpollRearmWatch);
+        }
 
         if !poll.has_flag(FilePollFlag::WasEverRegistered)
             && self.flags.contains(PosixFlags::KEEP_ALIVE)
