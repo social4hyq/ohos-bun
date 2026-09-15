@@ -833,7 +833,12 @@ describe("appendFile honors an explicit 'w' flag", () => {
 // and Linux's generic_write_checks() then clamps the write to the limit and fails
 // the next one with EFBIG. Linux-only: BSD kernels reject the whole write instead,
 // so the byte split is not portable.
-describe.skipIf(!isLinux)("writeFileSync when the write fails partway", () => {
+// This device's toybox `/bin/sh` ulimit builtin is a documented no-op ("ulimit -f 1"
+// never actually installs RLIMIT_FSIZE -- confirmed via bare `/bin/sh -c 'ulimit -f 1;
+// ulimit -f'` printing nothing back, while a real syscall via Python's
+// resource.setrlimit(RLIMIT_FSIZE, ...) enforces EFBIG correctly). Structural
+// environment gap, not a bun bug. 2026-09-15.
+describe.skipIf(!isLinux || process.platform === "openharmony")("writeFileSync when the write fails partway", () => {
   const fixture = join(import.meta.dir, "fs-writeFile-write-error-fixture.js");
 
   async function runUnderFileSizeLimit(path: string, flag: string) {
@@ -4416,7 +4421,9 @@ describe("createWriteStream", () => {
     });
   });
 
-  it.skipIf(!isLinux)("surfaces EFBIG when RLIMIT_FSIZE truncates a write", async () => {
+  // Same toybox `/bin/sh` ulimit no-op as "writeFileSync when the write fails
+  // partway" above -- `ulimit -f` never installs RLIMIT_FSIZE on this device.
+  it.skipIf(!isLinux || process.platform === "openharmony")("surfaces EFBIG when RLIMIT_FSIZE truncates a write", async () => {
     using dir = tempDir("cws-efbig", {});
     const out = join(String(dir), "out.bin");
     const script = `
@@ -5207,8 +5214,11 @@ describe("utimesSync", () => {
     expect(finalStats.atime).toEqual(prevAccessTime);
   });
 
-  // Windows wraps pre-epoch times through u32, matching Node (see Stat.rs)
-  it.skipIf(isWindows)("sets pre-epoch times from negative fractional string timestamps", () => {
+  // Windows wraps pre-epoch times through u32, matching Node (see Stat.rs).
+  // OHOS: confirmed kernel/fs-level, not a bun bug -- bare Python
+  // os.utime(path, (-1.5, -1.5)) followed by os.stat() also reads back 0 on
+  // this device, no bun involved. 2026-09-15.
+  it.skipIf(isWindows || process.platform === "openharmony")("sets pre-epoch times from negative fractional string timestamps", () => {
     const tmp = join(tmpdir(), "utimesSync-test-file-" + Math.random().toString(36).slice(2));
     writeFileSync(tmp, "test");
 
@@ -5630,7 +5640,9 @@ it("new Stats", () => {
 
 // On Windows, Node.js deliberately reinterprets stat times via `unsigned long` (see
 // libuv Y2038 note), so pre-epoch semantics there are not "negative ns".
-it.skipIf(isWindows)("BigIntStats *Ns fields are negative for pre-epoch timestamps", () => {
+// Same OHOS kernel/fs clamp-to-0 as "sets pre-epoch times from negative
+// fractional string timestamps" above.
+it.skipIf(isWindows || process.platform === "openharmony")("BigIntStats *Ns fields are negative for pre-epoch timestamps", () => {
   using dir = tempDir("bigintstats-pre-epoch", { "f.txt": "x" });
   const f = join(String(dir), "f.txt");
 
