@@ -70,7 +70,15 @@ describe("mv", async () => {
   // POSIX `mv` must fall back to copy+unlink when `rename()` returns EXDEV
   // (source and destination on different filesystems). Requires a writable
   // mount on a different device from the harness temp dir.
-  describe("cross-device (EXDEV)", () => {
+  //
+  // On OHOS, findCrossDeviceDir()'s accessSync(W_OK|X_OK) check on /dev/shm
+  // returns success (DAC bits show 1777/world-writable) but an actual
+  // mkdirSync() there gets EACCES -- confirmed independent of bun (plain
+  // os.access()/os.mkdir() in Python show the same split). The app sandbox's
+  // MAC layer denies the write in a way access(2) doesn't see, so `other`
+  // resolves to a directory that isn't really writable instead of the
+  // already-existing `skip` fallback correctly triggering. 2026-09-15.
+  describe.skipIf(process.platform === "openharmony")("cross-device (EXDEV)", () => {
     const tmp = tmpdir();
     function findCrossDeviceDir(): string | undefined {
       if (!isPosix) return undefined;
