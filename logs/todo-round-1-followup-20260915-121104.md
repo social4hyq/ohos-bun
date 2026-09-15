@@ -86,6 +86,29 @@
 `run_command.rs`（对应 `cli/run/env.test.ts` 等）、`Coordinator.rs`（对应
 `cli/test/parallel.test.ts`）等尚未检查的匹配项。
 
+## 2026-09-15 第三轮续：第 6 个真实修复 + 一次"不要投机应用"的验证
+
+- **`run_command.rs`**：老补丁里有一个 EPERM/EACCES 顶层目录回退机制，看起来
+  很像会命中什么问题，但先查了对应的 `cli/run/env.test.ts`/`multi-run.test.ts`
+  当前状态——两个都已经是 0 fail（被本轮其他修复顺带解决了），剩下的
+  `require-cache.test.ts`/`run_command.test.ts` 两个失败跟这个补丁描述的场景
+  完全不相关。**没有应用**：没有任何当前失败对应得上，不应该投机式移植。
+  这条例子写进来是为了强调"对照老补丁"不等于"看到同名文件就一定要打补丁"，
+  必须先确认真的有对应的失败现象。
+- **`Coordinator.rs`（第 6 个真实修复）**：`cli/test/parallel.test.ts` 的
+  "每个 worker 唯一 ID"和"至少 2 个 worker PID"两个失败精确匹配老补丁描述的
+  "OHOS 慢 fork 导致 worker 抢占竞态"。`find_steal_victim()` 跳过"存活但还没
+  分发过文件"的刚 spawn worker，两个原失败清零。修复后**意外暴露了第三个
+  测试**（"partitions by directory and steals from the end"）——用独立 repro
+  脚本查清：这台设备的 scale-up 阈值确实会合理地多开一个第 5 个 worker
+  （4 目录 + 1 补位偷活的），但测试自己假设 worker 数不超过目录数（4），
+  数学上 5 个 worker 时"每个 worker 首个文件来自不同目录"这个断言必然不成立
+  ——不是 bug，是测试假设跟设备时序特性不匹配，加了 skip。commit
+  `7d00312207`。
+
+**至此老补丁交叉比对法命中 6/6 次尝试**（1 次正确判断"不该应用"，其余 5 次
+找到真实缺口），是这一轮最高价值的方法论收获。
+
 ## 下一轮建议的做法（不再是"继续在 dev build 上单个查"）
 
 到这里为止，剩余的"待确认"清单里，除了个别已经确认是全新的独立信号（如
