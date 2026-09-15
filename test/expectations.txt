@@ -370,6 +370,7 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # once it actually runs `tsc` on the scaffolded project. 13/17 other tests
 # pass. 2026-09-15.
 [ OPENHARMONY ] test/cli/init/init.test.ts [ Failure ] # same tsgo native binary gap as bun-types.test.ts; all 4 failures are "installs TypeScript 7, typechecks, and builds"
+[ OPENHARMONY ] test/cli/create/create-jsx.test.ts [ Failure ] # 2026-09-15: "react spa (tailwind)" build fails with "Cannot find native binding" for tailwindcss-oxide's rust crate -- upstream has no openharmony build. A community port exists (@ohos-npm-ports/tailwindcss-oxide@4.3.3-2, confirmed present on the registry, not yet verified working here) but this test's `bun create ./index.tsx` single-file scaffolding flow resolves+installs the whole project in one internal step, unlike the rsbuild/rspack case which has a separate explicit `bun install` step giving a clean point to patch in a resolutions override before. Not attempted this round -- would need either a bun-level scaffolding hook/env override or a different wiring approach.
 
 # --- regression: real-machine 2026-07-27 reconciliation (pre-dates ohos-minimal) ---
 # Historical note carried over from the old ohos-aarch64 branch's expectations
