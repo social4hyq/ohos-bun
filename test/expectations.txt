@@ -360,6 +360,7 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # expo-app tarball extract fails for react-devtools-core. bun-types tsgo
 # expects @typescript/native-preview-openharmony-arm64 which doesn't exist.
 [ OPENHARMONY ] test/integration/bun-types/bun-types.test.ts [ Flaky ] # tsgo native binary unavailable for openharmony-arm64
+[ OPENHARMONY ] test/integration/vite-build/vite-build.test.ts [ Flaky ] # 2026-09-15: fixed the broader root cause (bun install's OperatingSystem npm os-matching had no openharmony bit at all -- see memory project_ohos_bun_npm_os_matching_fix), verified fixed for rolldown/esbuild's own openharmony-tagged optionalDependencies. This fixture's `rolldown-vite`->`rollup@4.63.3` still fails though: rollup's own `@rollup/rollup-openharmony-arm64` optionalDependency parses its os field as OperatingSystem::NONE (0 bits) under a normal `bun install`, but correctly as OPENHARMONY (512) under `--no-cache --force` -- reproduced across 5+ rollup versions never touched earlier in this session, so not a stale local cache. Root cause not found after an extensive debug-instrumented investigation (ruled out nested-vs-top-level, optionalDependency count/ordering, scope mixing); a real, narrower, unresolved bun resolver bug, not an OHOS platform issue and not something this patch introduced.
 
 # cli/init/init.test.ts: same tsgo/@typescript native binary gap as
 # bun-types.test.ts above -- all 4 failures are "installs TypeScript 7,
