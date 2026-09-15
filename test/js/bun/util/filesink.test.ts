@@ -359,7 +359,13 @@ it.skipIf(!isPosix)(
 // drain-flush-drain shape needs the AF_UNIX send buffer to hold the remainder
 // (Linux default ~200KB; macOS is ~8KB, so flush() returns Pending there and
 // the promise was already settled via on_write).
-it.skipIf(!isLinux)(
+// OHOS's kernel doubles AF_UNIX SOCK_STREAM's default SO_SNDBUF relative to
+// typical Linux (measured: 524288 vs the ~200KB this test assumes), so the
+// 300 KB write below fits entirely in the send buffer and completes
+// synchronously instead of backpressuring -- same "doubled buffer size"
+// kernel quirk already documented for dgram tests (see
+// test/expectations.txt's common.isLinux entries). 2026-09-15.
+it.skipIf(!isLinux || process.platform === "openharmony")(
   "end() after a backpressured write() with the reader drained returns the write's promise and resolves it",
   async () => {
     const [readFd, writeFd] = createSocketPair();

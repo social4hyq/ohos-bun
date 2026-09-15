@@ -534,6 +534,7 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 [ OPENHARMONY ] test/js/bun/dns/resolve-dns.test.ts [ Failure ] # class D: getaddrinfo ESERVFAIL 查 example.com（沙盒外网 DNS 不可达）
 [ OPENHARMONY ] test/regression/issue/22712.test.ts [ Failure ] # class D: queryA ENOTFOUND dns.google（外网 DNS 受限）
 [ OPENHARMONY ] test/js/node/dns/node-dns.test.js [ Failure ] # class D: queryNaptr/queryPtr ENOTIMP/ENOTFOUND socketify.dev（外网 DNS 受限）
+[ OPENHARMONY ] test/js/node/test/parallel/test-net-autoselectfamily.js [ Failure ] # class D: 本机常驻 vpn-tun 透明代理在协议栈层伪造任意出公网 TCP connect 握手成功，happy-eyeballs 少候选地址断言测不出真实结果（见 environment_vpn_tun_fakes_wan_connect 记忆，已定案）
 [ OPENHARMONY ] test/js/bun/shell/shell-load.test.ts [ Failure ] # class B: shell 90s timeout（OHOS PTY/spawn 慢）
 [ OPENHARMONY ] test/regression/issue/26286.test.ts [ Failure ] # class B: Bun.Terminal 90s timeout（PTY seccomp）
 [ OPENHARMONY ] test/js/node/tty.test.ts [ Failure ] # class B: TTY 90s timeout（setRawMode/PTY seccomp）
