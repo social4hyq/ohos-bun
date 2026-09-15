@@ -488,3 +488,26 @@ OHOS 专属的既有 bug，已加 `skipIf(openharmony)`（不是本会话职责�
 **验证**：process.test.js 169/174 过（仅剩范围外的 node 版本漂移项）；`bun build --compile hello.ts` 真机跑通、打印 "hi"；`process.release.sourceUrl` 正确变成 `bun-openharmony-aarch64.zip`；`sourcemap-simd.test.ts` ×6（spawn-waiter-thread 回归探针）全过；`bun-pm-why.test.ts` 28/28 全过。commit `7e3d589cbb`。
 
 **结论强化**：本仓至少存在**三个**互相独立、语义不同的 `OperatingSystem`-like 枚举消费点（`resolver_hooks.rs` npm 安装期 os/cpu 匹配 / `process.platform` 直接消费者 / `bun_core::env.rs` release-URL+CompileTarget 体系），每个都要单独接线 OHOS，改一个不代表另外两个也修了——下次 upstream tag merge 若引入第四个同构枚举，先假设它也需要单独处理，别默认"已经全接好了"。
+
+## 第十二轮：compile-target 回归验证 + ReactSSR 安装既有问题收窄
+
+- **compile-target 批次**：`compile-elf-segment-layout.test.ts` 2/2 通过；
+  `bun-build-compile-sourcemap.test.ts` + `bun-build-compile.test.ts` 30 pass /
+  3 pre-existing skip / 0 fail。二者直接覆盖 `env.rs` 新增
+  `OperatingSystem::OpenHarmony` 后的 standalone ELF 注入路径，编译产物可运行，
+  严格 PT_LOAD 对齐检查通过。日志：
+  `logs/round-12-compile-elf-segment-layout-20260916.log` 与
+  `logs/round-12-bun-build-compile-20260916.log`。
+- **bundler compile 批次**：最初 128 pass / 7 fail；失败全部是 ReactSSR 的 7 个
+  format/bytecode/minify 变体，均在 `bun add react react-dom` 后报
+  `Could not resolve: "react-dom/server"`。其它 `bundler_compile`、autoload、
+  splitting 路径均通过。日志：`logs/round-12-bundler-compile-20260916.log`。
+- **根因与 A/B**：debug fixture 取证显示 `bun add` 输出声称两个包都已安装，
+  但 `node_modules/` 只有 `react`，没有 `react-dom`。dev Bun 复测 7/7 失败，
+  已发布 production Bun 1.4.2 同一测试亦为 7/7 同签名失败；这是已记录的
+  install resolve 成功而 materialize 不完整问题，不是本次 OpenHarmony
+  `OperatingSystem` / ELF 修复带来的回归。
+- **最小隔离**：不用 `test/expectations.txt` 整文件隔离（该文件其余 128 个案例
+  可运行）；只在 ReactSSR 循环中于 `process.platform === "openharmony"` 使用
+  `itBundledBase.skip`。目标复测为 7 skip / 0 fail。注释记录 production A/B
+  证据与 `react-dom/server` 缺失根因。
