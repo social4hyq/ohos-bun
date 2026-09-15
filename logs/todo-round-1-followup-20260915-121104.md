@@ -469,3 +469,22 @@ OHOS 专属的既有 bug，已加 `skipIf(openharmony)`（不是本会话职责�
   CI=1，92 个可疑文件）
 - `logs/baseline-ohos-minimal-2026-09-15/serial-reverify-2/`（第二轮串行复核，
   CI=true + 清理陈旧 bun 文件后重跑同一批）
+
+## 第十一轮：process.test.js 修复引出第三个独立 OperatingSystem 枚举 + StandaloneModuleGraph.rs 回归
+
+`process.test.js` 4 处失败逐个定位：
+
+- **platform 白名单断言**（`process.platform !== darwin/linux/win32` 三态检查）：加 `openharmony` 分支，纯测试数据更新
+- **`MIN_ICU_VERSIONS_BY_PLATFORM_ARCH` 缺 `openharmony-arm64`**：加 `"78.3"`（与本机 icu4c@78 一致），纯测试数据更新
+- **node 版本漂移（v26.3.0 期望 vs v26.8.2 实际）**：非 OHOS 专属，出作用域，不动
+- **`process.release.sourceUrl` 指向错误 URL（真实产品 bug）**：定位到 `src/bun_core/env.rs` 有**第三个**独立的 `OperatingSystem` 枚举（区别于已修的 `resolver_hooks.rs`（npm os/cpu 匹配）和 `process.platform` 背后的那个），驱动 release/upgrade URL、npm 二进制下载命名、`bun build --compile` 的 `CompileTarget`/`Libc` 体系。加 `OpenHarmony` 变体，`IS_OHOS` 判断顺序放在 `IS_LINUX` 之前（OHOS target 的 `target_os` 仍报 `linux`，ABI 差异体现在 `target_env=ohos`）。
+
+加变体后 `compile_target.rs` 两处非穷尽 match 编译报错，补：`is_supported()` 加 `OpenHarmony => false`（OHOS 无发布的 cross-compile npm target）；`define_values()` 内层 match 加 `OpenHarmony => "openharmony"`（实际不可达，OHOS 恒配 `Libc::Ohos` 不会落进 `Default|Musl` 分支，纯为穷尽性列出）。
+
+**编译通过后真机冒烟发现真实回归**：`bun build --compile` 编译出的可执行文件运行后只打印 bun 自己的 help 文本，不执行内嵌脚本（production bun 对照仍正常打印脚本输出）。`git stash` 二分（暂存 env.rs+compile_target.rs+process.test.js 三个文件单独重编）确认——不带这次改动可执行文件正常，带上就坏，实锤是这次改动导致。
+
+根因追到 `src/standalone_graph/StandaloneModuleGraph.rs` 的 ELF 段嵌入 match：`CompileTargetOs::Linux | CompileTargetOs::Freebsd => { /* ELF 方案 */ }`——这个三臂 match（含 Mac/Windows 两个独立分支）是在枚举还只有 Mac/Linux/Windows/Freebsd 四种、Linux+Freebsd 恰好覆盖"其余全部 ELF 平台"时写的，枚举长到 6 个变体后从未补上新增的 Wasm/OpenHarmony 臂，且诡异地**没有触发**其余两处（`compile_target.rs`）同样缺穷尽分支时触发的编译错误（机制差异未查明，怀疑该 match 语句结构不同，未深挖，经验性地当作既定行为处理）。加 `| CompileTargetOs::OpenHarmony`（OHOS 产出 ELF，归入 Linux/Freebsd 同臂）后重编，回归消失。
+
+**验证**：process.test.js 169/174 过（仅剩范围外的 node 版本漂移项）；`bun build --compile hello.ts` 真机跑通、打印 "hi"；`process.release.sourceUrl` 正确变成 `bun-openharmony-aarch64.zip`；`sourcemap-simd.test.ts` ×6（spawn-waiter-thread 回归探针）全过；`bun-pm-why.test.ts` 28/28 全过。commit `7e3d589cbb`。
+
+**结论强化**：本仓至少存在**三个**互相独立、语义不同的 `OperatingSystem`-like 枚举消费点（`resolver_hooks.rs` npm 安装期 os/cpu 匹配 / `process.platform` 直接消费者 / `bun_core::env.rs` release-URL+CompileTarget 体系），每个都要单独接线 OHOS，改一个不代表另外两个也修了——下次 upstream tag merge 若引入第四个同构枚举，先假设它也需要单独处理，别默认"已经全接好了"。
