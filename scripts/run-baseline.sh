@@ -17,6 +17,11 @@ rm -rf test/js/node/test/.tmp.* 2>/dev/null
 rm -f /data/storage/el2/base/tmp/package.json 2>/dev/null
 rm -rf /data/storage/el2/base/tmp/buntmp-* 2>/dev/null
 
+# 兜底清理孤儿测试进程（verdaccio / bun-profile install|patch|add）：批次中断或
+# 用例超时被强杀时 afterAll 不会跑，这里在退出（含 Ctrl-C）时扫一遍 /proc。
+SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+trap 'sh "$SELF_DIR/ohos/reap-test-procs.sh" >/dev/null 2>&1 || true' EXIT
+
 run_batch() {
   name=$1; shift
   echo "=== $name $(date '+%H:%M:%S') ===" | tee -a "$OUT/SUMMARY.txt"
@@ -49,7 +54,7 @@ for b in sorted(glob.glob(outdir+'/B?.json')):
     name=os.path.basename(b).replace('.json','')
     try:
         d=json.load(open(b))
-        t=d.get('total',0); p=d.get('pass',0); f=d.get('fail',0)
+        t=len(d); p=sum(1 for r in d if r.get('status')=='pass'); f=sum(1 for r in d if r.get('status')=='fail')
         print(f'{name}: total={t} pass={p} fail={f} ({100*p/t:.1f}% pass)' if t else f'{name}: 无数据')
-    except: print(f'{name}: json 解析失败')
+    except Exception as e: print(f'{name}: json 解析失败 ({e})')
 " | tee -a "$OUT/SUMMARY.txt"
