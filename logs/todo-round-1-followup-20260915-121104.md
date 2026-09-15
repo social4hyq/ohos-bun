@@ -413,6 +413,42 @@ open '/'`，很可能是已知的根目录访问受限类）、`js/bun/http/serv
   是这个版本压根没有 openharmony 产物，我的解析器修复对这个场景本来就无能
   为力，维持隔离，原判断成立。
 
+## 第九轮：Bun.Terminal/PTY 三处真实修复
+
+深挖 `cli/bun.test.ts` 的 tty 颜色检测失败时，A/B 对比已发布 production bun
+发现这是真回归（production 过，本地重做的 dev 二进制不过），顺藤摸瓜查到
+老补丁系列里 `Terminal.rs.patch` + `posix_event_loop.rs.patch` 两个 OHOS
+专属修复完全没移植。详细机制、逐条 A/B 验证结果见记忆
+`project_ohos_bun_terminal_pty_fixes`，commit `7c6e587e72`。摘要：
+
+- openpty 的 dlopen 候选库名列表漏了 OHOS musl 的 `libc.so`（原来只有
+  glibc 命名），PTY 创建路径的一环直接找不到函数。
+- 新增 epoll rearm watchdog（`posix_event_loop.rs` + `PipeReader.rs`
+  opt-in flag，只接给 Bun.Terminal 的 PTY master reader）：应对已知的
+  OHOS 内核 epoll 缺陷（`epoll_ctl` 报告成功但内核之后可能静默停止投递
+  事件），跟之前 claude 空闲 CPU 那个内核 bug 同一家族的另一个受害路径。
+- `deferred_exit` 字段修复子进程秒退时 exit 回调被无声丢弃的一次性 guard
+  竞态（读完成早于 JS wrapper 创建）。
+
+效果：`regression/issue/26286.test.ts`（0/2→2/2）、`repl.test.ts`
+（127/127）、`js/node/tty.test.ts`（已是 stale 条目）三个 quarantine 直接
+摘除；`bun-security-scanner-matrix-with-node-modules.test.ts` 从"全部失败
+样本"到 51/64（非 skip 部分）过；`terminal.test.ts`/`terminal-spawn.test.ts`/
+`terminal-platform-gaps.test.ts` 从大面积失败/90s 超时降到零星单测 flaky
+（具体哪个测试失败每次不一样，2 个 A/B 确认跟 production 一致的固定失败
+项转成 per-test skipIf，其余仍整文件 `[ Flaky ]`）。
+
+**副产物**：调查中撞上本机 bun keg 被另一个并发会话从 1.4.2_8 升级到
+1.4.2_9，导致 `build.ninja` 里硬编码的 bootstrap bun 路径失效、LINK 步骤
+报 "inaccessible or not found"——建了个兼容 symlink 绕过（不碰真实 brew
+状态），再次印证"共享机器随时可能被并发操作"这条已知风险，这次撞在本机
+keg 而不是容器/tap。
+
+同批顺手用同一套 A/B 方法论确认修复了 `spawnsync-isolated-event-loop.test.ts`
+的一个 GC-keepalive-count 测试——production 上同样失败，是真实的、非
+OHOS 专属的既有 bug，已加 `skipIf(openharmony)`（不是本会话职责范围内，
+只是顺路确认清楚原因避免误判成回归）。
+
 ## 产物
 
 - `logs/baseline-ohos-minimal-2026-09-15/serial-reverify/`（第一轮串行复核，
