@@ -358,6 +358,15 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # expects @typescript/native-preview-openharmony-arm64 which doesn't exist.
 [ OPENHARMONY ] test/integration/bun-types/bun-types.test.ts [ Flaky ] # tsgo native binary unavailable for openharmony-arm64
 
+# cli/init/init.test.ts: same tsgo/@typescript native binary gap as
+# bun-types.test.ts above -- all 4 failures are "installs TypeScript 7,
+# typechecks, and builds" (bun init -y / --react / --react=tailwind /
+# --react=shadcn), each hitting "Unable to resolve
+# @typescript/typescript-openharmony-arm64" from tsc.js's getExePath()
+# once it actually runs `tsc` on the scaffolded project. 13/17 other tests
+# pass. 2026-09-15.
+[ OPENHARMONY ] test/cli/init/init.test.ts [ Failure ] # same tsgo native binary gap as bun-types.test.ts; all 4 failures are "installs TypeScript 7, typechecks, and builds"
+
 # --- regression: real-machine 2026-07-27 reconciliation (pre-dates ohos-minimal) ---
 # Historical note carried over from the old ohos-aarch64 branch's expectations
 # file: a batch of vague "[ Flaky ] # N tests" labels from a --parallel-based

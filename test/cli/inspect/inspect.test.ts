@@ -382,9 +382,16 @@ describe("unix domain socket without websocket", () => {
   let randomSocketPath: () => string;
 
   beforeAll(() => {
-    // Create .tmp in root repo directory to avoid long paths on Windows
-    tempdir = ".tmp";
-    fs.mkdirSync(tempdir, { recursive: true });
+    // ".tmp" in the repo root avoids long paths on Windows, but on OHOS the
+    // repo checkout lives on hmdfs, which rejects AF_UNIX bind() (EPERM) --
+    // use the real system tmpdir (EL2) instead, matching the junit-reporter
+    // describe block below.
+    if (process.platform === "openharmony") {
+      tempdir = String(tempDir("inspect-unix-socket", {}));
+    } else {
+      tempdir = ".tmp";
+      fs.mkdirSync(tempdir, { recursive: true });
+    }
     randomSocketPath = randomSocketPathFn(tempdir);
   });
 

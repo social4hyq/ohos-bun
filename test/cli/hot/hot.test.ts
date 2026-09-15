@@ -4,8 +4,10 @@ import { copyFileSync, cpSync, readFileSync, renameSync, rmSync, unlinkSync, wri
 import { bunEnv, bunExe, isDebug, isWindows, tmpdirSync, waitForFileToExist } from "harness";
 import { join } from "path";
 
-const timeout = isDebug ? Infinity : 10_000;
-const longTimeout = isDebug ? Infinity : 30_000;
+// OHOS: slower fs.watch/fork/build I/O needs more headroom for the 50-cycle
+// hot-reload loop below than other platforms' 10s budget.
+const timeout = isDebug ? Infinity : process.platform === "openharmony" ? 60_000 : 10_000;
+const longTimeout = isDebug ? Infinity : process.platform === "openharmony" ? 90_000 : 30_000;
 
 /**
  * Helper to parse stderr from a --hot process that throws errors.
