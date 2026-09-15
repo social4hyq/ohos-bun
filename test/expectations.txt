@@ -260,6 +260,12 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # round 1 follow-up.
 [ OPENHARMONY ] test/js/bun/http/bun-listen-connect-args.test.ts [ Failure ] # hmdfs disallows AF_UNIX bind (EPERM); uses a bare relative .sock path that resolves against the hmdfs-backed repo cwd, not tmpdirSync()
 
+# bun-serve-args: same class as bun-listen-connect-args.test.ts right above --
+# all 6 failures are Bun.serve({unix: "bare-relative-name.sock" | <number>})
+# calls, resolving against the hmdfs-backed repo cwd. 2026-09-15 full-baseline
+# round 1 follow-up.
+[ OPENHARMONY ] test/js/bun/http/bun-serve-args.test.ts [ Failure ] # same AF_UNIX-on-hmdfs class as bun-listen-connect-args.test.ts, bare relative .sock paths
+
 # next-pages: all 3 files import `bun:internal-for-testing` at module top
 # level, which doesn't exist in a release build (ENOENT, deterministic,
 # fails before any next-swc/puppeteer code runs) -- re-verified 2026-08-25,

@@ -584,7 +584,13 @@ describe("SQL adapter environment variable precedence", () => {
       expect(options.options.port).toBe(3306);
     });
 
-    test.skipIf(isWindows)("should work with unix:// protocol and explicit adapter", () => {
+    // Hardcodes a /tmp path; OHOS's app sandbox restricts /tmp (same class as
+    // bunx.test.ts's readdirSync("/tmp") EACCES and the hmdfs-AF_UNIX-bind
+    // class documented in test/expectations.txt), so binding a unix socket
+    // there fails. 2026-09-15.
+    test.skipIf(isWindows || process.platform === "openharmony")(
+      "should work with unix:// protocol and explicit adapter",
+      () => {
       using sock = Bun.listen({
         unix: "/tmp/thisisacoolmysql.sock",
         socket: {
