@@ -887,7 +887,7 @@ impl Linux {
     /// on the same `(wd, name)` whose mask is rename-worthy. `base` must be
     /// the same 4-byte-aligned buffer `thread_main` read `n` bytes into.
     #[cfg(target_env = "ohos")]
-    fn batch_has_rename_event(base: *const u8, n: usize, wd: core::ffi::c_int, name: &[u8]) -> bool {
+    fn scan_for_rename_event(base: *const u8, n: usize, wd: core::ffi::c_int, name: &[u8]) -> bool {
         use bun_sys::linux::IN;
         const RENAME_BITS: u32 =
             IN::CREATE | IN::DELETE | IN::DELETE_SELF | IN::MOVE_SELF | IN::MOVED_FROM | IN::MOVED_TO;
@@ -913,6 +913,55 @@ impl Linux {
                 }
             }
             j += event_len;
+        }
+        false
+    }
+
+    /// `scan_for_rename_event` plus a cross-`read()` extension for `IN_ATTRIB`
+    /// specifically: the labeling `IN_CREATE` this is hunting for is queued by
+    /// the same kernel operation but can land in a separate `read()` from the
+    /// one that woke us on the `ATTRIB`, so a same-batch scan alone still
+    /// misses it sometimes. When the first scan comes up empty and `is_attrib`
+    /// is set, poll briefly and pull one more read into `buf[*n..]` — this
+    /// only fires for `ATTRIB` (the one mask this reordering ever affects),
+    /// not on every non-rename event, so `MODIFY`/`ACCESS`/etc. never pay for
+    /// a `poll()` they can't benefit from. `*n` grows in place so
+    /// `thread_main`'s own loop dispatches the newly-read bytes as real
+    /// events too, rather than losing them to the next full re-read.
+    #[cfg(target_env = "ohos")]
+    fn batch_has_rename_event(
+        fd: sys::Fd,
+        buf: &mut [u8],
+        n: &mut usize,
+        wd: core::ffi::c_int,
+        name: &[u8],
+        is_attrib: bool,
+    ) -> bool {
+        if Self::scan_for_rename_event(buf.as_ptr(), *n, wd, name) {
+            return true;
+        }
+        if is_attrib && *n < buf.len() {
+            let mut pfd = [sys::posix::PollFd {
+                fd: fd.native(),
+                events: sys::posix::POLL_IN,
+                revents: 0,
+            }];
+            if matches!(sys::posix::poll(&mut pfd, 2), Ok(rc) if rc > 0) {
+                // SAFETY: `*n < buf.len()`, so `buf[*n..]` is a non-empty
+                // writable tail; disjoint from the `base[0..*n]` bytes the
+                // scan above (and any live event references) already read.
+                let rc2 = unsafe {
+                    sys::linux::read(fd.native(), buf.as_mut_ptr().add(*n), buf.len() - *n)
+                };
+                let got = match sys::get_errno(rc2) {
+                    E::SUCCESS => rc2 as usize,
+                    _ => 0,
+                };
+                if got > 0 {
+                    *n += got;
+                    return Self::scan_for_rename_event(buf.as_ptr(), *n, wd, name);
+                }
+            }
         }
         false
     }
@@ -967,7 +1016,8 @@ impl Linux {
                     return;
                 }
             }
-            let n = rc as usize;
+            #[cfg_attr(not(target_env = "ohos"), allow(unused_mut))]
+            let mut n = rc as usize;
             if n == 0 {
                 continue;
             }
@@ -1076,8 +1126,15 @@ impl Linux {
                     // this scan is free; gated to OHOS to leave other platforms'
                     // classification untouched.
                     #[cfg(target_env = "ohos")]
-                    let is_rename =
-                        is_rename || Self::batch_has_rename_event(buf.0.as_ptr(), n, wd, name);
+                    let is_rename = is_rename
+                        || Self::batch_has_rename_event(
+                            fd,
+                            &mut buf.0[..],
+                            &mut n,
+                            wd,
+                            name,
+                            ev.mask & IN::ATTRIB != 0,
+                        );
                     if is_rename {
                         WatchEventKind::Rename
                     } else {
