@@ -445,7 +445,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # fail because the *string* changed, not because the behavior did. Not
 # caused by this round's actual changes (StandaloneModuleGraph.rs); see
 # project_ohos_spawn_wait_hang_pattern memory, 2026-09-14 baseline addendum.
-[ OPENHARMONY ] test/cli/install/architecture-match.test.ts [ Failure ] # isOperatingSystemMatch("!openharmony") assumes openharmony can't be the host platform
 [ OPENHARMONY ] test/js/node/os/os.test.js [ Failure ] # platform()/type() allowlist predates "openharmony"/"HarmonyOS"
 [ OPENHARMONY ] test/js/node/test/parallel/test-dgram-socket-buffer-size.js [ Failure ] # common.isLinux gates the doubled-buffer-size expectation
 [ OPENHARMONY ] test/js/node/test/parallel/test-dgram-bind-fd.js [ Failure ] # same common.isLinux buffer-size gate as test-dgram-socket-buffer-size.js
@@ -618,4 +617,3 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # FIXED in r23 (commit 28603b97c). Root cause: copy_file_using_read_write_loop
 # (node_fs.rs:4918) EOF loop gated on `!broke` instead of `stat_size==0`.
 # GREEN verified with r23 build: 33/33 pass.
-

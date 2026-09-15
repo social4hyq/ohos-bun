@@ -529,3 +529,11 @@ OHOS 专属的既有 bug，已加 `skipIf(openharmony)`（不是本会话职责�
     `spawn-pipe-read-error-leak.test.ts` 为 3 pass / 0 fail：注册 fd 被关闭时的
     `FilePoll` teardown、真实 read error 与注入 read error 后的 `PipeReader`
     释放均正常。日志：`logs/round-12-pipe-epoll-regressions-20260916.log`。
+
+- **陈旧隔离复核**：`test/cli/install/architecture-match.test.ts` 在 round 7 的
+  OpenHarmony os/cpu 匹配修复后，直接用 dev binary 复测为 30 pass / 0 fail，涵盖
+  `openharmony` 与 `!openharmony` 两组断言；删除其 OPENHARMONY
+  `test/expectations.txt` 整文件隔离以恢复真实覆盖。日志：
+  `logs/round-12-architecture-match-20260916.log`。再以 CI runner（不带
+  `--ignore-expectations`）复测，同为 30 pass / 0 fail，确认条目已不再把它排除；
+  日志：`logs/round-12-architecture-match-runner-20260916.log`。
