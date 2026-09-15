@@ -307,6 +307,52 @@ open '/'`，很可能是已知的根目录访问受限类）、`js/bun/http/serv
 - 设备负载本轮结束时仍在 20+（正常应个位数），P3 列表里没有单独重跑到"干净
   隔离"状态的文件，结论都还是初步的。
 
+## 第六轮（2026-09-15 续）
+
+- **`js/third_party/rollup-v4/rollup-v4.test.ts`（真实修复）**：`test/package.json`
+  的 `rollup` 从 4.4.1 bump 到 4.50.2 ——registry 实测 rollup 从 4.50.0 起才有
+  openharmony-arm64 原生绑定；只测 `parseAst` 这个稳定 v4 API，v4.x 内 bump
+  行为中立。commit `2f1e279829`。
+- **`js/third_party/pnpm/pnpm.test.ts`（结构性，已隔离）**：fixture 依赖
+  `vite@5.4.10` → `esbuild@0.21.5`，esbuild 的 `@esbuild/openharmony-arm64`
+  从 0.25.6 起才有（registry 实测），fixture 是三方脚手架产物不是本仓断言，
+  改动成本大于收益，同 commit 隔离。
+- **`js/third_party/@napi-rs/canvas/napi-rs-canvas.test.ts`（结构性，已隔离）**：
+  无 openharmony-arm64 原生绑定；`@ohos-ports/napi-rs-canvas` 有真机验证过的
+  产物（见记忆 `reference_napi_rs_canvas_ohos_port_exists`），接线属独立
+  npm-porting 任务不是 bun 运行时问题，本轮不追，同 commit 隔离。
+- **`js/third_party/vitest/vitest.test.ts`（结构性，已隔离）**：`vitest@4.1.9`
+  自身传递依赖解析到 `rollup@4.37.0`（独立于本仓顶层 rollup 依赖，早于
+  4.50.0），`test/node_modules` 里已经有满足条件的 `rollup@4.62.2`/`4.63.1`
+  但 vitest 依赖树没解析到，深挖要改 vitest/vite 版本锁定成本过高，同 commit
+  隔离。
+- **`js/node/fs/fs.test.ts`（7 处，全部结构性，已隔离）**：commit `f70bb88b8e`。
+  - RLIMIT_FSIZE 一组（`writeFileSync when the write fails partway` x4 +
+    `createWriteStream surfaces EFBIG` x1）：toybox `/bin/sh` 的 `ulimit`
+    内建 no-op，已有记忆 `environment_toybox_sh_ulimit_broken` 精确覆盖，
+    裸 `/bin/sh -c 'ulimit -f 1; ulimit -f'` 读回空，但 Python
+    `resource.setrlimit` 走真 syscall 能正确 enforce EFBIG——内核没问题，
+    纯 shell 内建的坑。
+  - 负数(pre-epoch)时间戳一组（`utimesSync` 负数分数字符串 + `BigIntStats
+    *Ns` 字段）：纯 Python `os.utime(path,(-1.5,-1.5))` + `os.stat()` 也读回
+    0，bun 完全不参与，是内核/文件系统把负数时间戳钳到 0，新建记忆
+    `environment_ohos_negative_timestamp_clamped_to_epoch`。
+- **`js/node/child_process/child_process.test.ts`（1 处，本地构建产物差异，
+  已隔离但需 formula 复验）**：commit `769049e609`。`"should allow us to set
+  env"` 用 `env: {TEST:"test"}`（无 `LD_LIBRARY_PATH`）spawn 子 bun 触发
+  ICU 动态库找不到。`readelf` 实测：本地 `ohos-minimal` 直构二进制
+  `NEEDED libicui18n.so.78`/`libicuuc.so.78` 且无 RPATH（本会话每次直构都要
+  手动 export `LD_LIBRARY_PATH` 正是因为这个）；而已发布的 formula 产物
+  `~/.harmonybrew/Cellar/bun/1.4.2_8/bin/bun` 的 `readelf -d` 只有
+  `NEEDED libc.so`——生产二进制是静态链接 ICU 的。**这不是代码 bug，是本轮
+  会话本地快速迭代构建（动态链 ICU 复用 keg 求速度）跟正式 formula 构建
+  （静态链）之间的构建配置差异**，先按 OHOS 隔离处理，但必须在真正走一次
+  formula 构建后复验——如果 formula 构建也复现同样问题，那就是真 bug 需要
+  另外处理；如果不复现，说明纯粹是本地直构的已知取舍，可以放心保留隔离。
+  **这个发现有更广泛的影响面**：任何测试只要 spawn 子 bun 时传一个精简过的
+  `env`（不含 `LD_LIBRARY_PATH`），本轮所有"失败"里都可能混着这同一个假阳性，
+  之前几轮遇到的个别"诡异"失败要留意是否是这个而不是急着当真 bug 深挖。
+
 ## 产物
 
 - `logs/baseline-ohos-minimal-2026-09-15/serial-reverify/`（第一轮串行复核，
