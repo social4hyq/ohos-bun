@@ -48,7 +48,12 @@ it("process", () => {
   if (process.platform !== "win32" && process.env.USER.length === 0)
     throw new Error("process.env is missing a USER property");
 
-  if (process.platform !== "darwin" && process.platform !== "linux" && process.platform !== "win32")
+  if (
+    process.platform !== "darwin" &&
+    process.platform !== "linux" &&
+    process.platform !== "win32" &&
+    process.platform !== "openharmony"
+  )
     throw new Error("process.platform is invalid");
 
   if (isNode) throw new Error("process.isBun is invalid");
@@ -482,6 +487,7 @@ const MIN_ICU_VERSIONS_BY_PLATFORM_ARCH = {
   "linux-arm64": "78.3",
   "win32-x64": "78.3",
   "win32-arm64": "78.3",
+  "openharmony-arm64": "78.3",
 };
 
 it("ICU version does not regress", () => {

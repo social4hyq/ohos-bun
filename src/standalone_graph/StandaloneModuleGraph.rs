@@ -2286,7 +2286,7 @@ pub(crate) fn inject<'a>(
                 temp_path_buf,
             ));
         }
-        CompileTargetOs::Linux | CompileTargetOs::Freebsd => {
+        CompileTargetOs::Linux | CompileTargetOs::Freebsd | CompileTargetOs::OpenHarmony => {
             // ELF section approach: find .bun section and expand it
             let input_bytes = match bun_sys::File::borrow(&cloned_executable_fd).read_to_end() {
                 Ok(b) => b,

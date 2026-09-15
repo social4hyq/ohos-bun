@@ -249,6 +249,13 @@ impl CompileTarget {
             OperatingSystem::Linux => true,
             OperatingSystem::Freebsd => true,
 
+            // No published cross-compile npm target for OHOS (see the
+            // `Libc::Ohos` doc comment above) -- only reachable via an
+            // explicit `--target=bun-openharmony-...`, which correctly gets
+            // rejected here. The native default target on an OHOS host
+            // never calls `is_supported()` (see `exe_path`'s `is_default()`
+            // fast path), so this doesn't affect plain `bun build --compile`.
+            OperatingSystem::OpenHarmony => false,
             OperatingSystem::Wasm => false,
         }
     }
@@ -449,6 +456,11 @@ impl CompileTarget {
                 OperatingSystem::Linux => b"\"linux\"",
                 OperatingSystem::Windows => b"\"win32\"",
                 OperatingSystem::Freebsd => b"\"freebsd\"",
+                // Unreachable in practice: OHOS always pairs with
+                // `Libc::Ohos` (caught by the outer match above), never
+                // `Default`/`Musl`. Listed for the same exhaustiveness
+                // reason as the rest of this match.
+                OperatingSystem::OpenHarmony => b"\"openharmony\"",
                 OperatingSystem::Wasm => b"\"wasm\"",
             },
         };

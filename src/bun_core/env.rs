@@ -92,6 +92,7 @@ pub enum OperatingSystem {
     Linux,
     Freebsd,
     Windows,
+    OpenHarmony,
     // wAsM is nOt aN oPeRaTiNg SyStEm
     Wasm,
 }
@@ -104,6 +105,7 @@ impl OperatingSystem {
             Self::Linux => "Linux",
             Self::Freebsd => "FreeBSD",
             Self::Windows => "Windows",
+            Self::OpenHarmony => "OpenHarmony",
             Self::Wasm => "WASM",
         }
     }
@@ -115,6 +117,7 @@ impl OperatingSystem {
             Self::Linux => "linux",
             Self::Freebsd => "freebsd",
             Self::Windows => "win32",
+            Self::OpenHarmony => "openharmony",
             Self::Wasm => "wasm",
         }
     }
@@ -127,6 +130,7 @@ impl OperatingSystem {
             Self::Linux => "linux",
             Self::Freebsd => "freebsd",
             Self::Windows => "windows",
+            Self::OpenHarmony => "openharmony",
             Self::Wasm => "wasm",
         }
     }
@@ -150,12 +154,18 @@ crate::comptime_string_map! {
         b"gnu/linux" => OperatingSystem::Linux,
         b"freebsd" => OperatingSystem::Freebsd,
         b"FreeBSD" => OperatingSystem::Freebsd,
+        b"openharmony" => OperatingSystem::OpenHarmony,
         b"wasm" => OperatingSystem::Wasm,
     };
 }
 
+// IS_OHOS must be checked before IS_LINUX: OHOS's Rust target still reports
+// `target_os = "linux"` (the musl ABI difference is `target_env = "ohos"`),
+// so IS_LINUX is also true there.
 pub const OS: OperatingSystem = if IS_MAC {
     OperatingSystem::Mac
+} else if IS_OHOS {
+    OperatingSystem::OpenHarmony
 } else if IS_LINUX {
     OperatingSystem::Linux
 } else if IS_FREEBSD {
