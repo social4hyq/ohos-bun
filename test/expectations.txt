@@ -534,6 +534,11 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # affine transform + arc-to-bezier math, not a missing feature or an OHOS
 # platform limitation.
 [ OPENHARMONY ] test/js/third_party/resvg/bbox.test.js [ Skip ] # @ohos-npm-ports/resvg-resvg-js@2.6.2-1 renders correctly but this build's bbox-after-crop float output differs from upstream's hardcoded expectation at the 6th decimal place (rustc 1.98.0 vs upstream's pinned nightly-2023-12-11, not a missing-feature gap)
+
+# --- regression/issue: device/fixture-specific structural gaps ---
+# 2026-09-15: both single-test files, whole-file quarantine loses no other coverage.
+[ OPENHARMONY ] test/regression/issue/18239/18239.test.ts [ Flaky ] # data-generator.sh fixture's shebang is `#!/bin/bash`, but this device has no /bin/bash at all (only ~/.harmonybrew/bin/bash via keg) -- confirmed directly, `ls /bin/bash` -> No such file, `which bash` -> harmonybrew path. The outer `spawnSync({cmd:["bash","-c",...]})` finds bash fine via PATH, but the inner pipeline execs the script by path, which then fails its own shebang resolution ("bad interpreter"), so the generator never runs and the fixture correctly reports "Exited without receiving 3 chunks". Device path gap, not a stdin/TTY bug.
+[ OPENHARMONY ] test/regression/issue/24364.test.ts [ Flaky ] # `bun-plugin-tailwind`'s peerDependency on npm's own "bun" meta-package auto-installs during `bun add`; that package's install.js does a hardcoded platform switch and throws "Unsupported platform: openharmony arm64" for any value it doesn't recognize -- confirmed via isolated repro (`bun add -d typescript @types/bun @types/react bun-plugin-tailwind` fails identically outside the test). Gap is in the separately-published npm "bun" package's own install.js, not this fork/formula.
 #
 # sharp has real upstream+community native support in principle
 # (test/package.json resolutions -> npm:@ohos-ports/sharp@0.34.5-beta.5,
