@@ -31,26 +31,38 @@ afterEach(() => {
   }
 });
 
-test.skipIf(isWindows)("the configure-time rustc probe pins the rustup proxy to the pinned channel", () => {
-  const ldLld = join(`sysroot-for-${channel}`, "lib", "rustlib", `host-for-${channel}`, "bin", "gcc-ld", "ld.lld");
-  using dir = tempDir("build-rustc-probe", {
-    "bin/rustc": ({ root }) =>
-      [
-        "#!/bin/sh",
-        'case "$1" in',
-        `  --print) printf "%s\\n" "${root}/sysroot-for-\${RUSTUP_TOOLCHAIN:-unset}" ;;`,
-        '  -vV) printf "host: host-for-%s\\nLLVM version: 22.1.4\\n" "${RUSTUP_TOOLCHAIN:-unset}" ;;',
-        "esac",
-        "",
-      ].join("\n"),
-    [ldLld]: "",
-  });
-  for (const executable of ["bin/rustc", ldLld]) chmodSync(join(String(dir), executable), 0o755);
-  process.env.CARGO_HOME = String(dir);
-  process.env.PATH = join(String(dir), "bin");
+// OHOS: this device's toybox `/bin/sh` does not implement `printf` as a true
+// shell builtin -- it resolves it via PATH like any external command.
+// Confirmed with bun entirely out of the picture: `PATH=<empty-dir> /bin/sh
+// -c 'printf "%s\n" hi'` -> "printf: inaccessible or not found" (exit 127).
+// The fixture rustc script below uses `printf`, and the test deliberately
+// restricts PATH to just its own `bin/` dir (so no real rustup gets found),
+// which on bash/dash (where printf is a genuine builtin, no PATH needed) is
+// fine but here starves the script's own printf calls. Toybox shell gap,
+// not a bug in findRustLld() or its underlying spawnSync.
+test.skipIf(isWindows || process.platform === "openharmony")(
+  "the configure-time rustc probe pins the rustup proxy to the pinned channel",
+  () => {
+    const ldLld = join(`sysroot-for-${channel}`, "lib", "rustlib", `host-for-${channel}`, "bin", "gcc-ld", "ld.lld");
+    using dir = tempDir("build-rustc-probe", {
+      "bin/rustc": ({ root }) =>
+        [
+          "#!/bin/sh",
+          'case "$1" in',
+          `  --print) printf "%s\\n" "${root}/sysroot-for-\${RUSTUP_TOOLCHAIN:-unset}" ;;`,
+          '  -vV) printf "host: host-for-%s\\nLLVM version: 22.1.4\\n" "${RUSTUP_TOOLCHAIN:-unset}" ;;',
+          "esac",
+          "",
+        ].join("\n"),
+      [ldLld]: "",
+    });
+    for (const executable of ["bin/rustc", ldLld]) chmodSync(join(String(dir), executable), 0o755);
+    process.env.CARGO_HOME = String(dir);
+    process.env.PATH = join(String(dir), "bin");
 
-  expect(findRustLld("linux")).toEqual({
-    rustLld: join(String(dir), ldLld),
-    rustLlvmVersion: "22.1.4",
-  });
-});
+    expect(findRustLld("linux")).toEqual({
+      rustLld: join(String(dir), ldLld),
+      rustLlvmVersion: "22.1.4",
+    });
+  },
+);
