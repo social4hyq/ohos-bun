@@ -29,6 +29,34 @@
 至此 P1 表格里的 `fs-birthtime-linux.test.ts`/`unix-socket-long-path.test.ts`
 两项仍只是证据确认（未改代码，结构性），其余全部落地。
 
+## 又清出 3 个 AF_UNIX-on-hmdfs 类 + 确认 P0.5 范围比预想更大
+
+- `bun-serve-args.test.ts`（整文件隔离）、`adapter-env-var-precedence.test.ts`
+  （单测 skip，硬编码 `/tmp/...sock`）、`socket.test.ts` 的 kqueue drain 用例
+  （单测 skip，fixture 内部用裸相对文件名）——三个都是同一个 AF_UNIX-on-hmdfs
+  根因的新样本，commit `9e6339b3d0`/`cd04ae2312`。
+
+- **P0.5（本地 dev build 假象）范围确认比预想更大**：`bunshell.test.ts` 的全部
+  7 个失败深挖后确认都是这一类，且出现了一个新变体——不只是"子进程 env 缺
+  LD_LIBRARY_PATH"，还有"子进程被 `ulimit -n 32` 卡死 fd 数来触发 EMFILE，
+  但本地动态链接的 dev build 光加载 ICU/openssl 外部 `.so` 在启动阶段就要
+  多吃几个 fd，正式 formula 构建大概率是自包含/静态链接的，根本不需要这些
+  fd"，导致测试还没跑到真正要验证的"管道创建阶段 EMFILE"就已经启动失败。
+  **这类失败不是产品 bug，是本地构建方法论的边界，本轮不再逐个"修复"，
+  统一标记"需要走 formula 构建复测才能定论"。**
+
+## 下一轮建议的做法（不再是"继续在 dev build 上单个查"）
+
+到这里为止，剩余的"待确认"清单里，除了个别已经确认是全新的独立信号（如
+`unix-socket-long-path.test.ts`、`fs-birthtime-linux.test.ts` 这类结构性
+证据确认过的），**相当一部分很可能都是 P0.5 类**（子进程 spawn 时 env 被
+显式收窄、或撞上跟本地动态链接开销冲突的 ulimit/资源限制）。继续在裸
+`ninja` 直构的 `bun-profile` 上一个个人工确认性价比在下降——下一轮更高效的
+做法是：**先走一次真正的 formula 构建**（`brew install --build-from-source
+bun` 或对应的容器/CI 路径），拿这个自包含的正式产物重跑一遍现在还标"待
+确认"的清单，P0.5 类大概率会大批量转绿，剩下真正跑不过的才是需要继续深挖
+的真实信号。
+
 ## P0 — 已修复（本轮完成）
 
 ### 1. `run-baseline.sh` 用 `CI=1` 而非 `CI=true`，导致 bun 自愈符号链接从未生效 ✅ 已修复
