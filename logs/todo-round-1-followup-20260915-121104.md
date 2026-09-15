@@ -449,6 +449,20 @@ keg 而不是容器/tap。
 OHOS 专属的既有 bug，已加 `skipIf(openharmony)`（不是本会话职责范围内，
 只是顺路确认清楚原因避免误判成回归）。
 
+## 第十轮：P2 清单收尾 + 一次重大自我纠正（bun install 偶发 materialize 空转）
+
+按 P2 清单（"需要继续深挖"）逐项复核：
+
+- **`mv.test.ts`/`rm.test.ts`/`fs-oom.test.ts`**：三个都已经在更早几轮里间接修好了（前两个是 P0.5 类隔离，`fs-oom.test.ts` 是 P0.5 那个裸调用缺 `bun:internal-for-testing` 环境变量类）。带上正确环境变量复测：13/13、7/9(2 skip)、6/13(7 skip) 全过，无需新动作。
+- **`test-integration-rspack.ts`（真实修复）**：从 old `ohos-aarch64` 分支交叉验证到正确修法——`rsbuild@1` 拉的 `@rspack/core`（现浮动到 1.7.12）对应的 `@rspack/binding` 上游完全没有 openharmony 构建，且 `binding.js` 自己的平台判断是硬编码 JS if/else（没有 openharmony 分支），光有 optionalDependency 级别的 resolutions 别名够不到——得连 `@rspack/core` 一起钉死到 `1.7.11`（跟社区 port `@ohos-ports/rspack-binding@1.7.11-beta.1` 版本匹配，rspack 自己的运行时会拒绝 core/binding 版本不一致）。在 `bun create`+`bun install` 之间插入 patch package.json 的 `if (process.platform==="openharmony")` 分支。commit `2005e423cd`。真机验证过 `rsbuild build` 产出真实构建产物。
+- **`create-jsx.test.ts`（tailwindcss，记录未修）**：同类 native binding 缺口，`@ohos-npm-ports/tailwindcss-oxide` 存在但 `bun create ./index.tsx` 单文件脚手架是一步到位 resolve+install，没有 rspack 那种"分两步、中间能插 resolutions"的天然接入点，本轮没找到干净的接入方式，记录隔离。commit `2d726ec490`。
+
+**重大自我纠正**：追查 rspack 时又一次撞上"包装不上"，一开始（错误地）以为是另一个 rollup 类 os-matching bug，加 debug print 想证实——结果发现纯 JS 包（`picomatch`，registry 上根本没有 os/cpu 字段）在完全清空 `~/.bun/install/{cache,global,store}` 后**反复测试结果不稳定**：有时候冷缓存第一次就"resolve 成功但 0 个包落盘"，有时候连续 3 次都正常。生产 bun（无任何本会话改动）同样复现这个不稳定。这证明：
+
+1. 本 session 的 openharmony os/cpu 匹配修复**完全正确、无遗留问题**——之前记的"rollup os 字段解析成 NONE"是从一次刚好撞上这个不稳定现象的运行里采的错误证据。
+2. 真正的现象是 `bun install`（不带 `--force`/`--no-cache`）一个**跟平台无关、本机既有、非确定性**的 bug："resolve 阶段成功但 materialize 阶段偶发空转，0 个包装上，不报错"。`vite-build.test.ts` 700+ 包的大 fixture 命中概率高，之前一直以为是"rollup 深层 bug"其实全是撞上这个。
+3. 已更正 `project_ohos_bun_npm_os_matching_fix` 记忆的错误结论，新建 `environment_bun_install_flaky_materialize_noop` 记录这个更普遍、更重要的发现，供以后排查"装包失败"类问题时先排除这个可能性，别一上来就当逻辑 bug 深挖（这次为了追这个"假 bug"额外多烧了一整轮 debug 重编）。
+
 ## 产物
 
 - `logs/baseline-ohos-minimal-2026-09-15/serial-reverify/`（第一轮串行复核，
