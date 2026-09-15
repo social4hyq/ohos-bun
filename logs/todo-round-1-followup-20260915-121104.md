@@ -353,6 +353,37 @@ open '/'`，很可能是已知的根目录访问受限类）、`js/bun/http/serv
   `env`（不含 `LD_LIBRARY_PATH`），本轮所有"失败"里都可能混着这同一个假阳性，
   之前几轮遇到的个别"诡异"失败要留意是否是这个而不是急着当真 bug 深挖。
 
+## 第七轮：bun install 的 npm os/cpu 匹配没有 openharmony（真实产品 bug，已修复）
+
+- **根因**：`src/install_types/resolver_hooks.rs` 的 `OperatingSystem`
+  bitflag 枚举压根不认 `"openharmony"` 这个名字，OHOS 构建下 `CURRENT` 落到
+  通用 `#[cfg(target_os="linux")]` 分支变成纯 `LINUX`。后果：任何 npm 包声明
+  `"os":["openharmony"]`（rollup≥4.50.0、esbuild≥0.25.6、rolldown≥beta.31，
+  这类包在增多）装的时候一律 "os mismatch" 被跳过——**这很可能是本会话（乃至
+  更早）canvas/resvg/sharp/tailwindcss 等一路要靠手工 `resolutions` override
+  才能装上的根因之一**，不是那些包本身没有 openharmony 产物，是 bun 自己不
+  认它。
+- **修复**：加 `OPENHARMONY` bit + `negatable_names!` 注册 + OHOS 专属
+  `CURRENT` 分支。commit `e914078f95`。
+- **一次真实的自我纠正**：第一版把 `CURRENT` 设成 `LINUX | OPENHARMONY`
+  （双 bit，想让没有 openharmony 变体的包继续走通用 linux 二进制），单元
+  测试之外看起来一切正常（rolldown/esbuild 装包正确），但被
+  `test/cli/install/architecture-match.test.ts` 抓到：`!openharmony`
+  （否定当前平台）因为 LINUX 位还在没被排除干净，匹配没有整体失效——每个
+  平台的 `CURRENT` 必须是单 bit，这是这个测试在验证的不变量。改成纯
+  `OPENHARMONY` 单 bit 后 `architecture-match.test.ts`（30/30）+
+  `bun-install-cpu-os.test.ts`（13/13）全绿，rolldown/esbuild 仍正确。
+- **未解决的窄范围真 bug**：`rollup`（不是 rolldown）作为父依赖时，它自己
+  的 `@rollup/rollup-openharmony-arm64` optionalDependency 在不带 `--force`
+  的正常 `bun install` 下装不上——debug print 证实该子包的 os 字段在
+  `--no-cache --force` 下正确解析成 OPENHARMONY(512)，不带 `--force` 时却
+  解析成 `NONE`(0)。换了 5+ 个本会话从未测过的 rollup 版本，现象一致，
+  排除本机 stale cache；`rolldown` 结构几乎一样的场景完全正常。花了 4 轮
+  debug 重编（每轮 ~10 分钟）没查出确切根因，记入记忆
+  `project_ohos_bun_npm_os_matching_fix` 留给下次。`vite-build.test.ts`
+  （走 `rolldown-vite`→`rollup@4.63.3`）因此仍然隔离，但注释里写清楚了
+  "更大的根因已修，这个是另一个更窄的独立 bug"。
+
 ## 产物
 
 - `logs/baseline-ohos-minimal-2026-09-15/serial-reverify/`（第一轮串行复核，
