@@ -384,6 +384,35 @@ open '/'`，很可能是已知的根目录访问受限类）、`js/bun/http/serv
   （走 `rolldown-vite`→`rollup@4.63.3`）因此仍然隔离，但注释里写清楚了
   "更大的根因已修，这个是另一个更窄的独立 bug"。
 
+## 第八轮：按"升级→查 @ohos-npm-ports→查 @ohos-ports"顺序补漏
+
+用户提醒了标准流程后，回头对本轮刚处理过的几个包重新走了一遍这个顺序：
+
+- **`esbuild.test.ts`（真实修复）**：硬编码 `esbuild@0.19.8`（bun install 命令行
+  + 版本断言两处），早于 esbuild 0.25.6 才有的 openharmony-arm64 二进制；
+  esbuild 自己的 `install.js` 平台判断是 JS 侧硬编码 switch，不读
+  package.json os/cpu 字段，所以本轮的 os-matching 修复够不着它，只能升版本。
+  bump 到 0.25.11，两处断言同步改，验证过真的能装/能跑。estrella@1.4.1
+  内部锁死 `esbuild@^0.11.0` 且本身已无人维护，没有版本可升，改
+  `skipIf(openharmony)`。commit `852eb572d1`。
+- **`@napi-rs/canvas`（真实修复，之前误判为"独立 npm-porting 任务本轮不追"，
+  这次直接做了）**：查到 `@ohos-ports/napi-rs-canvas` 确实存在（记忆
+  `reference_napi_rs_canvas_ohos_port_exists` 早就记过，这次翻出来验证并接
+  线）。`dist-tag latest` 指向的 `0.1.80-beta.0` 不是最新版，包里还有个没打
+  latest 标的 `1.0.2-beta.0`，实测用后者能正常渲染、像素级匹配
+  `expected.png`。`test/package.json` 加
+  `resolutions."@napi-rs/canvas" = "npm:@ohos-ports/napi-rs-canvas@1.0.2-beta.0"`，
+  测试转绿，从 expectations.txt 摘除。同 commit。
+- **复核 `pnpm.test.ts`**：卡点其实是 pnpm 自己的 lockfile
+  （`install_fixture/pnpm-lock.yaml` 锁死 vite@5.4.10→esbuild@0.21.5），
+  `bun x pnpm install` 走的是 pnpm 自己的解析器不是 bun install，本轮的
+  os-matching 修复和"查 ports"这条路径都够不着——要修得改 fixture 自己的
+  pnpm lockfile 重新生成，成本仍大于收益，维持隔离。
+  **复核 `vitest.test.ts`**：重新跑过，依然失败——卡点是 rollup@4.37.0
+  本身就早于 4.50.0（openharmony 二进制起点），不是 os-matching 匹配不到，
+  是这个版本压根没有 openharmony 产物，我的解析器修复对这个场景本来就无能
+  为力，维持隔离，原判断成立。
+
 ## 产物
 
 - `logs/baseline-ohos-minimal-2026-09-15/serial-reverify/`（第一轮串行复核，
