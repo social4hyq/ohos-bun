@@ -797,6 +797,36 @@ export const workarounds: Workaround[] = [
       "call sites (resolver/lib.rs, runtime/cli/Arguments.rs, " +
       "runtime/node/node_process.rs) back to plain getcwd(), and this entry.",
   },
+  {
+    id: "ohos-tcc-sysroot",
+    issue: "https://gitee.com/openharmony (no tracked issue — pure-musl OHOS ships no FHS libc/headers for apps)",
+    description:
+      "bun:ffi's cc() (TinyCC JIT) always fails on OHOS with \"library 'c' not found\": vendored " +
+      "TinyCC's tcc_add_runtime() (vendor/tinycc/tccelf.c) unconditionally links `-lc`, and this " +
+      "device's musl libc has no FHS-named libc.so/libc.a (only ld-musl-aarch64.so.1) for TCC's " +
+      "search to find. The ohos-sdk formula's own sysroot does ship a real libc.so plus the arch " +
+      "headers cc() also needs (a bare <stdint.h> pulls in bits/alltypes.h, which only exists under " +
+      "the <triplet>-linux-ohos include subdir) -- scripts/runner.node.mjs's spawnBun() already set " +
+      "an OHOS_SYSROOT env var for exactly this (falls back to `brew --prefix ohos-sdk`), but " +
+      "src/runtime/ffi/ffi_body.rs's CompileC::compile() never consumed it. Added " +
+      "env_var::OHOS_SYSROOT (src/bun_core/env_var.rs) and an ohos+aarch64 branch that adds the " +
+      "sysroot's usr/lib/aarch64-linux-ohos, usr/include/aarch64-linux-ohos, and usr/include paths " +
+      "when the env var resolves to a directory that actually exists -- a no-op when no SDK is " +
+      "installed, not a hardcoded Harmonybrew path.",
+    applies: cfg => cfg.abi === "ohos",
+    expectedToBeFixed: () => {
+      // Depends on OHOS never shipping a general-purpose C dev sysroot at the
+      // OS level, not a toolchain/kernel version -- no reliable signal to
+      // check. Re-test by reverting the ffi_body.rs/env_var.rs changes and
+      // running test/regression/issue/20144 + issue/26249 on a newer OHOS
+      // release.
+      return false;
+    },
+    cleanup:
+      "Remove the OHOS_SYSROOT-consuming branch from CompileC::compile() in " +
+      "src/runtime/ffi/ffi_body.rs, the OHOS_SYSROOT entry from " +
+      "src/bun_core/env_var.rs, and this entry.",
+  },
 ];
 
 /**

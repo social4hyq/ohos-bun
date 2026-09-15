@@ -730,6 +730,54 @@ impl CompileC {
             }
         }
 
+        // OHOS ships no FHS libc/headers for apps to link against (TinyCC's
+        // own tcc_add_runtime() unconditionally does `-lc`, and even a bare
+        // `#include <stdint.h>` needs bits/alltypes.h, which only exists
+        // under the triplet subdirectory). The ohos-sdk formula's sysroot has
+        // both; read its location from $OHOS_SYSROOT rather than a baked-in
+        // Harmonybrew path, since not every device that runs bun has the SDK
+        // installed at all -- this is a best-effort addition, not a
+        // guaranteed-present one.
+        #[cfg(all(target_env = "ohos", target_arch = "aarch64"))]
+        {
+            fn join(sysroot: &[u8], suffix: &[u8]) -> ZBox {
+                let mut v = Vec::with_capacity(sysroot.len() + 1 + suffix.len());
+                v.extend_from_slice(sysroot);
+                v.push(b'/');
+                v.extend_from_slice(suffix);
+                ZBox::from_bytes(v)
+            }
+            fn dir_exists_dyn(path: &ZStr) -> bool {
+                bun_sys::directory_exists_at(bun_sys::Fd::cwd(), path).unwrap_or(false)
+            }
+
+            if let Some(sysroot) = env_var::OHOS_SYSROOT.get() {
+                let lib_dir = join(sysroot, b"usr/lib/aarch64-linux-ohos");
+                if dir_exists_dyn(&lib_dir) {
+                    if state.add_library_path(&lib_dir).is_err() {
+                        bun_output::scoped_log!(TCC, "TinyCC failed to add OHOS sysroot library path");
+                    }
+                }
+
+                let include_arch_dir = join(sysroot, b"usr/include/aarch64-linux-ohos");
+                if dir_exists_dyn(&include_arch_dir) {
+                    if state.add_sys_include_path(&include_arch_dir).is_err() {
+                        bun_output::scoped_log!(
+                            TCC,
+                            "TinyCC failed to add OHOS sysroot arch include path"
+                        );
+                    }
+                }
+
+                let include_dir = join(sysroot, b"usr/include");
+                if dir_exists_dyn(&include_dir) {
+                    if state.add_sys_include_path(&include_dir).is_err() {
+                        bun_output::scoped_log!(TCC, "TinyCC failed to add OHOS sysroot include path");
+                    }
+                }
+            }
+        }
+
         #[cfg(unix)]
         {
             if dir_exists(b"/usr/local/include") {
