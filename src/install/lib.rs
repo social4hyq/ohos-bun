@@ -587,6 +587,18 @@ impl RunCommand {
                 ZStr::from_static(B)
             };
 
+            // OHOS: `BUN_NODE_DIR` lives under the app sandbox's EL2 scratch
+            // dir (`/data/storage/el2/base/tmp`; see the OHOS branch above),
+            // because `/tmp` is a read-only bind mount on device. A minimal
+            // OHOS userland need not have pre-created it (the CI container
+            // image only makes base/{files,cache}), and then the mkdir below
+            // fails ENOENT: the silent `return Ok(())` left PATH without any
+            // `node`, so every `bunx` of a node-shebang CLI died with
+            // "env: node: No such file or directory" (exit 127). Create the
+            // chain up front; the 0700/ownership checks below stay untouched.
+            #[cfg(target_env = "ohos")]
+            let _ = bun_sys::mkdir_recursive(b"/data/storage/el2/base/tmp");
+
             // Don't trust attacker-created entries in a shared temp dir
             // (`BUN_NODE_DIR` lives under e.g. `/tmp`). Create it `0700`; if it
             // already exists, refuse to use it unless it's a directory we own
@@ -608,7 +620,18 @@ impl RunCommand {
                                 || cfg!(target_env = "ohos")) => {}
                     _ => return Ok(()),
                 },
-                Err(_) => return Ok(()),
+                Err(e) => {
+                    // Not fatal (e.g. read-only temp dir), but the fallout is
+                    // inscrutable: node-shebang CLIs run through bunx then die
+                    // with "env: node: No such file or directory". Say so
+                    // instead of failing invisibly.
+                    bun_output::warn!(
+                        "could not create node shim dir {}: {}; commands that exec 'node' may fail",
+                        Self::BUN_NODE_DIR,
+                        e
+                    );
+                    return Ok(());
+                }
             }
 
             for dest in [NODE_LINK, BUN_LINK] {
