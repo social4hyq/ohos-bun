@@ -90,7 +90,6 @@ export const allRustTargets = [
   "aarch64-unknown-linux-musl",
   "x86_64-linux-android",
   "aarch64-linux-android",
-  "aarch64-unknown-linux-ohos",
   "x86_64-apple-darwin",
   "aarch64-apple-darwin",
   "x86_64-pc-windows-msvc",
