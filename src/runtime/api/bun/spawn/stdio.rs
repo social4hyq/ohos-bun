@@ -36,12 +36,9 @@ pub struct Capture {
     // BACKREF: raw pointer to a capture buffer owned by the shell interpreter.
     // The shell keeps the buffer alive for the lifetime
     // of the spawned process; this struct never frees it.
-    // OHOS: only read by byte_slice(), which is excluded there (memfd
-    // fstat EACCES, see the can_use_memfd/use_memfd cfg gates below) --
-    // the field itself stays cross-platform-uniform rather than adding a
-    // third cfg variant of Capture.
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    #[cfg_attr(target_env = "ohos", allow(dead_code))]
+    // OHOS excludes byte_slice() below because memfd fstat is rejected by the
+    // platform; omit the unused back-reference field there as well.
+    #[cfg(all(any(target_os = "linux", target_os = "android"), not(target_env = "ohos")))]
     pub(crate) buf: *mut Vec<u8>,
 }
 

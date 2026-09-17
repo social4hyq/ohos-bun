@@ -752,7 +752,9 @@ impl FileReader {
         unsafe { (*parent).increment_count() };
         self.pending.with_mut(|p| p.run());
         // Re-entrant cancel or a nested pull that read to EOF closed the reader; tell the io caller to stop so it does not re-read the captured fd.
-        let ret = ret && !self.done.get() && !self.reader().is_done();
+        let ret = ret
+            && !self.done.get()
+            && !self.reader().is_done();
         // SAFETY: see `parent()`; the pin keeps the count >= 1, so this never frees. `self` is not accessed after.
         let _ = unsafe { Source::decrement_count(parent) };
         ret

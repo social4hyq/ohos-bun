@@ -141,10 +141,10 @@ impl OutKind {
             OutKind::Fd(val) => {
                 *shellio = Some(std::sync::Arc::clone(&val.writer));
                 if let Some(cap) = val.captured {
-                    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+                    #[cfg(not(all(any(target_os = "linux", target_os = "android"), not(target_env = "ohos"))))]
                     let _ = cap;
                     Stdio::Capture(Capture {
-                        #[cfg(any(target_os = "linux", target_os = "android"))]
+                        #[cfg(all(any(target_os = "linux", target_os = "android"), not(target_env = "ohos")))]
                         buf: cap,
                     })
                 } else {
