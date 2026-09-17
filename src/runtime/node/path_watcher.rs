@@ -937,6 +937,11 @@ impl Linux {
         name: &[u8],
         is_attrib: bool,
     ) -> bool {
+        // Nameless IN_ATTRIB belongs to the watched inode itself (not a child
+        // create); do not let a queued DELETE_SELF/IN_IGNORED reclassify it.
+        if is_attrib && name.is_empty() {
+            return false;
+        }
         if Self::scan_for_rename_event(buf.as_ptr(), *n, wd, name) {
             return true;
         }
@@ -1133,8 +1138,26 @@ impl Linux {
                             &mut n,
                             wd,
                             name,
-                            ev.mask & IN::ATTRIB != 0,
+                            ev.mask & IN::ATTRIB != 0 && !name.is_empty(),
                         );
+                    #[cfg(target_env = "ohos")]
+                    if ev.mask & IN::DELETE != 0
+                        && ev.mask & IN::DELETE_SELF == 0
+                        && name.is_empty()
+                    {
+                        // OHOS reports the unlink of the watched file itself as
+                        // a nameless DELETE before DELETE_SELF; this replaces
+                        // Linux's link-count ATTRIB change notification. Named
+                        // IN_DELETE events (a child removed from a watched
+                        // directory) keep the upstream "rename" classification
+                        // below.
+                        WatchEventKind::Change
+                    } else if is_rename {
+                        WatchEventKind::Rename
+                    } else {
+                        WatchEventKind::Change
+                    }
+                    #[cfg(not(target_env = "ohos"))]
                     if is_rename {
                         WatchEventKind::Rename
                     } else {
