@@ -817,6 +817,11 @@ impl OperatingSystem {
         | Self::ANDROID
         | Self::OPENHARMONY;
 
+    // Lockfiles written before OpenHarmony was added used this mask for
+    // `ALL`. Such lockfiles are still valid on OHOS; treating the legacy
+    // value as a restriction would silently skip universal dependencies.
+    pub const LEGACY_ALL_VALUE: u16 = Self::ALL_VALUE & !Self::OPENHARMONY;
+
     // OHOS's Rust target still reports `target_os = "linux"`, so this also
     // needs excluding it explicitly. CURRENT must stay a single bit (not
     // `LINUX | OPENHARMONY`): OR'ing both breaks the `!process.platform`
