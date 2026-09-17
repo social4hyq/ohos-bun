@@ -23,6 +23,16 @@ describe("next-auth", () => {
         },
       });
 
+      if (process.platform === "openharmony") {
+        const packageJsonPath = join(testDir, "package.json");
+        const packageJson = await Bun.file(packageJsonPath).json();
+        packageJson.resolutions = {
+          ...packageJson.resolutions,
+          next: "npm:@ohos-npm-ports/next@16.3.5-1",
+        };
+        await Bun.write(packageJsonPath, JSON.stringify(packageJson, null, 2));
+      }
+
       console.log("running bun install");
       await runBunInstall(bunEnv, testDir, { savesLockfile: false });
 
@@ -33,7 +43,19 @@ describe("next-auth", () => {
 
       console.log(result.stdout);
       console.log(result.stderr);
-      expect(result.stderr).toBe("");
+      if (process.platform === "openharmony") {
+        // The OHOS Next port is based on Next 16 and emits these known
+        // compatibility/deprecation warnings; unexpected stderr remains a
+        // failure so runtime errors are not hidden.
+        const knownWarning = /Mismatching @next\/swc version|`eslint` configuration|Invalid next\.config|Unrecognized key\(s\)|middleware.*deprecated|See more info here|To migrate automatically|@next\/codemod|Learn more:/;
+        const unexpected = result.stderr
+          .split("\n")
+          .map(line => line.trim())
+          .filter(line => line.length > 0 && !knownWarning.test(line));
+        expect(unexpected).toEqual([]);
+      } else {
+        expect(result.stderr).toBe("");
+      }
       expect(result.stdout).toBeDefined();
       const lines = result.stdout?.split("\n") ?? [];
       expect(lines[lines.length - 1]).toMatch(/request sent/);

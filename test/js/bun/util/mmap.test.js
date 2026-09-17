@@ -135,7 +135,7 @@ describe.skipIf(isWindows)("Bun.mmap", async () => {
       cmd: [
         bunExe(),
         "-e",
-        `const max = process.platform === "linux" ? 4096 : 1024;
+        `const max = (process.platform === "linux" || process.platform === "openharmony") ? 4096 : 1024;
 const rel = Buffer.alloc(max - 1, "a").toString();
 try {
   Bun.mmap(rel);

@@ -90,7 +90,7 @@ it("hostname", () => {
 });
 
 it("platform", () => {
-  expect(["win32", "darwin", "linux", "wasm"].some(platform => os.platform() === platform)).toBe(true);
+  expect(["win32", "darwin", "linux", "openharmony", "wasm"].some(platform => os.platform() === platform)).toBe(true);
 });
 
 it("release", () => {
@@ -98,7 +98,7 @@ it("release", () => {
 });
 
 it("type", () => {
-  expect(["Windows_NT", "Darwin", "Linux"].some(type => os.type() === type)).toBe(true);
+  expect(["Windows_NT", "Darwin", "Linux", "HarmonyOS", "OpenHarmony"].some(type => os.type() === type)).toBe(true);
 });
 
 it("uptime", () => {

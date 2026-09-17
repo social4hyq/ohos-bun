@@ -329,7 +329,8 @@ it("process.hrtime()", async () => {
   await Bun.sleep(16);
   const end2 = process.hrtime();
 
-  expect(end2[1] > start[1]).toBe(true);
+  // The nanosecond field wraps at each second; compare the complete tuple.
+  expect(end2[0] > start[0] || (end2[0] === start[0] && end2[1] > start[1])).toBe(true);
 });
 
 it("process.hrtime.bigint()", () => {

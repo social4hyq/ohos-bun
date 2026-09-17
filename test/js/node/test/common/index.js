@@ -306,7 +306,11 @@ const isWindows = process.platform === 'win32';
 const isSunOS = process.platform === 'sunos';
 const isFreeBSD = process.platform === 'freebsd';
 const isOpenBSD = process.platform === 'openbsd';
-const isLinux = process.platform === 'linux';
+// OpenHarmony uses the Linux kernel and exposes the same socket/filesystem
+// semantics for the Node compatibility tests. Keep the harness' Linux gate
+// aligned with Bun's process.platform value instead of treating OHOS as a
+// Darwin-like fallback.
+const isLinux = process.platform === 'linux' || process.platform === 'openharmony';
 const isMacOS = process.platform === 'darwin';
 const isASan = process.config.variables.asan === 1;
 const isRiscv64 = process.arch === 'riscv64';

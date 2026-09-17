@@ -36,6 +36,10 @@ if (common.isWindows) {
   // and receive output from child processes.
   // https://github.com/nodejs/build/issues/3014
   SLEEP = 10000;
+} else if (process.platform === 'openharmony') {
+  // OHOS process startup and signal delivery are slower than the Linux
+  // baseline, but the execSync timeout (TIMER) still expires first.
+  SLEEP = 5000;
 }
 
 // Verify that stderr is not accessed when a bad shell is used

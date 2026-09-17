@@ -15,6 +15,7 @@ it("throws ENAMETOOLONG when socket path exceeds platform-specific limit", () =>
     {
       darwin: 104,
       linux: 108,
+      openharmony: 108,
       win32: 260,
       sunos: 104,
       aix: 104,
@@ -138,7 +139,7 @@ function startServerUnix({ fetch, ...options }: ServeOptions): string {
     server_unix.reload({ ...options, fetch });
     return socketPath;
   }
-  const unix = `.${Math.random().toString(36).slice(2)}-socket`.slice(0, 103);
+  const unix = join(tmp_dir, `.${Math.random().toString(36).slice(2)}-socket`);
   server_unix = serve({
     ...options,
     fetch,

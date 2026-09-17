@@ -6,6 +6,11 @@ import { bunEnv, bunExe, forceGuardMalloc, isWindows, tempDir } from "harness";
 import net, { isIP } from "node:net";
 import path from "node:path";
 
+// OHOS devices have a much smaller concurrent socket/task budget; running the
+// same cases serially avoids starvation without dropping any coverage.
+const itConcurrent = process.platform === "openharmony" ? it : itConcurrent;
+const describeConcurrent = process.platform === "openharmony" ? describe : describeConcurrent;
+
 const strings = [
   {
     label: "string (ascii)",
@@ -67,7 +72,7 @@ const binaryTypes = [
 let servers: Server[] = [];
 let clients: Subprocess[] = [];
 
-it.concurrent("should work fine if you repeatedly call methods on closed websockets", async () => {
+itConcurrent("should work fine if you repeatedly call methods on closed websockets", async () => {
   let env = { ...bunEnv };
   forceGuardMalloc(env);
 
@@ -98,7 +103,7 @@ afterEach(() => {
 // the other client should not receive the message
 // the server should not crash
 // https://github.com/oven-sh/bun/issues/4443
-it.concurrent("websocket/4443", async () => {
+itConcurrent("websocket/4443", async () => {
   var serverSockets: ServerWebSocket<unknown>[] = [];
   var onFirstConnected = Promise.withResolvers();
   var onSecondMessageEchoedBack = Promise.withResolvers();
@@ -173,7 +178,7 @@ describe("Server", () => {
     },
   }));
 
-  it.concurrent("subscriptions - basic usage", async () => {
+  itConcurrent("subscriptions - basic usage", async () => {
     const { promise, resolve } = Promise.withResolvers();
     const { promise: onClosePromise, resolve: onClose } = Promise.withResolvers();
 
@@ -225,7 +230,7 @@ describe("Server", () => {
     expect(subscriptions).not.toContain("topic2");
   });
 
-  it.concurrent("subscriptions - all unsubscribed", async () => {
+  itConcurrent("subscriptions - all unsubscribed", async () => {
     const { promise, resolve } = Promise.withResolvers();
     const { promise: onClosePromise, resolve: onClose } = Promise.withResolvers();
 
@@ -268,7 +273,7 @@ describe("Server", () => {
     expect(subscriptions.length).toBe(0);
   });
 
-  it.concurrent("subscriptions - after close", async () => {
+  itConcurrent("subscriptions - after close", async () => {
     const { promise, resolve } = Promise.withResolvers();
     const { promise: onClosePromise, resolve: onClose } = Promise.withResolvers();
 
@@ -303,7 +308,7 @@ describe("Server", () => {
     expect(subscriptions).toStrictEqual([]);
   });
 
-  it.concurrent("subscribe/unsubscribe return false on a closed socket", async () => {
+  itConcurrent("subscribe/unsubscribe return false on a closed socket", async () => {
     const { promise, resolve } = Promise.withResolvers<ServerWebSocket<unknown>>();
     const { promise: onClosePromise, resolve: onClose } = Promise.withResolvers<void>();
 
@@ -357,7 +362,7 @@ describe("Server", () => {
     });
   });
 
-  it.concurrent("unsubscribe() and close() only change the calling socket's share of subscriberCount", async () => {
+  itConcurrent("unsubscribe() and close() only change the calling socket's share of subscriberCount", async () => {
     const opened = {
       a: Promise.withResolvers<ServerWebSocket<{ id: string }>>(),
       b: Promise.withResolvers<ServerWebSocket<{ id: string }>>(),
@@ -437,7 +442,7 @@ describe("Server", () => {
     clientB.close();
   });
 
-  it.concurrent("subscriptions - duplicate subscriptions", async () => {
+  itConcurrent("subscriptions - duplicate subscriptions", async () => {
     const { promise, resolve } = Promise.withResolvers();
     const { promise: onClosePromise, resolve: onClose } = Promise.withResolvers();
 
@@ -475,7 +480,7 @@ describe("Server", () => {
     expect(subscriptions).toContain("topic1");
   });
 
-  it.concurrent("subscriptions - multiple cycles", async () => {
+  itConcurrent("subscriptions - multiple cycles", async () => {
     const { promise, resolve } = Promise.withResolvers();
     const { promise: onClosePromise, resolve: onClose } = Promise.withResolvers();
 
@@ -526,7 +531,7 @@ describe("Server", () => {
     expect(subscriptions).toContain("topic3");
   });
 
-  it.concurrent("publish() then unsubscribe() from last topic in same tick delivers queued messages", async () => {
+  itConcurrent("publish() then unsubscribe() from last topic in same tick delivers queued messages", async () => {
     const aDone = Promise.withResolvers<string[]>();
     const bDone = Promise.withResolvers<string[]>();
     const ready = { a: Promise.withResolvers<void>(), b: Promise.withResolvers<void>() };
@@ -1053,7 +1058,7 @@ describe("ServerWebSocket", () => {
       };
     }
 
-    it.concurrent("send/sendBinary/ping/pong send the blob's bytes, not '[object Blob]'", async () => {
+    itConcurrent("send/sendBinary/ping/pong send the blob's bytes, not '[object Blob]'", async () => {
       using h = await openOne();
       const blobs = [
         ["Blob", new Blob([new Uint8Array([1, 2, 3, 4])]), [1, 2, 3, 4]],
@@ -1095,7 +1100,7 @@ describe("ServerWebSocket", () => {
       });
     });
 
-    it.concurrent("publish/publishBinary/server.publish send the blob's bytes", async () => {
+    itConcurrent("publish/publishBinary/server.publish send the blob's bytes", async () => {
       using h = await openOne();
       h.ws.subscribe("t");
       const blob = new Blob([new Uint8Array([1, 2, 3, 4])]);
@@ -1111,7 +1116,7 @@ describe("ServerWebSocket", () => {
       });
     });
 
-    it.concurrent("throws on file- or S3-backed Blob", async () => {
+    itConcurrent("throws on file- or S3-backed Blob", async () => {
       using h = await openOne();
       h.ws.subscribe("t");
       using dir = tempDir("ws-blob-file", { "a.bin": "abcd" });
@@ -1338,7 +1343,7 @@ describe("ServerWebSocket", () => {
       ["publish (>= cork buffer)", "publish", big],
     ] as const;
     for (const [label, method, payload] of cases) {
-      it.concurrent(label, async () => {
+      itConcurrent(label, async () => {
         const subscribed = Promise.withResolvers<void>();
         const received = Promise.withResolvers<string | ArrayBuffer>();
         const published = Promise.withResolvers<number>();
@@ -1595,7 +1600,7 @@ function test(
   ) => Partial<WebSocketHandler<{ id: number }>>,
   timeout?: number,
 ) {
-  it.concurrent(
+  itConcurrent(
     label,
     async () => {
       let isDone = false;
@@ -1674,7 +1679,7 @@ it("you can call server.subscriberCount() when its not a websocket server", asyn
   expect(server.subscriberCount("boop")).toBe(0);
 });
 
-it.concurrent("server.upgrade() from the error() handler after fetch() threw completes the handshake", async () => {
+itConcurrent("server.upgrade() from the error() handler after fetch() threw completes the handshake", async () => {
   await using proc = spawn({
     cmd: [
       bunExe(),
@@ -1716,7 +1721,7 @@ it.concurrent("server.upgrade() from the error() handler after fetch() threw com
 // process.on("unhandledRejection"), whether it has settled when the handler
 // returns or not. The server subscribes to the promise of a handler that
 // upgrades after an await, so that case is not covered here.
-describe.concurrent("a handler that calls server.upgrade() before it returns", () => {
+describeConcurrent("a handler that calls server.upgrade() before it returns", () => {
   async function runChild(handlers: string) {
     await using proc = spawn({
       cmd: [
@@ -1972,7 +1977,7 @@ it("server.publish() keeps the topic alive while converting the message", async 
 
 // publish() fans out to N subscribers and must report backpressure/drops the
 // same way ws.send() does for a single socket.
-describe.concurrent("publish() return value reflects subscriber backpressure", () => {
+describeConcurrent("publish() return value reflects subscriber backpressure", () => {
   // One paused raw-TCP subscriber; the server-side handle is captured so the
   // test can compare publish() to send() on the same socket.
   async function withSlowSubscriber(
@@ -2306,7 +2311,7 @@ describe("server.upgrade() validates the opening handshake", () => {
 // await used to send the 101 and shut the socket down right under the new
 // WebSocket: open() ran on a dead socket, close() never ran, and the
 // ServerWebSocket leaked.
-describe.concurrent("server.upgrade() after an await on a connection the HTTP layer marked to close", () => {
+describeConcurrent("server.upgrade() after an await on a connection the HTTP layer marked to close", () => {
   const K = "dGhlIHNhbXBsZSBub25jZQ==";
 
   function maskedFrame(opcode: number, payload: Buffer): Buffer {
@@ -2458,7 +2463,7 @@ describe.concurrent("server.upgrade() after an await on a connection the HTTP la
 // promise callbacks it queued run once it has returned, as they do for a timer
 // or socket callback that does the same thing. They used to run inside the
 // upgrade()/close() call.
-describe.concurrent("request handlers run to completion before the callbacks they queued", () => {
+describeConcurrent("request handlers run to completion before the callbacks they queued", () => {
   function queueThen(order: string[], nativeCall: () => void) {
     process.nextTick(() => order.push("nextTick"));
     Promise.resolve().then(() => order.push("microtask"));

@@ -4,7 +4,9 @@ const cmd = which("true");
 
 const promises = [];
 
-const upperCount = process.platform === "darwin" ? 100 : 300;
+// The caller may scale this stress test for slower build/device profiles while
+// preserving the same immediate-exit race coverage.
+const upperCount = parseInt(process.env.SHELL_LOAD_OUTER, 10) || (process.platform === "darwin" ? 100 : 300);
 
 for (let j = 0; j < upperCount; j++) {
   for (let i = 0; i < 100; i++) {

@@ -1,10 +1,12 @@
 import { expect, it } from "bun:test";
 import { expiredTls, isDebug, tls as validTls } from "harness";
+
+const itConcurrent = process.platform === "openharmony" ? it : it.concurrent;
 const CERT_LOCALHOST_IP = { ...validTls };
 const CERT_EXPIRED = { ...expiredTls };
 
 for (const timeout of [0, 1, 10, 20, 100, 300]) {
-  it.concurrent(`fetch should abort as soon as possible under tls using AbortSignal.timeout(${timeout})`, async () => {
+  itConcurrent(`fetch should abort as soon as possible under tls using AbortSignal.timeout(${timeout})`, async () => {
     using server = Bun.serve({
       port: 0,
       tls: CERT_LOCALHOST_IP,

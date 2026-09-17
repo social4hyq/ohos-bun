@@ -12,7 +12,7 @@
 // Linux-only: reads /proc/<pid>/net/tcp for the kernel's view of the
 // socket's keepalive timer, and uses LD_PRELOAD. Other platforms skip.
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { bunEnv, bunExe, isLinux, tempDir } from "harness";
+import { bunEnv, bunExe, isLinux, isOHOS, tempDir } from "harness";
 import http from "node:http";
 import { join } from "node:path";
 
@@ -94,17 +94,39 @@ async function fetchAndHold(url: string, init?: RequestInit) {
 }
 
 linuxOnly("fetch sockets have TCP keepalive enabled", async () => {
+  if (isOHOS) {
+    await using server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("hold") });
+    expect(await probeOhosKeepalive(server.url.href, "fetch")).toBe("02");
+    return;
+  }
   const timerActive = await probeClientSocket(url => fetchAndHold(url));
   // Without SO_KEEPALIVE: "00". With it: "02" (sk_timer / keepalive armed).
   expect(timerActive).toBe("02");
 });
 
 linuxOnly("fetch keepalive: false skips SO_KEEPALIVE (matches undici options.keepAlive)", async () => {
+  if (isOHOS) {
+    await using server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("hold") });
+    expect(await probeOhosKeepalive(server.url.href, "fetch", false)).toBe("00");
+    return;
+  }
   const timerActive = await probeClientSocket(url => fetchAndHold(url, { keepalive: false }));
   expect(timerActive).toBe("00");
 });
 
 linuxOnly("a connection reused from the keep-alive pool still has TCP keepalive enabled", async () => {
+  if (isOHOS) {
+    await using server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: (req, server) => new Response(String(server.requestIP(req)?.port)),
+    });
+    const result = await runWithShim("pooled.js", { SERVER_URL: server.url.href, REQUEST_COUNT: "2" });
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.keepaliveCalls).toHaveLength(1);
+    expect(new Set(JSON.parse(result.stdout.trim())).size).toBe(1);
+    return;
+  }
   const timerActive = await probeClientSocket(async url => {
     // The first request opens the connection and, once its body is
     // consumed, returns the socket to the pool.
@@ -122,6 +144,11 @@ linuxOnly("a connection reused from the keep-alive pool still has TCP keepalive 
 });
 
 linuxOnly("node:http with non-keepalive Agent skips SO_KEEPALIVE", async () => {
+  if (isOHOS) {
+    await using server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("hold") });
+    expect(await probeOhosKeepalive(server.url.href, "node-false")).toBe("00");
+    return;
+  }
   // `agent: false` constructs a fresh `new Agent()` whose `keepAlive`
   // defaults to false; _http_client.ts forwards that as fetch
   // `keepalive: false`.
@@ -142,6 +169,11 @@ linuxOnly("node:http with non-keepalive Agent skips SO_KEEPALIVE", async () => {
 });
 
 linuxOnly("node:http globalAgent (keepAlive: true) enables SO_KEEPALIVE", async () => {
+  if (isOHOS) {
+    await using server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("hold") });
+    expect(await probeOhosKeepalive(server.url.href, "node-global")).toBe("02");
+    return;
+  }
   const timerActive = await probeClientSocket(async url => {
     const { promise, resolve, reject } = Promise.withResolvers<http.IncomingMessage>();
     const req = http.get(url, resolve);
@@ -215,6 +247,26 @@ for (let i = 0; i < Number(process.env.REQUEST_COUNT); i++) {
 console.log(JSON.stringify(bodies));
 `;
 
+// OHOS blocks /proc/self/net/tcp, so inspect the same socket option through
+// the existing setsockopt shim instead of weakening the timer assertion.
+const HOLDFIXTURE = /* js */ `
+const http = require("node:http");
+const url = process.env.SERVER_URL;
+if (process.env.MODE === "fetch") {
+  const res = await fetch(url, { keepalive: process.env.KEEPALIVE !== "false" });
+  await res.body?.getReader().read();
+} else {
+  const { promise, resolve, reject } = Promise.withResolvers();
+  const req = http.get(url, { agent: process.env.MODE === "node-global" ? undefined : false }, resolve);
+  req.on("error", reject);
+  const res = await promise;
+  await new Promise(r => res.once("data", r));
+  res.destroy();
+  req.destroy();
+}
+console.log("ok");
+`;
+
 let shimDir: ReturnType<typeof tempDir> | undefined;
 let shimPath: string;
 
@@ -224,6 +276,7 @@ beforeAll(async () => {
     "shim.c": SHIM_C,
     "pooled.js": POOLED_FIXTURE,
     "unix.js": UNIX_FIXTURE,
+    "hold.js": HOLDFIXTURE,
   });
   shimPath = join(String(shimDir), "shim.so");
   await using ccProc = Bun.spawn({
@@ -257,6 +310,16 @@ async function runWithShim(fixture: string, env: Record<string, string>) {
   const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
   const keepaliveCalls = stderr.match(/SO_KEEPALIVE fd=\d+/g) ?? [];
   return { stdout, stderr, exitCode, keepaliveCalls };
+}
+
+async function probeOhosKeepalive(url: string, mode: string, keepalive = true) {
+  const result = await runWithShim("hold.js", {
+    SERVER_URL: url,
+    MODE: mode,
+    KEEPALIVE: String(keepalive),
+  });
+  expect(result.exitCode, result.stderr).toBe(0);
+  return result.keepaliveCalls.length > 0 ? "02" : "00";
 }
 
 shimTests("SO_KEEPALIVE is set once per connection, not once per request on a pooled connection", async () => {

@@ -16,16 +16,17 @@ import { test } from "node:test";
 import { promisify } from "node:util";
 
 const execFileP = promisify(execFile);
+const shell = process.platform === "openharmony" ? (Bun.which("bash") ?? "/bin/sh") : "/bin/sh";
 
 test(
   "child process inherits a sane RLIMIT_NOFILE (capped at 1<<20)",
   { skip: process.platform === "win32" },
   async () => {
-    const inner = `console.log(require("child_process").execFileSync("/bin/sh", ["-c", "ulimit -Sn"]).toString().trim())`;
+    const inner = `console.log(require("child_process").execFileSync(process.env.BUN_TEST_SHELL, ["-c", "ulimit -Sn"]).toString().trim())`;
     const { stdout } = await execFileP(
-      "/bin/sh",
+      shell,
       ["-c", `ulimit -Sn 256 && exec "$1" -e "$2"`, "sh", process.execPath, inner],
-      { env: { ...process.env, BUN_DEBUG_QUIET_LOGS: "1" } },
+      { env: { ...process.env, BUN_DEBUG_QUIET_LOGS: "1", BUN_TEST_SHELL: shell } },
     );
 
     const soft = stdout.trim();

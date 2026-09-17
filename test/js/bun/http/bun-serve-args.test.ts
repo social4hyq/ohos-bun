@@ -1,6 +1,6 @@
 import { serve } from "bun";
 import { describe, expect, test } from "bun:test";
-import { isWindows, tmpdirSync } from "../../../harness";
+import { cwdScope, isOHOS, isWindows, tmpdirSync } from "../../../harness";
 
 const defaultHostname = "localhost";
 
@@ -55,9 +55,10 @@ describe("unix socket", () => {
 
   for (const { unix, hostname } of permutations) {
     test(`unix: ${unix} and hostname: ${hostname}`, () => {
+      const socketPath = isOHOS ? `${tmpdirSync()}/${unix}` : unix;
       using server = serve({
         // @ts-expect-error - Testing invalid combination
-        unix,
+        unix: socketPath,
         // @ts-expect-error - Testing invalid combination
         hostname,
         port: 0,
@@ -66,7 +67,7 @@ describe("unix socket", () => {
         },
       });
       // @ts-expect-error - Testing invalid property
-      expect(server.address + "").toBe(unix + "");
+      expect(server.address + "").toBe(socketPath + "");
       expect(server.port).toBeUndefined();
       expect(server.hostname).toBeUndefined();
       server.stop();
@@ -699,6 +700,7 @@ describe("Bun.serve unix socket validation", () => {
   });
 
   test("unix socket path coercion", () => {
+    using cwd = isOHOS ? cwdScope(tmpdirSync()) : undefined;
     // Number should coerce to string
     using server = serve({
       // @ts-expect-error - Testing runtime coercion

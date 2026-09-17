@@ -461,14 +461,21 @@ describe.skipIf(isWindows)("pipe backpressure", () => {
 
   test.concurrent("Bun.stdin.stream(): a single read does not ingest the whole pipe", async () => {
     const { first, deltaMB } = await run(`
-      const rss = process.platform === "darwin" && typeof Bun.unsafe.memoryFootprint === "function" ? Bun.unsafe.memoryFootprint : process.memoryUsage.rss;
+      // OHOS accounts unread kernel pipe pages in RSS. Use JS/external
+      // allocations there to measure user-space buffering; Linux/macOS retain
+      // the historical RSS check.
+      const memory = process.platform === "openharmony"
+        ? () => { const m = process.memoryUsage(); return m.heapUsed + m.external; }
+        : process.platform === "darwin" && typeof Bun.unsafe.memoryFootprint === "function"
+          ? Bun.unsafe.memoryFootprint
+          : process.memoryUsage.rss;
       const rd = Bun.stdin.stream().getReader();
       const c = await rd.read();
-      const base = rss();
+      const base = memory();
       // Give the event loop time to (incorrectly) drain the pipe. The loop is
       // native (no JS on the no-pending path), so debug/ASAN overhead is small.
       await new Promise(r => setTimeout(r, 1500));
-      const deltaMB = Math.round((rss() - base) / 1048576);
+      const deltaMB = Math.round((memory() - base) / 1048576);
       process.stdout.write(JSON.stringify({ first: c.value?.length ?? 0, deltaMB }));
       process.exit(0);
     `);

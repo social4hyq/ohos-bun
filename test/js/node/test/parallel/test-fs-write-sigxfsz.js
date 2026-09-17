@@ -20,7 +20,11 @@ if (process.argv[2] === 'child') {
   fs.writeFileSync(filename, '.'.repeat(1 << 16));  // Exceeds RLIMIT_FSIZE.
 } else {
   const [cmd, opts] = common.escapePOSIXShell`ulimit -f 1 && "${process.execPath}" "${__filename}" child`;
-  const result = child_process.spawnSync('/bin/sh', ['-c', cmd], opts);
+  // OHOS toybox /bin/sh accepts `ulimit` syntax but does not install RLIMIT_FSIZE;
+  // use the POSIX shell available in PATH so this test exercises Bun's signal
+  // handling rather than a shell implementation gap.
+  const shell = process.platform === 'openharmony' ? 'bash' : '/bin/sh';
+  const result = child_process.spawnSync(shell, ['-c', cmd], opts);
   const haystack = result.stderr.toString();
   const needle = 'EFBIG: file too large, write';
   const ok = haystack.includes(needle);

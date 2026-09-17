@@ -12,6 +12,47 @@ beforeAll(() => {
   setDefaultTimeout(1000 * 60 * 5);
 });
 
+// The public socketify.dev records used by the upstream smoke tests are not
+// guaranteed to be present in an OHOS device resolver. Keep the same c-ares
+// decode path deterministic there by answering the two records locally.
+function encodeDnsName(name) {
+  return Buffer.concat([
+    ...name.split(".").map(label => Buffer.concat([Buffer.from([label.length]), Buffer.from(label)])),
+    Buffer.from([0]),
+  ]);
+}
+
+async function startOhosRecordResolver(type, rdata) {
+  const socket = dgram.createSocket("udp4");
+  socket.on("message", (query, rinfo) => {
+    let off = 12;
+    while (query[off] !== 0) off += query[off] + 1;
+    const question = query.subarray(12, off + 5);
+    const answer = Buffer.concat([
+      Buffer.from([0xc0, 0x0c, type >> 8, type & 0xff, 0, 1, 0, 0, 0, 60, rdata.length >> 8, rdata.length & 0xff]),
+      rdata,
+    ]);
+    const header = Buffer.from([query[0], query[1], 0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0]);
+    socket.send(Buffer.concat([header, question, answer]), rinfo.port, rinfo.address);
+  });
+  socket.bind(0, "127.0.0.1");
+  await once(socket, "listening");
+  const resolver = new dns.Resolver({ timeout: 1000, tries: 1 });
+  resolver.setServers(["127.0.0.1:" + socket.address().port]);
+  return { resolver, socket };
+}
+
+function naptrRdata() {
+  return Buffer.from([
+    0, 1, // order
+    0, 12, // preference
+    1, 83, // flags: S
+    4, 116, 101, 115, 116, // service: test
+    0, // regexp
+    0, // replacement: root
+  ]);
+}
+
 // TODO:
 test("it exists", () => {
   expect(dns).toBeDefined();
@@ -210,7 +251,20 @@ test("dns.resolveSoa (empty string)", () => {
   return promise;
 });
 
-test("dns.resolveNaptr (naptr.socketify.dev)", () => {
+test("dns.resolveNaptr (naptr.socketify.dev)", async () => {
+  if (process.platform === "openharmony") {
+    const { resolver, socket } = await startOhosRecordResolver(35, naptrRdata());
+    try {
+      const results = await new Promise((resolve, reject) =>
+        resolver.resolveNaptr("naptr.ohos.test", (err, records) => (err ? reject(err) : resolve(records))),
+      );
+      expect(results).toEqual([{ flags: "S", service: "test", regexp: "", replacement: "", order: 1, preference: 12 }]);
+    } finally {
+      socket.close();
+    }
+    return;
+  }
+
   const { promise, resolve, reject } = Promise.withResolvers();
   dns.resolveNaptr("naptr.socketify.dev", (err, results) => {
     try {
@@ -353,7 +407,20 @@ test("dns.resolveNs (empty string) ", () => {
   return promise;
 });
 
-test("dns.resolvePtr (ptr.socketify.dev)", () => {
+test("dns.resolvePtr (ptr.socketify.dev)", async () => {
+  if (process.platform === "openharmony") {
+    const { resolver, socket } = await startOhosRecordResolver(12, encodeDnsName("bun.sh"));
+    try {
+      const results = await new Promise((resolve, reject) =>
+        resolver.resolvePtr("ptr.ohos.test", (err, records) => (err ? reject(err) : resolve(records))),
+      );
+      expect(results).toEqual(["bun.sh"]);
+    } finally {
+      socket.close();
+    }
+    return;
+  }
+
   const { promise, resolve, reject } = Promise.withResolvers();
   dns.resolvePtr("ptr.socketify.dev", (err, results) => {
     try {

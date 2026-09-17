@@ -69,9 +69,18 @@ const autoSelectFamilyAttemptTimeout = common.defaultAutoSelectFamilyAttemptTime
     const connection = createConnection({
       host: 'example.org',
       port: port,
+      // Cloudflare's public addresses make the expected six-attempt sequence
+      // route-dependent on OHOS: a reachable IPv4 candidate legitimately wins
+      // Happy Eyeballs early. Use documentation-only blackhole addresses on
+      // OHOS so the fixture remains deterministic and still exercises all
+      // candidates before the local IPv4 server succeeds.
       lookup: createMockedLookup(
-        '2606:4700::6810:85e5', '2606:4700::6810:84e5', '::1',
-        '104.20.22.46', '104.20.23.46', '127.0.0.1',
+        ...(process.platform === 'openharmony'
+          ? ['::1', '::2', '::3', '127.0.0.2', '127.0.0.3', '127.0.0.1']
+          : [
+              '2606:4700::6810:85e5', '2606:4700::6810:84e5', '::1',
+              '104.20.22.46', '104.20.23.46', '127.0.0.1',
+            ]),
       ),
       autoSelectFamily: true,
       autoSelectFamilyAttemptTimeout,
@@ -84,12 +93,16 @@ const autoSelectFamilyAttemptTimeout = common.defaultAutoSelectFamilyAttemptTime
       assert.deepStrictEqual(
         connection.autoSelectFamilyAttemptedAddresses,
         [
-          `2606:4700::6810:85e5:${port}`,
-          `104.20.22.46:${port}`,
-          `2606:4700::6810:84e5:${port}`,
-          `104.20.23.46:${port}`,
-          `::1:${port}`,
-          `127.0.0.1:${port}`,
+          ...(process.platform === 'openharmony'
+            ? [`::1:${port}`, `127.0.0.2:${port}`, `::2:${port}`, `127.0.0.3:${port}`, `::3:${port}`, `127.0.0.1:${port}`]
+            : [
+                `2606:4700::6810:85e5:${port}`,
+                `104.20.22.46:${port}`,
+                `2606:4700::6810:84e5:${port}`,
+                `104.20.23.46:${port}`,
+                `::1:${port}`,
+                `127.0.0.1:${port}`,
+              ]),
         ]
       );
     }));

@@ -1,10 +1,11 @@
 import { describe, test } from "bun:test";
-import { cwdScope, isWindows, tempDir } from "harness";
+import { cwdScope, isOHOS, isWindows, tempDir, tmpdirSync } from "harness";
 
 describe.if(!isWindows)("unix socket", () => {
   test("valid", () => {
+    const unix = isOHOS ? `${tmpdirSync()}/${Math.random().toString(32).slice(2, 15)}.sock` : Math.random().toString(32).slice(2, 15) + ".sock";
     using server = Bun.listen({
-      unix: Math.random().toString(32).slice(2, 15) + ".sock",
+      unix,
       socket: {
         open() {},
         close() {},

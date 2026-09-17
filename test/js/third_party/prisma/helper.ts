@@ -38,6 +38,7 @@ export function migrate(type: string, env: Record<string, string>) {
     },
   );
   if (!result.success) throw new Error(result.stderr.toString("utf8"));
+
 }
 
 export function generate(type: string, env: Record<string, string>) {

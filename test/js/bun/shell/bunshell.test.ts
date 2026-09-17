@@ -8,7 +8,7 @@ import { $ } from "bun";
 import { afterAll, beforeAll, describe, expect, it, test } from "bun:test";
 import { chmodSync, mkdirSync } from "fs";
 import { mkdir, rm, stat } from "fs/promises";
-import { bunExe, isPosix, isWindows, rss, runWithErrorPromise, tempDir, tempDirWithFiles, tmpdirSync } from "harness";
+import { bunExe, isOHOS, isPosix, isWindows, rss, runWithErrorPromise, tempDir, tempDirWithFiles, tmpdirSync } from "harness";
 import { join, sep } from "path";
 import { createTestBuilder, sortedShellOutput } from "./util";
 const TestBuilder = createTestBuilder(import.meta.path);
@@ -285,7 +285,7 @@ describe("bunshell", () => {
           "await Bun.$`BUN_DEBUG_QUIET_LOGS=1 ${process.argv0} -e \"console.log('hi'); console.error('lol')\"`.quiet()",
         ],
         {
-          env: { BUN_DEBUG_QUIET_LOGS: "1" },
+          env: { ...bunEnv, BUN_DEBUG_QUIET_LOGS: "1" },
         },
       );
       expect(stdout.toString()).toBe("");
@@ -306,7 +306,7 @@ describe("bunshell", () => {
       const { stdout, stderr } = Bun.spawnSync(
         [BUN, "-e", `await Bun.$\`echo "test output"\`.quiet(${quietArg === undefined ? "" : quietArg})`],
         {
-          env: { BUN_DEBUG_QUIET_LOGS: "1" },
+          env: { ...bunEnv, BUN_DEBUG_QUIET_LOGS: "1" },
         },
       );
 
@@ -578,7 +578,7 @@ describe("bunshell", () => {
   // its pipes (EMFILE). The pipeline must print the error on its stderr and
   // finish with exit code 1 so the `$` promise settles and the script goes on,
   // instead of throwing from inside the interpreter and never completing.
-  describe.skipIf(isWindows)("pipeline that fails to create its pipes", () => {
+  describe.skipIf(isWindows || isOHOS)("pipeline that fails to create its pipes", () => {
     const runWithFdLimit = (limit: number, script: string, env = bunEnv) =>
       Bun.spawn({
         cmd: ["/bin/sh", "-c", `ulimit -n ${limit} && exec "$1" -e "$2"`, "sh", bunExe(), script],

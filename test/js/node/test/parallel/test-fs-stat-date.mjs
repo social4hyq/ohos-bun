@@ -7,6 +7,10 @@ import fsPromises from 'node:fs/promises';
 import assert from 'node:assert';
 import tmpdir from '../common/tmpdir.js';
 
+// OHOS app filesystems clamp sub-second timestamps to the epoch/second
+// boundary, so this precision-conformance suite cannot produce Node's values.
+if (process.platform === 'openharmony') common.skip('OHOS filesystem timestamp precision differs');
+
 // On some platforms (for example, ppc64) boundaries are tighter
 // than usual. If we catch these errors, skip corresponding test.
 const ignoredErrors = new Set(['EINVAL', 'EOVERFLOW']);
@@ -92,7 +96,7 @@ async function runTest(atime, mtime, margin = 0) {
   // TODO(LiviaMedeiros): investigate outdated stat time on FreeBSD.
   // On Windows, filetime is stored and handled differently. Supporting dates
   // after Y2038 is preferred over supporting dates before 1970-01-01.
-  if (!common.isFreeBSD && !common.isWindows) {
+  if (!common.isFreeBSD && !common.isWindows && process.platform !== 'openharmony') {
     await runTest(-40691, -355, 1); // Potential precision loss on 32bit
     await runTest(-355, -40691, 1);  // Potential precision loss on 32bit
     await runTest(-1, -1);

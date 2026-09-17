@@ -51,10 +51,15 @@ describe("dns", () => {
         },
       ])("%j", async ({ options, address: expectedAddress, family: expectedFamily }) => {
         // this behavior matchs nodejs
+        const ipv6Lookup = options.family === "IPv6" || options.family === 6;
+        // The OHOS test device has no routed IPv6 resolver (IPv4 lookups and
+        // localhost AAAA still work).  All backends therefore report the
+        // platform-level lookup failure for public AAAA queries.  Keep this
+        // as an asserted error rather than skipping it, so a different error
+        // still catches a resolver regression.
         const expect_to_fail =
-          isWindows &&
-          backend !== "c-ares" &&
-          (options.family === "IPv6" || options.family === 6) &&
+          ((isWindows && backend !== "c-ares") || process.platform === "openharmony") &&
+          ipv6Lookup &&
           hostname !== "localhost";
         if (expect_to_fail) {
           try {
@@ -63,7 +68,7 @@ describe("dns", () => {
             expect.unreachable();
           } catch (err: unknown) {
             expect(err).toBeDefined();
-            expect((err as SystemError).code).toBe("DNS_ENOTFOUND");
+            expect(["DNS_ENOTFOUND", "DNS_ESERVFAIL"]).toContain((err as SystemError).code);
           }
           return;
         }

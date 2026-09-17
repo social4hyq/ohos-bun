@@ -185,7 +185,7 @@ describe("Bun.Terminal subprocess integration", () => {
     const { promise, resolve } = Promise.withResolvers<void>();
 
     const proc = Bun.spawn({
-      cmd: [bunExe(), "-e", "console.log('inline-terminal')"],
+      cmd: [bunExe(), "-e", "console.log('inline-terminal'); setTimeout(() => {}, 100)"],
       env: bunEnv,
       terminal: {
         cols: 80,
@@ -227,12 +227,16 @@ describe("Bun.Terminal subprocess integration", () => {
         bunExe(),
         "-e",
         `process.stdin.setEncoding('utf8');
-         process.stdin.on('data', d => { process.stdout.write('ECHO:' + d); process.exit(0); });`,
+         process.stdin.on('data', d => { process.stdout.write('ECHO:' + d); process.exit(0); });
+         process.stdout.write('READY');`,
       ],
       env: bunEnv,
       terminal,
     });
 
+    const readyDeadline = Date.now() + 2_000;
+    while (!output.includes("READY") && Date.now() < readyDeadline) await Bun.sleep(10);
+    expect(output).toContain("READY");
     terminal.write("abc\r");
     await promise;
     await proc.exited;

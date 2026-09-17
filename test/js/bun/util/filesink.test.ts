@@ -365,12 +365,14 @@ it.skipIf(!isPosix)(
 // synchronously instead of backpressuring -- same "doubled buffer size"
 // kernel quirk already documented for dgram tests (see
 // test/expectations.txt's common.isLinux entries). 2026-09-15.
-it.skipIf(!isLinux || process.platform === "openharmony")(
+it.skipIf(!isLinux)(
   "end() after a backpressured write() with the reader drained returns the write's promise and resolves it",
   async () => {
     const [readFd, writeFd] = createSocketPair();
     const sink = Bun.file(writeFd).writer();
-    const size = 300 * 1024;
+    // OHOS doubles the default AF_UNIX send buffer (~512KB), so use a payload
+    // larger than that buffer to exercise the same backpressure path.
+    const size = process.platform === "openharmony" ? 1024 * 1024 : 300 * 1024;
     try {
       const writePromise = sink.write(Buffer.alloc(size, 0x61));
       expect(writePromise).toBeInstanceOf(Promise);
