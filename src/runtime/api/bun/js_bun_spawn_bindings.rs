@@ -356,6 +356,7 @@ fn spawn_maybe_sync(
     let mut argv: Vec<CStrPtr> = Vec::new();
     let cmd_value: JSValue;
     let mut detached = false;
+    let mut new_process_group = false;
     let mut args = args_;
     let mut maybe_ipc_mode: Option<IPC::Mode> = None;
     let mut ipc_callback: JSValue = JSValue::ZERO;
@@ -653,6 +654,12 @@ fn spawn_maybe_sync(
             if let Some(detached_val) = args.get(global_this, "detached")? {
                 if detached_val.is_boolean() {
                     detached = detached_val.to_boolean();
+                }
+            }
+
+            if let Some(value) = args.get(global_this, "newProcessGroup")? {
+                if value.is_boolean() {
+                    new_process_group = value.to_boolean();
                 }
             }
 
@@ -1121,6 +1128,7 @@ fn spawn_maybe_sync(
             Box::default()
         },
         detached,
+        new_process_group,
         uid,
         gid,
         stdin: match stdio[0].as_spawn_option(0) {

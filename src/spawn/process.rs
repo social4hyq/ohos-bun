@@ -121,6 +121,9 @@ fn call_exit_handler(
 // handles `poller.deinit()`.
 #[derive(bun_ptr::ThreadSafeRefCounted)]
 pub struct Process {
+    /// Child owns a dedicated process group; timeout kills the group.
+    #[cfg(unix)]
+    pub(crate) new_process_group: bool,
     pub pid: PidT,
     #[cfg(any(target_os = "linux", target_os = "android"))]
     pub(crate) pidfd: PidFdType,
@@ -291,6 +294,7 @@ impl Process {
         bun_core::heap::into_raw(Box::new(Process {
             ref_count: bun_ptr::ThreadSafeRefCount::init(),
             pid: posix.pid,
+            new_process_group: posix.new_process_group,
             #[cfg(any(target_os = "linux", target_os = "android"))]
             pidfd: posix.pidfd.unwrap_or(0),
             js_poster: event_loop.js_poster(),
@@ -710,7 +714,8 @@ impl Process {
                         #[link_name = "kill"]
                         safe fn libc_kill(pid: libc::pid_t, sig: c_int) -> c_int;
                     }
-                    let err = libc_kill(self.pid, signal as c_int);
+                    let target_pid = if self.new_process_group { -self.pid } else { self.pid };
+                    let err = libc_kill(target_pid, signal as c_int);
                     if err != 0 {
                         let errno_ = bun_sys::get_errno(err as isize);
                         // if the process was already killed don't throw

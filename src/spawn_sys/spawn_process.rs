@@ -459,6 +459,9 @@ impl PosixStdio {
 
 #[derive(Default)]
 pub struct PosixSpawnResult {
+    /// Whether the child leads a dedicated process group for descendant kills.
+    pub new_process_group: bool,
+
     pub pid: PidT,
     pub pidfd: Option<PidFdType>,
     pub stdin: Option<Fd>,
@@ -1078,6 +1081,7 @@ pub unsafe fn spawn_process_posix(
             return Ok(Err(err));
         }
         Ok(pid) => {
+            spawned.new_process_group = options.new_process_group;
             spawned.pid = pid;
             spawned.extra_pipes = extra_fds;
 
