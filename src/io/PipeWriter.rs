@@ -745,6 +745,16 @@ impl<Parent: PosixStreamingWriterParent> PosixStreamingWriter<Parent> {
         self.handle.get_poll()
     }
 
+    /// OHOS Terminal leaves an initially-empty PTY writer unregistered until
+    /// it has buffered data; later writes re-register through backpressure.
+    #[cfg(target_env = "ohos")]
+    pub fn unregister_poll(&mut self) {
+        if let Some(poll) = self.get_poll() {
+            let loop_ = unsafe { Parent::loop_(self.parent()) };
+            let _ = poll.unregister(loop_, true);
+        }
+    }
+
     pub(crate) fn get_fd(&self) -> Fd {
         self.handle.get_fd()
     }

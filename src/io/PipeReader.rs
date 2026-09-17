@@ -838,6 +838,25 @@ impl PosixBufferedReader {
                     }
                     return;
                 }
+                // OHOS follows the Linux PTY convention of reporting EIO on
+                // the master after the last slave descriptor is closed. At
+                // because this reader is the Terminal PTY master, this is terminal
+                // EOF rather than an I/O failure. Restrict the conversion to
+                // Terminal's explicit epoll-watchdog flag; a standalone EIO
+                // from every other pipe/file remains an error.
+                Some(Stop::Error(err))
+                    if cfg!(target_env = "ohos")
+                        && unsafe { (*this).flags.contains(PosixFlags::EPOLL_REARM_WATCH) }
+                        && err.get_errno() == sys::E::EIO =>
+                {
+                    unsafe { Self::close_if_final(this, Some(&Stop::Eof)) };
+                    unsafe {
+                        if !(*this).flags.contains(PosixFlags::IS_DONE) {
+                            Self::done(this);
+                        }
+                    }
+                    return;
+                }
                 Some(Stop::Error(err)) => {
                     // SAFETY: caller contract; `on_error` is the tail.
                     unsafe { Self::on_error(this, err) };

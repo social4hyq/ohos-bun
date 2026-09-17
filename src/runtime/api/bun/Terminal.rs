@@ -482,7 +482,18 @@ impl Terminal {
             }
         }
 
-        // Start reader with the read fd - adds a ref
+        // OHOS PTY dup fds can lose the read readiness edge when an
+        // initially-empty writer is also registered for level-triggered
+        // EPOLLOUT. Keep the writer poll object for later backpressure,
+        // but do not watch writable until Terminal.write has data.
+        #[cfg(target_env = "ohos")]
+        terminal.writer.with_mut(|w| w.unregister_poll());
+
+        // Start reader with the read fd - adds a ref. Set the OHOS watchdog
+        // flag before the initial poll registration; setting it afterwards
+        // misses the first epoll_ctl(ADD), which can lose fast-child output.
+        #[cfg(target_env = "ohos")]
+        terminal.reader.with_mut(|r| r.flags.insert(PosixFlags::EPOLL_REARM_WATCH));
         match terminal
             .reader
             .with_mut(|r| r.start(pty_result.read_fd, true))
@@ -508,14 +519,6 @@ impl Terminal {
                                 .insert(PosixFlags::NONBLOCKING | PosixFlags::POLLABLE);
                             poll.set_flag(bun_io::FilePollFlag::Nonblocking);
                         }
-                        // OHOS: register_poll can report success for this fd
-                        // class while the kernel silently stops delivering
-                        // events afterward. Enrolls the PTY master reader in
-                        // posix_event_loop's rearm watchdog on its next
-                        // re-registration (this fd's own read-loop keeps
-                        // re-registering it, so that happens quickly).
-                        #[cfg(target_env = "ohos")]
-                        r.flags.insert(PosixFlags::EPOLL_REARM_WATCH);
                     });
                 }
                 terminal.update_flags(|f| f.insert(Flags::READER_STARTED));
