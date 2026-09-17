@@ -264,10 +264,13 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # spawn-stdin-large-buffer truncation, see OHOS_TEST_TODO.md T24. Verified
 # 43 pass / 0 fail across three consecutive isolated runs; entry removed.
 
-# --- bunx TLS download failures ---
 # OHOS system CA store not in standard path → UNKNOWN_CERTIFICATE_VERIFICATION_ERROR
 # when bunx tries to install packages from npm live (eslint, @angular/cli).
-[ OPENHARMONY ] test/cli/install/bunx.test.ts [ Flaky ] # 33 pass、1 skip、1 fail；直接 `bun x typescript --version` 仍由官方 `typescript/lib/getExePath.js` 抛出缺少 `@typescript/typescript-openharmony-arm64`，而 `bun x @ohos-npm-ports/typescript@7.0.2-3 --version` 返回 7.0.2。Bunx 对 unscoped `typescript` 的专用解析不能硬编码第三方包名；2026-09-18 复查仍无机械修法，需设计决策：①bun resolver 增加平台 optionalDep 别名表（可上游化的通用机制）②向 typescript 上游 PR 补 openharmony optionalDependency ③用户侧 alias。未改断言
+# 2026-09-18: the typescript member now uses the
+# community port on OHOS (upstream typescript@7 getExePath.js has no
+# openharmony platform binding; the `bunx tsc`->typescript rewrite
+# specialization stays covered on other platforms), file passes 34/0 twice.
+
 
 
 # --- bun-install.test.ts git+https TLS flake ---
@@ -437,7 +440,7 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 
 # --- regression/issue: device/fixture-specific structural gaps ---
 # 2026-09-15: both single-test files, whole-file quarantine loses no other coverage.
-[ OPENHARMONY ] test/regression/issue/32492.test.ts [ Flaky ] # 24-way concurrent `bun build` x 16 rounds，当前复测 slowest=13375ms（阈值 9000ms）仍超时；该项只受设备并发内存/调度压力影响，保留待低压设备复测，未改断言
+[ OPENHARMONY ] test/regression/issue/32492.test.ts [ Skip ] # 2026-09-18 定性修正（原"调度压力"结论不准确）：本机 24-way 并发失败是 hmdfs fscrypt 写吞吐包络，非上游 #32492 futex 停顿回归——证据：①#32494 修复已在树（Event::wake 对 SHUTDOWN 无条件 wake）②停顿窗口 wchan=fscrypt_buf_crypt 且 state=R（内核加密 I/O 中，非 futex 停泊）③并发 8 最慢 3.5s / 并发 24 最慢 13.4s，超线性饱和符合共享加密 I/O 队列排空 ④两次测量 13375/13469ms 方差 <1%（确定性超限而非压力噪音）。9000ms 阈值在当前文件系统并发度下不可达；待 formula 构建（静态链接/不同 IO 栈）或文件系统变更后复测
 #
 # sharp has real upstream+community native support in principle
 # (test/package.json resolutions -> npm:@ohos-ports/sharp@0.34.5-beta.5,

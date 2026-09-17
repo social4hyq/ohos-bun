@@ -724,3 +724,9 @@ OHOS 专属的既有 bug，已加 `skipIf(openharmony)`（不是本会话职责�
 - `32492`（并发构建阈值）：设备当前多会话并发 load 45，复测污染，待低压窗口。
 - `next-pages`：next-swc 在 @ohos-npm-ports/@ohos-ports 均无产物，外部阻塞不变。
 - `bunx typescript`、PTY 类（scanner/terminal-flaky）：需设计决策/专门 session。
+
+## Round 32（2026-09-18 续：bunx typescript 修复 + 32492 定性修正）
+
+- **`bunx --no-install typescript` 修复（隔离摘除，34 pass/0 fail ×2）**：OHOS 下 it.each 的 typescript 条目改用社区 port `@ohos-npm-ports/typescript`（上游 typescript@7 的 getExePath.js 无 openharmony 平台 binding，unscoped 包在 OHOS 永远装不出可运行 bin；port 替身与 esbuild/rspack fixture 同一模式）。仍覆盖本用例真正要测的 install+bin 执行+缓存命中路径；`bunx tsc`→typescript 重写特化在其他平台保持覆盖。
+- **`32492` 定性修正（Flaky→Skip，证据齐全）**：本机 24-way 失败（slowest 13469ms vs 阈值 9000ms）**不是**上游 #32492 futex 停顿回归，是 **hmdfs fscrypt 写吞吐包络**——①#32494 修复已在树 ②慢窗口 wchan=fscrypt_buf_crypt 且 state=R（在内核加密 I/O 中运行，非 futex 停泊）③并发 8 最慢 3.5s / 24 最慢 13.4s 超线性饱和 ④两次测量方差 <1%。待 formula 构建或 FS 变更后复测。
+- 诊断过程留档：跨进程 /proc 采样在沙箱受限（task 目录遍历不完整、syscall 文件不可读），wchan 仍可读；trace-shim 无时间戳且进程死亡时尾部丢失。

@@ -1,7 +1,7 @@
 import { spawn } from "bun";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, setDefaultTimeout } from "bun:test";
 import { mkdir, rm, writeFile } from "fs/promises";
-import { bunEnv, bunExe, isWindows, readdirSorted, tmpdirSync } from "harness";
+import { bunEnv, bunExe, isOHOS, isWindows, readdirSorted, tmpdirSync } from "harness";
 import { chmodSync, copyFileSync, readdirSync, symlinkSync } from "node:fs";
 import { delimiter, join, resolve } from "path";
 import { dummyAfterAll, dummyBeforeAll, dummyBeforeEach, dummyRegistry, getPort, setHandler } from "./dummy.registry";
@@ -442,7 +442,17 @@ describe("bunx --no-install", () => {
       2. http-server checks for non-alphanumeric edge cases. Plus it's small
       3. eslint is alphanumeric and extremely common
    */
-  it.concurrent.each(["typescript", "http-server", "eslint"])(
+  // OHOS: upstream typescript@7's lib/getExePath.js requires a
+  // @typescript/typescript-openharmony-arm64 native binding that upstream
+  // does not ship, so the unscoped `typescript` install can never run there.
+  // The community port (@ohos-npm-ports/typescript) is the sanctioned
+  // substitute (same as the esbuild/rspack fixture pins); it still exercises
+  // the install + bin-exec + cache-hit path this test is about. The
+  // `bunx tsc` -> `typescript` rewrite specialization remains covered on the
+  // other platforms.
+  it.concurrent.each(
+    isOHOS ? ["@ohos-npm-ports/typescript", "http-server", "eslint"] : ["typescript", "http-server", "eslint"],
+  )(
     "`bunx --no-install %s` should find cached packages",
     async pkg => {
       const ctx = setup();
