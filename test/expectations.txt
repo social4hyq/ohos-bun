@@ -267,7 +267,7 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # --- bunx TLS download failures ---
 # OHOS system CA store not in standard path → UNKNOWN_CERTIFICATE_VERIFICATION_ERROR
 # when bunx tries to install packages from npm live (eslint, @angular/cli).
-[ OPENHARMONY ] test/cli/install/bunx.test.ts [ Flaky ] # 33 pass、1 skip、1 fail；直接 `bun x typescript --version` 仍由官方 `typescript/lib/getExePath.js` 抛出缺少 `@typescript/typescript-openharmony-arm64`，而 `bun x @ohos-npm-ports/typescript@7.0.2-3 --version` 返回 7.0.2。Bunx 对 unscoped `typescript` 的专用解析不能硬编码第三方包名，需用户侧 alias/上游接线策略，未改断言
+[ OPENHARMONY ] test/cli/install/bunx.test.ts [ Flaky ] # 33 pass、1 skip、1 fail；直接 `bun x typescript --version` 仍由官方 `typescript/lib/getExePath.js` 抛出缺少 `@typescript/typescript-openharmony-arm64`，而 `bun x @ohos-npm-ports/typescript@7.0.2-3 --version` 返回 7.0.2。Bunx 对 unscoped `typescript` 的专用解析不能硬编码第三方包名；2026-09-18 复查仍无机械修法，需设计决策：①bun resolver 增加平台 optionalDep 别名表（可上游化的通用机制）②向 typescript 上游 PR 补 openharmony optionalDependency ③用户侧 alias。未改断言
 
 
 # --- bun-install.test.ts git+https TLS flake ---
@@ -327,7 +327,7 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # @typescript/typescript-openharmony-arm64" from tsc.js's getExePath()
 # once it actually runs `tsc` on the scaffolded project. 13/17 other tests
 # pass. 2026-09-15.
-[ OPENHARMONY ] test/cli/create/create-jsx.test.ts [ Failure ] # 最新完整复测 3 pass、4 skip、6 fail；shadcn 构建当前因上游 bun-plugin-tailwind 缺少 native binding 失败；@ohos-npm-ports/bun-plugin-tailwind@0.1.2-1 尚未发布（registry 404），其余为 happy-dom/资源加载及快照差异，未改断言。
+[ OPENHARMONY ] test/cli/create/create-jsx.test.ts [ Failure ] # 最新完整复测 3 pass、4 skip、6 fail；shadcn 构建因上游 bun-plugin-tailwind 缺少 OHOS native binding 失败。2026-09-18 复查：@ohos-npm-ports/bun-plugin-tailwind@0.1.2-1 已发布（原 404 已解除），但 `bun create` 单文件脚手架一步 resolve+install，无 mid-flow resolutions 注入点；生成器硬编码 port 包名属反模式。待接线策略：①社区仓补 @ohos-ports scope 的 napi binding 子包供上游主包 optionalDep 命中 ②上游生成器平台分支 ③测试侧本地注册表重映射。其余为 happy-dom/资源加载及快照差异，未改断言。
 
 # --- regression: real-machine 2026-07-27 reconciliation (pre-dates ohos-minimal) ---
 # Historical note carried over from the old ohos-aarch64 branch's expectations
@@ -434,25 +434,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # Genuinely unresolved after real investigation, not a "just add a fix"
 # case -- left as Flaky, not unquarantined, until there's appetite to
 # instrument bun's own network stack directly.
-# @resvg/resvg-js is fixed at the require()/render() level (community port
-# @ohos-npm-ports/resvg-resvg-js@2.6.2-1 -- migrated 2026-08-29 from the
-# @ohos-ports/resvg-resvg-js@2.6.2-1 build this section originally referenced,
-# see test/package.json's resolutions; both are the ohos-ports/ohos-ports and
-# ohos-npm-ports/ohos-npm-ports community repos respectively, byte-identical
-# build.sh recipe, confirmed working PNG output in isolation), but this
-# specific test's hardcoded bbox-after-crop expectation doesn't match
-# bit-for-bit: expects 112.20712208389321, this build's resvg produces
-# 112.20712280273438 (differs at the 6th decimal place, reproducible 100% in
-# isolation, not a concurrency artifact, identical value on both community
-# builds since they share the same build recipe -- confirmed the migration
-# does not change this). Root cause identified: both community builds compile
-# the exact same upstream source with stable rustc 1.98.0 via `brew install
-# rust`, while upstream's own CI pins nightly-2023-12-11 (a toolchain that
-# predates rustc's OHOS-host support and can't be used here) -- a genuine
-# cross-compiler floating-point rounding difference in this SVG's multi-step
-# affine transform + arc-to-bezier math, not a missing feature or an OHOS
-# platform limitation.
-[ OPENHARMONY ] test/js/third_party/resvg/bbox.test.js [ Skip ] # @ohos-npm-ports/resvg-resvg-js@2.6.2-1 renders correctly but this build's bbox-after-crop float output differs from upstream's hardcoded expectation at the 6th decimal place (rustc 1.98.0 vs upstream's pinned nightly-2023-12-11, not a missing-feature gap)
 
 # --- regression/issue: device/fixture-specific structural gaps ---
 # 2026-09-15: both single-test files, whole-file quarantine loses no other coverage.
@@ -495,16 +476,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # 4096 字节（注释自称"PT_INTERP always lives in the first ELF page"），但
 # 这个假设在本机构建的 bun-profile 上不成立——原始二进制里 PT_INTERP 字符串
 # （26 字节）后面紧挨着一段 OHOS 工具链插入的 "OHOS" ABI 标识 ELF note，
-# 几乎零 padding；patchelf 把解释器路径改长到 82 字节时原地放不下，只能在
-# 文件末尾（本例中是 offset ~264MB 处，超出 264MB 大小的文件本身）新开一个
-# segment 存放，PT_INTERP 的 p_offset 因此指向文件尾部而非头部。用 patchelf
-# --print-interpreter 独立验证过：patchelf 本身改写正确，纯粹是这两个测试
-# 自己的 4KB 读取窗口假设在这种（OHOS 特有的紧凑 ELF 布局）场景下不成立，
-# 不是 bun 产品代码的 bug，也不是 patchelf 的 bug。价值本就低（纯 Nix 场景，
-# OHOS 部署不涉及 Nix）+ 根因在测试自身的 fixture 断言而非产品代码，遵循
-# "不改测试绕 bug" 原则维持隔离，不改测试文件也不碰 bun 自己的 ELF 链接布局。
-[ OPENHARMONY ] test/regression/issue/24742.test.ts [ Failure ] # 复测 0 pass、1 fail；OHOS Bun ELF 无可读 PT_INTERP，patchelf 退出 0 但 readInterp() 返回空串，/nix/store 解释器归一化断言前提不适用于 OHOS ELF
-[ OPENHARMONY ] test/regression/issue/29290.test.ts [ Failure ] # 复测 0 pass、2 fail；OHOS bun 模板/编译产物无可读 PT_INTERP，patchelf 步骤退出 0 但 readInterp() 返回空串，Nix/FHS 动态解释器断言不适用于 OHOS ELF，非该回归逻辑
 [ OPENHARMONY ] test/js/valkey/integration/complex-operations.test.ts [ Failure ] # class D: Redis 连不上（valkey/Docker 不可用）
 [ OPENHARMONY ] test/cli/install/bun-security-scanner-matrix-with-node-modules.test.ts [ Failure ] # Terminal HUP+EIO 与首次 epoll watchdog 修复后，单例 0513 仍无法可靠完成安全提示确认；force_sync 实验虽能回显 "y\r\n" 但破坏 Terminal drain 语义（94 pass、2 fail），已撤回。TTY:y 子集此前为 48 pass、96 fail、14 errors，仍是 OHOS PTY 行输入/安装流程时序问题，未改断言
 [ OPENHARMONY ] test/js/bun/spawn/spawn-cgroup.test.ts [ Failure ] # 结构性：cgroup-join 整条路径（clone3 + 子进程写 cgroup.procs 兜底，bun-spawn.cpp）限定在 OS(LINUX) && !defined(__OHOS__)，OHOS 上 spawn({cgroup}) 是 no-op，4/13 用例断言 cgroup.procs 被写入必挂

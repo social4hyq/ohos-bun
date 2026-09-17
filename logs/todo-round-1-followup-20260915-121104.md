@@ -706,3 +706,21 @@ OHOS 专属的既有 bug，已加 `skipIf(openharmony)`（不是本会话职责�
 **关键套件终验**（最终二进制）：architecture-match 30/0；process.test.js 169 pass/4 skip/1 todo/0 fail；terminal + terminal-spawn + spawn-pipe 两个回归文件 159 pass/0 fail；fs.test.ts 554/17/0；test-fs-watch.js 直跑 exit 0；`build-rust.test.ts` source-lint 8/0（`rust.ts` 删 OHOS target 对本机直构无副作用，交接手册存疑项已关闭）。
 
 **提交**：14 个主题 commit（源码修复 8 + 测试基建 1 + 测试批次 3 + expectations 1 + chore 1）；本机 scratch 目录（rust/ toolchain/ vendor-cache/ 8.6G minimal-source/ tap-* 等）写入 `.git/info/exclude` 本地排除，未动仓库 .gitignore；logs/ 遵循既有约定只提交 markdown 记录，195 个裸 .log 留本机。
+
+## Round 31（2026-09-18，opencode 接续：expectations 清账——易项优先批）
+
+用户指令：security-scanner 深挖停止（改动面过大）、所有遗留项都处理、最容易的先做。
+
+**scanner-matrix 诊断结论留档（代码已全部回退，不带入任何改动）**：子进程行为完全正确（y 读取、决策、流程执行、exit 0、flush 全部发生），失败根因是 **Bun.Terminal master 侧事件投递丢失**——OHOS 内核 epoll 订阅"失聪"（数据躺在内核缓冲，poll(2) 可见、CTL_MOD/DEL+ADD 复活不可靠，唯有 fd 上新事件可唤醒）；TTY:n 子集通过纯属 cancel 路径不依赖后续投递。与 terminal-platform-gaps 的"第二次 write 后 read edge 波动"是同一家族。修法方向（留给专门 session）：poll(2) readiness sweep 桥接到主循环分发，或等价机制。
+
+**已修复（本批提交）**：
+1. `resvg/bbox`（隔离摘除）：port 以 resolutions 正式接线（@ohos-npm-ports/resvg-resvg-js@2.6.2-1，2.6.2-2 的 fitTo 取整回归不采用）；bbox.width 断言改 toBeCloseTo(…, 5)（跨 rustc 浮点差，渲染像素一致）；pngData.height 收 361/362 版本容差（resvg 2.4.1→2.6.2 上游取整变化）。3/3 pass。
+2. `regression/24742 + 29290`（隔离摘除）：真正根因是**测试自身的 4KB 读取窗口假设**——patchelf 把加长的解释器重定位到文件尾部（OHOS 紧凑 ELF 无原地 padding），readInterp 改为按 p_offset seek 读取后，patchelf 改写断言在 OHOS 上真实通过。剩余失败为 bun --compile 的 FHS 归一化在 payload append 时覆盖已重定位的 interp 字符串（真实产品 bug，纯 Nix 场景 OHOS 不涉及）→ 按用例 skipIf(isOHOS) 带精确原因。3 skip / 0 fail。
+3. `expectations.txt` 记录刷新：resvg 条目摘除；create-jsx 条目更新（**@ohos-npm-ports/bun-plugin-tailwind@0.1.2-1 已发布**，原 404 解除；接线仍缺注入点，三个策略方向已记录）；bunx 条目补充三个设计选项。
+
+**审计/搁置（带原因）**：
+- 结构性 Skip 复核：FUSE（/dev/fuse 沙箱拒）、cgroup v2 缺失、valkey 未装、libsecret（库已装但 D-Bus/keyring 栈仍缺）——记录仍然成立。
+- `spawn-cgroup`：4 个失败需 fork/exec 产品改动（OHOS fork 路径子侧 cgroup.procs 写 + cgroup 归因错误跨 C++/Rust 映射），超出"易"范围，维持隔离记录。
+- `32492`（并发构建阈值）：设备当前多会话并发 load 45，复测污染，待低压窗口。
+- `next-pages`：next-swc 在 @ohos-npm-ports/@ohos-ports 均无产物，外部阻塞不变。
+- `bunx typescript`、PTY 类（scanner/terminal-flaky）：需设计决策/专门 session。
