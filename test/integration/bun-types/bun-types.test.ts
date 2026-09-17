@@ -56,6 +56,15 @@ beforeAll(async () => {
 
   try {
     await cp(FIXTURE_SOURCE_DIR, BASE_FIXTURE_DIR, { recursive: true });
+    if (process.platform === "openharmony") {
+      const fixturePackageJsonPath = join(BASE_FIXTURE_DIR, "package.json");
+      const fixturePackageJson = await Bun.file(fixturePackageJsonPath).json();
+      fixturePackageJson.resolutions = {
+        ...fixturePackageJson.resolutions,
+        typescript: "npm:@ohos-npm-ports/typescript@7.0.2-3",
+      };
+      await Bun.write(fixturePackageJsonPath, JSON.stringify(fixturePackageJson, null, 2));
+    }
     await cp(BUN_TYPES_PACKAGE_ROOT, bunTypesBuildDir, {
       recursive: true,
       filter: source => basename(source) !== "node_modules",

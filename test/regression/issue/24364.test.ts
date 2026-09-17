@@ -19,6 +19,27 @@ test("react-tailwind template passes tsc --noEmit", async () => {
     "tsconfig.json": tsconfigJson,
   });
 
+  // The template pulls in npm's `bun` meta-package through bun-plugin-tailwind
+  // and TypeScript's native loader needs an OHOS implementation. Both community
+  // ports are drop-in overrides; keep the upstream package names for other OSes.
+  if (process.platform === "openharmony") {
+    await Bun.write(
+      join(String(dir), "package.json"),
+      JSON.stringify(
+        {
+          name: "issue-24364",
+          private: true,
+          overrides: {
+            bun: "npm:@ohos-ports/bun@1.4.2-beta.0",
+            typescript: "npm:@ohos-npm-ports/typescript@7.0.2-3",
+          },
+        },
+        null,
+        2,
+      ),
+    );
+  }
+
   // Install typescript and bun types
   await using install = Bun.spawn({
     cmd: [bunExe(), "add", "-d", "typescript", "@types/bun", "@types/react", "bun-plugin-tailwind"],

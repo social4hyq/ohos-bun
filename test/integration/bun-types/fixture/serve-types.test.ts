@@ -616,7 +616,13 @@ test(
   },
   {
     onConstructorFailure: error => {
-      expect(error.message).toContain("Failed to start server");
+      // OHOS reports the kernel bind errno directly for an unavailable
+      // interface, while Linux wraps it in Bun's generic startup message.
+      if (process.platform === "openharmony") {
+        expect(error.message).toContain("EADDRNOTAVAIL");
+      } else {
+        expect(error.message).toContain("Failed to start server");
+      }
     },
   },
 );

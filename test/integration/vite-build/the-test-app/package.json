@@ -123,5 +123,8 @@
     "sharp",
     "svelte-adapter-bun",
     "svelte-preprocess"
-  ]
+  ],
+  "resolutions": {
+    "lightningcss": "npm:@ohos-npm-ports/lightningcss@1.33.0-1"
+  }
 }

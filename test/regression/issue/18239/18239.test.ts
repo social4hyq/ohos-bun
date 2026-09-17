@@ -10,7 +10,7 @@ test.skipIf(isWindows)("TTY stdin buffering should work correctly", async () => 
 
   // Run the data generator piped into our TTY test fixture
   const result = spawnSync({
-    cmd: ["bash", "-c", `"${dataGeneratorPath}" | "${bunExe()}" "${fixturePath}"`],
+    cmd: ["bash", "-c", `bash "${dataGeneratorPath}" | "${bunExe()}" "${fixturePath}"`],
     env: {
       ...bunEnv,
       BUN_DEBUG_QUIET_LOGS: "1",

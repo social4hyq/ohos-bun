@@ -147,7 +147,7 @@ afterAll(() => {
 //
 // https://github.com/GoogleChromeLabs/chrome-for-testing/issues/1
 // https://github.com/puppeteer/puppeteer/issues/7740
-const puppeteer_unsupported = process.platform === "linux" && process.arch === "arm64";
+const puppeteer_unsupported = (process.platform === "linux" || process.platform === "openharmony") && process.arch === "arm64";
 
 // https://github.com/oven-sh/bun/issues/11255
 test.skipIf(puppeteer_unsupported || (isWindows && isCI))(
