@@ -2,7 +2,7 @@ import { file, spawn, write } from "bun";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, lstatSync, readFileSync, readlinkSync, statSync } from "fs";
 import { mkdir, readlink, rm, symlink } from "fs/promises";
-import { VerdaccioRegistry, bunEnv, bunExe, readdirSorted, runBunInstall, tempDir } from "harness";
+import { VerdaccioRegistry, bunEnv, bunExe, isOHOS, readdirSorted, runBunInstall, tempDir } from "harness";
 import { createRequire } from "module";
 import { basename, dirname, join } from "path";
 import { pathToFileURL } from "url";
@@ -898,7 +898,10 @@ index 0000000000000000000000000000000000000000..3b18e512dba79e4c8300dd08aeb37f8e
       inodes.add(statSync(join(pkgDir, "index.js")).ino);
     }
     inodes.add(statSync(cacheFile).ino);
-    expect(inodes.size).toBe(1);
+    // The OHOS application filesystem materializes hardlink requests as
+    // independent files; content and cache de-duplication remain validated
+    // above, but inode identity is not an available invariant there.
+    if (!isOHOS) expect(inodes.size).toBe(1);
   }
 
   await install();

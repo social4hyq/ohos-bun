@@ -8,6 +8,7 @@ import {
   bunTest,
   isASAN,
   isDebug,
+  isOHOS,
   isLinux,
   isWindows,
   tempDir,
@@ -442,7 +443,9 @@ test.concurrent(
   },
   // The spawned debug+ASAN child alone needs ~8s for this; the default 5s
   // budget only fits release-ish builds.
-  isDebug ? 90_000 : 5_000,
+  // OpenHarmony process startup is slower for this intentionally large
+  // environment fixture; keep the same assertion with a platform budget.
+  isDebug ? 90_000 : isOHOS ? 15_000 : 5_000,
 );
 
 test.concurrent(".env space edgecase (issue #411)", async () => {

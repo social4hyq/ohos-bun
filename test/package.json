@@ -125,6 +125,8 @@
   "resolutions": {
     "react": "../node_modules/react",
     "@types/node": "26.2.0",
-    "@napi-rs/canvas": "npm:@ohos-ports/napi-rs-canvas@1.0.2-beta.0"
+    "@napi-rs/canvas": "npm:@ohos-ports/napi-rs-canvas@1.0.2-beta.0",
+    "rollup": "4.50.2",
+    "esbuild": "npm:@ohos-ports/esbuild@0.25.5-beta.0"
   }
 }

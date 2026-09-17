@@ -1,8 +1,11 @@
 import type { Subprocess } from "bun";
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { cp, readdir } from "fs/promises";
-import { bunEnv, bunExe, isCI, isWindows, tempDir, tempDirWithFiles } from "harness";
+import { bunEnv, bunExe, isCI, isOHOS, isWindows, tempDir, tempDirWithFiles } from "harness";
 import path from "path";
+
+// OHOS dependency installation and the shadcn CLI routinely exceed Bun's 5s default.
+setDefaultTimeout(2 * 60 * 1000);
 
 async function getServerUrl(process: Subprocess<any, "pipe", any>, all = { text: "" }) {
   // Read the port number from stdout
@@ -184,7 +187,8 @@ for (const development of [true, false]) {
       });
     });
 
-    describe("react spa (tailwind)", async () => {
+    // bun-plugin-tailwind has no OpenHarmony native binding yet.
+    describe.skipIf(isOHOS)("react spa (tailwind)", async () => {
       let dir: string;
       beforeEach(async () => {
         dir = tempDirWithFiles("react-spa-tailwind", {

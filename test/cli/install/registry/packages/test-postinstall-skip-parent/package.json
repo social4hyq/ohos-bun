@@ -13,8 +13,8 @@
       },
       "_id": "test-postinstall-skip-parent@1.0.0",
       "dist": {
-        "integrity": "sha512-imDL/l5Ek1weCWfu1/EiLkfLNYrmah1PAUc8LUYLu7kB17mGKMnXq65WHJ6gM6LzW4otfOq0zLa/PEafqINdOQ==",
-        "shasum": "52002bd7ed68fa3c1702fbd7abaccb4f7f3ae3cb",
+        "integrity": "sha512-q0V1OhKUa/YlMcOSRjXNjTUMyfaD9+69oLigZpvTq9HTm6egsU/i0CzlLJd8FkRj6pa5SVLoZtSDPxesl93W3Q==",
+        "shasum": "ac703964d575f4bcaf969b53ba97449265491127",
         "tarball": "http://localhost:4873/test-postinstall-skip-parent/-/test-postinstall-skip-parent-1.0.0.tgz"
       }
     },
@@ -27,8 +27,8 @@
       },
       "_id": "test-postinstall-skip-parent@2.0.0",
       "dist": {
-        "integrity": "sha512-iHQhYeHNwO3Gfcy5onj5NMZZKPzt2uzkOtmcbSqT6sVIQhtfEUAJ2+yQBjQSmR4/0H2sYasQIyE21KOPd4YC+g==",
-        "shasum": "0a211cb71f4149a83cfb83552a548e25eeba1aea",
+        "integrity": "sha512-p+xiYoK1Va5C6BP7cD5clr7j1Cr+AcsMDCt9HuTjTBhgdo2F8ss7MQMxVRtgIFQVkU604a3rHMlxJvL5Wh5Q9A==",
+        "shasum": "af72fa4b389a2f09a1ae6f33a5f6ceaee7e5901b",
         "tarball": "http://localhost:4873/test-postinstall-skip-parent/-/test-postinstall-skip-parent-2.0.0.tgz"
       }
     }

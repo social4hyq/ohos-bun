@@ -6,11 +6,11 @@
  */
 import { spawn, type ReadableSubprocess } from "bun";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { isLinux, tmpdirSync } from "harness";
+import { isLinux, isOHOS, tmpdirSync } from "harness";
 import fs from "node:fs";
 import { join } from "node:path";
 
-describe.skipIf(!isLinux)("glob on a FUSE mount", () => {
+describe.skipIf(!isLinux || isOHOS)("glob on a FUSE mount", () => {
   // Mount once for the whole describe block. The first python3/libfuse
   // cold-start on Alpine CI can take several seconds when disk I/O is
   // contended by background container setup, so a per-test mount with a

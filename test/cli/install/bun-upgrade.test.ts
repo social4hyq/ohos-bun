@@ -1,7 +1,7 @@
 import { spawn } from "bun";
 import { upgrade_test_helpers } from "bun:internal-for-testing";
 import { describe, expect, it } from "bun:test";
-import { bunExe, bunEnv as env, isMusl, isWindows, tempDir, tls, tmpdirSync } from "harness";
+import { bunExe, bunEnv as env, isMusl, isOHOS, isWindows, tempDir, tls, tmpdirSync } from "harness";
 import { existsSync, statSync } from "node:fs";
 import { copyFile, writeFile } from "node:fs/promises";
 import { basename, join } from "path";
@@ -258,7 +258,9 @@ describe.concurrent(() => {
   });
 });
 
-it("completes against a locally-served release with the system temp dir held open without FILE_SHARE_DELETE", async () => {
+// Stable/profile release assets are not published for OpenHarmony yet; the
+// upgrade command correctly stops before download on this platform.
+it.skipIf(isOHOS)("completes against a locally-served release with the system temp dir held open without FILE_SHARE_DELETE", async () => {
   // `--stable` routes through the GitHub releases API (overridable via
   // GITHUB_API_DOMAIN) instead of the compiled-in canary URL, so the whole
   // download/unpack/verify path runs against the local server. On non-canary
@@ -297,7 +299,7 @@ it("completes against a locally-served release with the system temp dir held ope
   expect(exitCode).toBe(0);
 });
 
-it("recreates the staging directory in the temp dir instead of reusing a pre-existing one", async () => {
+it.skipIf(isOHOS)("recreates the staging directory in the temp dir instead of reusing a pre-existing one", async () => {
   const tagName = "bun-v9.9.9";
   // Simulate a directory that already exists at the predictable staging path
   // ($TMPDIR/<version>) before the upgrade runs, with content planted inside it.
@@ -350,7 +352,7 @@ it("recreates the staging directory in the temp dir instead of reusing a pre-exi
   expect(exitCode).toBe(1);
 });
 
-it("verifies the downloaded release archive against the digest reported by the release asset", async () => {
+it.skipIf(isOHOS)("verifies the downloaded release archive against the digest reported by the release asset", async () => {
   const archiveBody = "this is not a real zip archive";
   const correctDigest = `sha256:${new Bun.CryptoHasher("sha256").update(archiveBody).digest("hex")}`;
   const wrongDigest = `sha256:${Buffer.alloc(32, 0xab).toString("hex")}`;

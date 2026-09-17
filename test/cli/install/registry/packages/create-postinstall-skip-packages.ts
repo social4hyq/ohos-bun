@@ -75,7 +75,7 @@ for (const v of ["1.0.0", "2.0.0"]) {
   const pkgJson = {
     name: "test-postinstall-skip-native",
     version: v,
-    os: ["darwin", "linux", "win32"],
+    os: ["darwin", "linux", "win32", "openharmony"],
     cpu: ["arm64", "x64"],
   };
   const tarball = await packTarball("test-postinstall-skip-native", v, pkgJson, {

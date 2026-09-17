@@ -6,6 +6,7 @@ import {
   bunExe,
   bunEnv as env,
   isWindows,
+  isOHOS,
   normalizeBunSnapshot,
   readdirSorted,
   runBunInstall,
@@ -171,7 +172,10 @@ it("should save the lockfile if --save-text-lockfile and --frozen-lockfile are u
   expect(secondLockfile).toMatchSnapshot();
 });
 
-it("should convert a binary lockfile with invalid optional peers", async () => {
+// The binary fixture was serialized before OpenHarmony had an OS bit. Its
+// text conversion necessarily differs on OHOS (every package's platform
+// metadata is refreshed), so this cross-platform snapshot is not comparable.
+it.skipIf(isOHOS)("should convert a binary lockfile with invalid optional peers", async () => {
   const { packageDir, packageJson } = await registry.createTestDir({ bunfigOpts: { npm: true } });
   await Promise.all([
     write(

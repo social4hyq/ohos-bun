@@ -16,8 +16,8 @@
         "test-native-binlink-target": "1.0.0"
       },
       "dist": {
-        "integrity": "sha512-1PqDobvLsa0lFqxrns17u0yfmjgLQeuST8PWNxov09gs+yEm2xoBc5yXx5B6NFcXOY6lu5A62cRgFW8FSOgpJQ==",
-        "shasum": "da15dad1eae537c1341ca87b04d8ae7a52be5e4a",
+        "integrity": "sha512-nub1sL6Wn+bllnl60ce+ANpFHP7juuaYml9VOVehXD5IF4wcY7x5RK5Pk4QJLfKQXbyUlzFhc+A3J/yD9iLL/Q==",
+        "shasum": "dd8b298b5e1590efadbb5728f0a0eb427df4216c",
         "tarball": "http://localhost:4873/test-native-binlink/-/test-native-binlink-1.0.0.tgz"
       }
     }

@@ -7,6 +7,7 @@ import {
   assertManifestsPopulated,
   bunEnv as baseEnv,
   bunExe,
+  isOHOS,
   isWindows,
   readdirSorted,
   runBunInstall,
@@ -2861,7 +2862,7 @@ test.concurrent("a copyfile install over a workspace's hardlinked files does not
   await install("hardlink");
   expect(readJson(nestedPkgJson)).toEqual({ name: "no-deps", version: "2.0.0" });
   if (!isWindows) {
-    expect(statSync(nestedPkgJson).nlink).toBeGreaterThan(1);
+    if (!isOHOS) expect(statSync(nestedPkgJson).nlink).toBeGreaterThan(1);
   }
 
   await rm(join(packageDir, "node_modules"), { recursive: true, force: true });

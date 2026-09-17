@@ -2,7 +2,7 @@ import { spawnSync } from "bun";
 import { dlopen } from "bun:ffi";
 import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, rmSync, writeFileSync } from "fs";
-import { bunEnv, bunExe, bunRun, isWindows, tempDir } from "harness";
+import { bunEnv, bunExe, bunRun, isOHOS, isWindows, tempDir } from "harness";
 import { join } from "path";
 
 let cwd: string;
@@ -138,7 +138,7 @@ for (const mode of ctrlCModes) {
   // (the next command doesn't run) and ends the same way - bash's
   // wait-and-cooperative-exit. The child does its cleanup on the first Ctrl+C and
   // dies of the second; `bun run` must still be around for both.
-  test.concurrent(`a script killed by Ctrl+C stops bun run (${mode.name})`, async () => {
+  test.skipIf(isOHOS).concurrent(`a script killed by Ctrl+C stops bun run (${mode.name})`, async () => {
     using dir = tempDir("run-ctrl-c-dies", {
       "package.json": JSON.stringify({
         name: "t",

@@ -82,7 +82,7 @@ for (const { version, parentBinValue, targetFile } of shapes) {
   const targetJson = {
     name: "test-native-binlink-altpath-target",
     version,
-    os: ["darwin", "linux", "win32"],
+    os: ["darwin", "linux", "win32", "openharmony"],
     cpu: ["arm64", "x64"],
   };
   targetVersions[version] = {

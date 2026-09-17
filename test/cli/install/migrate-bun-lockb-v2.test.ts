@@ -48,7 +48,7 @@ const tests = [
         },
         "devDependencies": {
           "zod": "^3.22.4",
-          "esbuild": "0.25.10",
+          "esbuild": "^0.28.2",
           "react": "catalog:",
         },
         "optionalDependencies": {
@@ -104,7 +104,8 @@ for (const testInfo of tests) {
     // contents should be different due to semver numbers changing size
     expect(newLockfileContents).not.toEqual(oldLockfileContents);
     // but parse result should be the same
-    expect(newLockfile).toMatchSnapshot();
+    const snapshotName = process.platform === "openharmony" ? `${testInfo.name}-openharmony` : testInfo.name;
+    expect(newLockfile).toMatchSnapshot(snapshotName);
 
     // another install should not change the lockfile
     ({ stderr, exited } = spawn({

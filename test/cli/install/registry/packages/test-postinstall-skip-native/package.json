@@ -11,7 +11,8 @@
       "os": [
         "darwin",
         "linux",
-        "win32"
+        "win32",
+        "openharmony"
       ],
       "cpu": [
         "arm64",
@@ -19,8 +20,8 @@
       ],
       "_id": "test-postinstall-skip-native@1.0.0",
       "dist": {
-        "integrity": "sha512-MzZBv8gmNGoo7o2jMfanAHrWuYzwb++jNHaDQKwqG3eTbuwreeKWgCLjDfgMCdhdR120jioKqOdGayzcLW4HCg==",
-        "shasum": "e0b8322715f43894febbff26cfe3ce767cdc7e6f",
+        "integrity": "sha512-FqmN5bQKWB6k/f2rCNrDCd9eemhphPOY59AKpg11v6g/4XAq3UfsT8xpDWhLqweuZ0MYZBioPRWvISu4AS11iQ==",
+        "shasum": "cd621b6537dd05d22b941a36d3e4947ee3812908",
         "tarball": "http://localhost:4873/test-postinstall-skip-native/-/test-postinstall-skip-native-1.0.0.tgz"
       }
     },
@@ -30,7 +31,8 @@
       "os": [
         "darwin",
         "linux",
-        "win32"
+        "win32",
+        "openharmony"
       ],
       "cpu": [
         "arm64",
@@ -38,8 +40,8 @@
       ],
       "_id": "test-postinstall-skip-native@2.0.0",
       "dist": {
-        "integrity": "sha512-KrhR9CLW3wIY/BtOnffrVb82ONEWhz+TAUeSMBAYzWZ3FKz1m/aFbYaCTK1x+Plc2Qvp6arKVl3/S4vFtkDPag==",
-        "shasum": "8506303addf82dcac2c7c140f14c31f367bd58bf",
+        "integrity": "sha512-E+bJp8ye7koeMGejIlICxMPbbfEp0FhlXxvS8p4U6UF2TSjoGuchH54xI9m3ZhuSCqOk69asirufXFXxjbUdiw==",
+        "shasum": "5973ac28b7c1500d9121dafc0c520e4a3098c47a",
         "tarball": "http://localhost:4873/test-postinstall-skip-native/-/test-postinstall-skip-native-2.0.0.tgz"
       }
     }

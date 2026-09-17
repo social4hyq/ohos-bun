@@ -11,7 +11,8 @@
       "os": [
         "darwin",
         "linux",
-        "win32"
+        "win32",
+        "openharmony"
       ],
       "cpu": [
         "arm64",
@@ -19,8 +20,8 @@
       ],
       "_id": "test-native-binlink-altpath-target@1.0.0",
       "dist": {
-        "integrity": "sha512-mUVsCOBsAyqz222wtO1y0uAqXkDDUw07zPdA7hN/qONbyMaQGPQGdGxZKr8AyT/SjymLOuKBQZO+KcNrLij8hg==",
-        "shasum": "f5baed014b5127e129cb86bb4a29b32d93e64f12",
+        "integrity": "sha512-5qTupFSohEKZUeGVyHqdHHBFg8NP0Hzj2+nVWZs8MuH9jD+TrSsUyac2opfbSw/9PA9E2UTtiWwFLVY/2W2iUg==",
+        "shasum": "1379d56152538a91f1b4b529addabec9a471c289",
         "tarball": "http://localhost:4873/test-native-binlink-altpath-target/-/test-native-binlink-altpath-target-1.0.0.tgz"
       }
     },
@@ -30,7 +31,8 @@
       "os": [
         "darwin",
         "linux",
-        "win32"
+        "win32",
+        "openharmony"
       ],
       "cpu": [
         "arm64",
@@ -38,8 +40,8 @@
       ],
       "_id": "test-native-binlink-altpath-target@2.0.0",
       "dist": {
-        "integrity": "sha512-QtlpzDtUbg01KZNzV1NKAeTXcEAemkVzmECQ0AVaq0XtD1GDaFviIYR/pJnC/QbzO1o4i23T20pzeZIaP4U0sA==",
-        "shasum": "b470c7f6454a1aece2aba8d67cf0bab573680d0a",
+        "integrity": "sha512-6K+mrTQVmdMJCA4l3NlmeUi7Za8/l7CeMUHzgu5t/cc0yQSLPnNxHJQQfJXZtS7BRPIQnaRJBdBz1Yzef/GeXQ==",
+        "shasum": "0fd5f72dd199bbf9f2528e8a3417648a992a278a",
         "tarball": "http://localhost:4873/test-native-binlink-altpath-target/-/test-native-binlink-altpath-target-2.0.0.tgz"
       }
     },
@@ -49,7 +51,8 @@
       "os": [
         "darwin",
         "linux",
-        "win32"
+        "win32",
+        "openharmony"
       ],
       "cpu": [
         "arm64",
@@ -57,8 +60,8 @@
       ],
       "_id": "test-native-binlink-altpath-target@3.0.0",
       "dist": {
-        "integrity": "sha512-FGsc/0SeLfozuFe2LUrUYyCoKVpxtF1Qgt+gMeluw28DKOEaERV1d8s2o+DaD0a+/jlb3dsSRRMV5wca3mHUXQ==",
-        "shasum": "b1b381785a8690834073eef4b9d92ccc1b2a3347",
+        "integrity": "sha512-n+mGCdgrqWcN652Au/cdTuDbwifG0foUvmQ9/Ixp6EpsE2gyrisZUZqhUXNUKREsYobJPcLJXKxFhkjRqN75lQ==",
+        "shasum": "e23e35c6ddf201b079d05a522c0a2496035282f7",
         "tarball": "http://localhost:4873/test-native-binlink-altpath-target/-/test-native-binlink-altpath-target-3.0.0.tgz"
       }
     }

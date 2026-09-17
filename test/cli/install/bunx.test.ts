@@ -3,7 +3,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, setDefaultTimeou
 import { mkdir, rm, writeFile } from "fs/promises";
 import { bunEnv, bunExe, isWindows, readdirSorted, tmpdirSync } from "harness";
 import { chmodSync, copyFileSync, readdirSync, symlinkSync } from "node:fs";
-import { tmpdir } from "os";
 import { delimiter, join, resolve } from "path";
 import { dummyAfterAll, dummyBeforeAll, dummyBeforeEach, dummyRegistry, getPort, setHandler } from "./dummy.registry";
 
@@ -42,7 +41,7 @@ function pathWithout(name: string, PATH: string | undefined): string {
 
 beforeAll(async () => {
   // Clean stale bunx cache dirs from previous runs once up front instead of before every test.
-  const tmp = isWindows ? tmpdir() : "/tmp";
+  const tmp = isWindows ? tmpdir() : tmpdirSync();
   const waiting: Promise<void>[] = [];
   readdirSync(tmp).forEach(file => {
     if (file.startsWith("bunx-") || file.startsWith("bun-x.test")) {

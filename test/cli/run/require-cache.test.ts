@@ -9,6 +9,7 @@ import {
   isIntelMacOS,
   isMacOS,
   isMusl,
+  isOHOS,
   isWindows,
   tempDir,
 } from "harness";
@@ -37,7 +38,10 @@ describe.concurrent("require.cache", () => {
 
   // https://github.com/oven-sh/bun/issues/5188
   // msgpackr-extract has no prebuilt binary for win32-arm64, so it's unavailable there
-  test.skipIf(isWindows && isArm64)("require.cache does not include unevaluated modules", async () => {
+  // msgpackr-extract has no OpenHarmony package (latest upstream still only
+  // publishes Linux/Windows/macOS binaries), so this fixture cannot load on
+  // OHOS until that dependency gains a port.
+  test.skipIf((isWindows && isArm64) || isOHOS)("require.cache does not include unevaluated modules", async () => {
     await using proc = Bun.spawn({
       cmd: [bunExe(), "run", join(import.meta.dir, "require-cache-bug-5188.js")],
       env: bunEnv,

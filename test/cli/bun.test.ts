@@ -1,7 +1,7 @@
 import { spawnSync } from "bun";
 import { dlopen, FFIType } from "bun:ffi";
 import { describe, expect, test } from "bun:test";
-import { bunEnv, bunExe, isDebug, isMusl, isWindows, tempDir } from "harness";
+import { bunEnv, bunExe, isDebug, isMusl, isOHOS, isWindows, tempDir } from "harness";
 import fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -458,7 +458,11 @@ describe("bun", () => {
 
       const p = Bun.spawnSync({
         cmd: [bunExe(), "--config=" + path],
-        env: {},
+        // On OHOS the executable depends on harmonybrew ICU/OpenSSL libraries.
+        // `bunExe()` resolves to the underlying binary when this test itself
+        // is launched through the wrapper, so an empty environment drops its
+        // LD_LIBRARY_PATH and makes the child fail before parsing --config.
+        env: isOHOS ? bunEnv : {},
         stderr: "inherit",
       });
       try {

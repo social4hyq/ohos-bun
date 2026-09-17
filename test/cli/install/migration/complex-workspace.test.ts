@@ -52,12 +52,11 @@ test("the install succeeds", async () => {
     throw new Error("Failed to install");
   }
 
-  // On Windows CI, sharp's install script falls back to a node-gyp source
-  // build (no win32-arm64 prebuilt), which the system clang-cl-built Node 26
-  // breaks (its process.config leaks thin-LTO flags that MSVC's link.exe
-  // rejects). This test exercises lockfile migration, not lifecycle scripts,
-  // so skip them there.
-  const installArgs = process.platform === "win32" ? [bunExe(), "install", "--ignore-scripts"] : [bunExe(), "install"];
+  // This test exercises lockfile migration, not lifecycle scripts. Windows
+  // has no win32-arm64 sharp prebuilt, and sharp@0.32.6 has no OpenHarmony
+  // prebuilt either; both would turn this fixture into a native build test.
+  const skipScripts = process.platform === "win32" || process.platform === "openharmony";
+  const installArgs = skipScripts ? [bunExe(), "install", "--ignore-scripts"] : [bunExe(), "install"];
   subprocess = Bun.spawn(installArgs, {
     env: bunEnv,
     cwd,

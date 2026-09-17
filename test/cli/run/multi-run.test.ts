@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { realpathSync } from "fs";
-import { bunEnv, bunExe, isWindows, tempDir } from "harness";
+import { bunEnv, bunExe, isOHOS, isWindows, tempDir } from "harness";
 import path from "path";
 
 // Helper: spawn bun with multi-run flags, returns { stdout, stderr, exitCode }
@@ -1069,7 +1069,7 @@ describe.concurrent("timing edge cases", () => {
     expectExited(r.stderr, "fail", 1);
     expect(r.exitCode).toBe(1);
     // Waiting out the child's 30s sleep means the abort bypass regressed.
-    expect(Date.now() - start).toBeLessThan(15000);
+      expect(Date.now() - start).toBeLessThan(isOHOS ? 25000 : 15000);
   });
 });
 

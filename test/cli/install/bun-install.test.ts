@@ -6,6 +6,7 @@ import {
   bunEnv,
   bunExe,
   bunEnv as env,
+  isOHOS,
   isWindows,
   joinP,
   normalizeBunSnapshot,
@@ -7608,7 +7609,9 @@ describe.concurrent("bun-install", () => {
     });
   });
 
-  it("should perform bin-linking across multiple dependencies", async () => {
+  // The binary fixture predates the OpenHarmony OS bit, so its dependencies
+  // are correctly disabled on OHOS and cannot exercise bin linking.
+  it.skipIf(isOHOS)("should perform bin-linking across multiple dependencies", async () => {
     await withContext(defaultOpts, async ctx => {
       const foo_package = JSON.stringify({
         name: "foo",

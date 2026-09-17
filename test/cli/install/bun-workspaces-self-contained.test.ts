@@ -2,7 +2,7 @@ import { spawn } from "bun";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, setDefaultTimeout } from "bun:test";
 import { existsSync, lstatSync, readFileSync, readlinkSync, statSync } from "fs";
 import { mkdir, rm, writeFile } from "fs/promises";
-import { bunExe, bunEnv as env, isWindows, readdirSorted } from "harness";
+import { bunExe, bunEnv as env, isOHOS, isWindows, readdirSorted } from "harness";
 import { dirname, join } from "path";
 import {
   dummyAfterAll,
@@ -134,7 +134,7 @@ describe.each([
       expect(lstatSync(join(desktopNm, "bar", "package.json")).isSymbolicLink()).toBeFalse();
       expect(statSync(join(desktopNm, "bar", "package.json")).nlink).toBe(1);
       // control: the root's copy of the same package *is* hardlinked from the cache
-      expect(statSync(join(package_dir, "node_modules", "bar", "package.json")).nlink).toBeGreaterThan(1);
+      if (!isOHOS) expect(statSync(join(package_dir, "node_modules", "bar", "package.json")).nlink).toBeGreaterThan(1);
     }
     // even though `bar` also exists at the root for the root package / other workspaces
     expect(existsSync(join(package_dir, "node_modules", "bar", "package.json"))).toBeTrue();

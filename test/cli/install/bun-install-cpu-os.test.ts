@@ -135,6 +135,39 @@ describe("bun install --cpu and --os flags", () => {
     expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "dep-linux-only"]);
   });
 
+  it("should install dependencies constrained to OpenHarmony", async () => {
+    const urls: string[] = [];
+    setHandler(
+      dummyRegistry(urls, {
+        "1.0.0": {
+          os: ["openharmony"],
+        },
+      }),
+    );
+
+    await writeFile(
+      join(package_dir, "package.json"),
+      JSON.stringify({
+        name: "test-ohos-os-filter",
+        version: "1.0.0",
+        dependencies: {
+          "dep-linux-only": "1.0.0",
+        },
+      }),
+    );
+
+    const { exited } = spawn({
+      cmd: [bunExe(), "install", "--os", "openharmony"],
+      cwd: package_dir,
+      env: bunEnv,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(await exited).toBe(0);
+    expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "dep-linux-only"]);
+  });
+
   it("should filter dependencies by both CPU and OS", async () => {
     const urls: string[] = [];
     setHandler(

@@ -21,8 +21,8 @@
       "_hasInstallScript": true,
       "hasInstallScript": true,
       "dist": {
-        "integrity": "sha512-hoQk8jPTiIXAsEF5mFu/eWDaC2Ukfmr3wgp+iZCwwUYVKO71mZo5f8tTsxGHuTeum4OJNI3kquGuyD5S/hsp5g==",
-        "shasum": "0cdd82118edc6b3b78f71fca56e87f56f705411a",
+        "integrity": "sha512-l29lyKsqPIBt/qQHYb/BCX8ab3egOf+FZozZhaKqNgMHqRjktZagEq+nVgmfzPsd4ZDDd7GlY343qdd9ymhpdQ==",
+        "shasum": "7b4e97a8672bccb8d8982af069f17755a1eefdc3",
         "tarball": "http://localhost:4873/test-native-binlink-altpath/-/test-native-binlink-altpath-1.0.0.tgz"
       }
     },
@@ -42,8 +42,8 @@
       "_hasInstallScript": true,
       "hasInstallScript": true,
       "dist": {
-        "integrity": "sha512-Hob6RQGgiiUiHFOhf2fEcNMKTtAajqGKFezF9QO4FyQiDPoKMnsez+bq1OFRd14cljKRpzkGQLc8ThrS9NDWPA==",
-        "shasum": "96413d257a744148d4e7f9c6b842951f1e2deafa",
+        "integrity": "sha512-JDPY4NlwYQbeQhUj/YJkem7wwJEjbdCETE2WTE5fo2k1+z7flyqVQszBK0fNjCSmYw/QEqjSB2hj2eijFq8UGw==",
+        "shasum": "48b707445acf9827d0fe094ca3bc5604ca37c346",
         "tarball": "http://localhost:4873/test-native-binlink-altpath/-/test-native-binlink-altpath-2.0.0.tgz"
       }
     },
@@ -63,8 +63,8 @@
       "_hasInstallScript": true,
       "hasInstallScript": true,
       "dist": {
-        "integrity": "sha512-bnb+im55UONXVPIeHxltNdFANN4xWDkobPTm1aPMj66cHj0CKQzDL5EPwJBlAQm9HFnCb5EaNPqk87JYQBDysA==",
-        "shasum": "a7754b7851528cc3f175c180619bfc66a235a413",
+        "integrity": "sha512-Utw3yGNVCKuF/wjZCMdXYHc9e2N19UkMy+ndzjFutlufk6UfaqRLsv9vNEUKpBS0aetduCNfTza4mdmc53DiPw==",
+        "shasum": "b727365d75271f8cc5bf8c77084300ff7a708d2b",
         "tarball": "http://localhost:4873/test-native-binlink-altpath/-/test-native-binlink-altpath-3.0.0.tgz"
       }
     }
