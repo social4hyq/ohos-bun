@@ -106,6 +106,16 @@ export const bunEnv: NodeJS.Dict<string> = {
   ),
 };
 
+// Native-addon fixtures invoke clang directly. Harmonybrew keeps lld@21 in
+// its opt prefix rather than the public bin directory, so expose that linker
+// to child processes on OHOS just as the build environment does.
+if (isOHOS) {
+  try {
+    const lldBin = join(execSync("brew --prefix lld@21", { encoding: "utf8" }).trim(), "bin");
+    bunEnv.PATH = `${lldBin}:${bunEnv.PATH ?? ""}`;
+  } catch {}
+}
+
 const ciEnv = { ...bunEnv };
 
 if (isASAN) {
@@ -2022,7 +2032,17 @@ export class VerdaccioRegistry {
 
   stop() {
     rmSync(join(dirname(this.configPath), "htpasswd"), { force: true });
-    this.process?.kill(0);
+    const child = this.process;
+    this.process = undefined;
+    if (!child) return;
+    // `kill(0)` sends signal 0, which only probes liveness -- it never
+    // terminates verdaccio. The orphaned registry then outlives the test file
+    // and, on OHOS, spins a core indefinitely. Send a real signal instead and
+    // escalate for a registry that ignores SIGTERM. The escalation timer is
+    // unref'd so it can never keep the test process alive on its own.
+    child.kill();
+    const escalate = setTimeout(() => child.kill("SIGKILL"), 2000);
+    (escalate as { unref?: () => void }).unref?.();
   }
 
   /**
@@ -2299,7 +2319,7 @@ export function nodeModulesPackages(nodeModulesPath: string): string {
  * puppeteer's browser download. The dev-server-puppeteer launcher prefers a
  * system Chromium when one is installed (CI bootstraps one on every Linux
  * flavor), and several platforms have no Chrome for Testing build at all
- * (linux-arm64, windows-arm64 CI). Skip the download there: it wastes ~150MB
+ * (linux-arm64, OpenHarmony arm64, windows-arm64 CI). Skip the download there: it wastes ~150MB
  * per run, and a half-extracted download left in the shared agent cache by an
  * earlier failed run makes @puppeteer/browsers refuse every later install
  * ("browser folder exists but the executable is missing").
@@ -2314,7 +2334,7 @@ export function getPuppeteerInstallEnv(): Record<string, string> {
   );
   const skipBrowserDownload =
     hasSystemChromium ||
-    (process.platform === "linux" && process.arch === "arm64") ||
+    ((process.platform === "linux" || process.platform === "openharmony") && process.arch === "arm64") ||
     (process.platform === "win32" && (!!process.env.CI || !!process.env.BUILDKITE));
   if (skipBrowserDownload) {
     return { PUPPETEER_SKIP_DOWNLOAD: "1" };
