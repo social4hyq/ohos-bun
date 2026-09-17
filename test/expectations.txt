@@ -170,8 +170,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 
 # BUG-01 (deleted-cwd PANIC), BUG-02 (execute-only ELF), BUG-03 (parallel worker-ID) fixed in r17–r22.
 
-# --- bake/dev/ecosystem: HMR dev-server test hangs (needs persistent process) ---
-[ OPENHARMONY ] test/bake/dev/ecosystem.test.ts [ Skip ] # starts dev server that never exits within test timeout
 
 # --- cross-compile target binary not available for download on OHOS ---
 # "compile with current platform target string" constructs target bun-linux-aarch64-musl-v1.4.0
@@ -223,14 +221,12 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # strategy correctly falls back (install succeeds, content is correct,
 # 81/82 other assertions pass) but ends up using a copy instead, so nlink
 # never exceeds 1 on this platform. Class D (structural).
-[ OPENHARMONY ] test/cli/install/bun-workspaces.test.ts [ Failure ] # link(2) is Permission denied on this filesystem; hardlink installs correctly fall back to copy but nlink stays 1
 
 # bun-workspaces-self-contained: same root cause as bun-workspaces.test.ts right
 # above (EL2 link(2) Permission denied, hardlink installs correctly fall back to
 # copy, nlink stays 1) -- just a different filename that the substring
 # "bun-workspaces.test.ts" doesn't match, so it slipped through uncovered.
 # 2026-09-15 full-baseline round 1 follow-up.
-[ OPENHARMONY ] test/cli/install/bun-workspaces-self-contained.test.ts [ Failure ] # same as bun-workspaces.test.ts: link(2) Permission denied, hardlink installs fall back to copy, nlink stays 1
 
 # migration/complex-workspace: fixture pins sharp@0.32.6 specifically to test an
 # old package-lock.json -> bun.lock migration path. sharp-libvips has never
@@ -242,40 +238,14 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # (that one is a beta build missing the jp2k codec) -- this is an older,
 # never-built-for-OHOS sharp version pinned specifically for the migration
 # fixture, class D. 2026-09-15 full-baseline round 1 follow-up.
-[ OPENHARMONY ] test/cli/install/migration/complex-workspace.test.ts [ Failure ] # fixture pins sharp@0.32.6, whose libvips has no openharmony-arm64v8 prebuilt; install fails, whole file cascades
 
-# child-process-rlimit-nofile: OHOS kernel's default RLIMIT_NOFILE differs from
-# Linux's (asserted "should raise the soft limit above 256, got 0"). This file
-# already had a stale explanatory comment ("js/node: RLIMIT_NOFILE" further
-# down) with no matching formal entry -- adding one now. 2026-09-15
-# full-baseline round 1 follow-up.
-[ OPENHARMONY ] test/js/node/child_process/child-process-rlimit-nofile.test.ts [ Failure ] # OHOS kernel default RLIMIT_NOFILE differs from Linux's
-
-# bun-listen-connect-args: uses a bare relative "xxx.sock" filename (no
-# directory prefix), which resolves against the process cwd -- the repo
-# checkout under /storage/Users/... (hmdfs), not EL2 tmp. Same root cause as
-# the already-documented "hmdfs disallows AF_UNIX bind -> EPERM" class (see
-# the cli/hot + cli/inspect comment above), just a different call site that
-# doesn't use tmpdirSync() so it wasn't covered. 2026-09-15 full-baseline
-# round 1 follow-up.
-[ OPENHARMONY ] test/js/bun/http/bun-listen-connect-args.test.ts [ Failure ] # hmdfs disallows AF_UNIX bind (EPERM); uses a bare relative .sock path that resolves against the hmdfs-backed repo cwd, not tmpdirSync()
-
-# bun-serve-args: same class as bun-listen-connect-args.test.ts right above --
-# all 6 failures are Bun.serve({unix: "bare-relative-name.sock" | <number>})
-# calls, resolving against the hmdfs-backed repo cwd. 2026-09-15 full-baseline
-# round 1 follow-up.
-[ OPENHARMONY ] test/js/bun/http/bun-serve-args.test.ts [ Failure ] # same AF_UNIX-on-hmdfs class as bun-listen-connect-args.test.ts, bare relative .sock paths
-
-# next-pages: all 3 files import `bun:internal-for-testing` at module top
-# level, which doesn't exist in a release build (ENOENT, deterministic,
-# fails before any next-swc/puppeteer code runs) -- re-verified 2026-08-25,
-# corrects the earlier "next-swc unsupported platform" reason recorded here,
-# which described a deeper layer these files can no longer even reach.
-# Whether next-swc itself would also block them is unverified (can't get
-# past the import). Class D either way. Keeping quarantine.
-[ OPENHARMONY ] test/integration/next-pages/test/dev-server.test.ts [ Skip ] # bun:internal-for-testing ENOENT in release build (blocks before next-swc/puppeteer ever run)
-[ OPENHARMONY ] test/integration/next-pages/test/dev-server-ssr-100.test.ts [ Skip ] # bun:internal-for-testing ENOENT in release build (blocks before next-swc ever runs)
-[ OPENHARMONY ] test/integration/next-pages/test/next-build.test.ts [ Skip ] # bun:internal-for-testing ENOENT in release build (blocks before next-swc ever runs)
+# next-pages: real runner reaches Next.js. next-build fails in both Bun/Node fixtures
+# because next-swc warns openharmony/arm64 is unsupported and Turbopack's wasm binding lacks turbo.createProject. Dev-server/SSR are expected to hit
+# the same upstream native binding gap; retain as class D until Next publishes
+# an OHOS/arm64 binding or a supported wasm implementation.
+[ OPENHARMONY ] test/integration/next-pages/test/dev-server.test.ts [ Skip ] # Puppeteer arm64 download is unavailable on OHOS; after skipping that setup, Next.js 16.1.6 reaches WASM fallback but turbo.createProject is unsupported
+[ OPENHARMONY ] test/integration/next-pages/test/dev-server-ssr-100.test.ts [ Skip ] # Next.js next-swc/Turbopack has no openharmony/arm64 support; Puppeteer arm64 download is unavailable on OHOS
+[ OPENHARMONY ] test/integration/next-pages/test/next-build.test.ts [ Skip ] # next-swc unsupported on openharmony/arm64; turbo.createProject unavailable in wasm binding
 
 # --- cli/install migration: network-dependent tests ---
 # "bun pm migrate -f" and "bun install --lockfile-only" resolve from npm registry;
@@ -297,7 +267,7 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # --- bunx TLS download failures ---
 # OHOS system CA store not in standard path → UNKNOWN_CERTIFICATE_VERIFICATION_ERROR
 # when bunx tries to install packages from npm live (eslint, @angular/cli).
-[ OPENHARMONY ] test/cli/install/bunx.test.ts [ Flaky ] # 2026-09-15 复核：现在整个文件在 beforeAll 就先炸——硬编码 `isWindows ? tmpdir() : "/tmp"` 扫描 `/tmp` 清理陈旧 bunx 缓存，OHOS 的 `/tmp` 是受限/只读目录，`readdirSync("/tmp")` 直接 EACCES，先于原来记录的 TLS cert 问题拦下整个文件；结构性同 environment_ohos_bun_node_dir_tmp_hardcoded 一类，未改测试（未验证是否该改用 os.tmpdir()/TMPDIR）
+[ OPENHARMONY ] test/cli/install/bunx.test.ts [ Flaky ] # 33 pass、1 skip、1 fail；直接 `bun x typescript --version` 仍由官方 `typescript/lib/getExePath.js` 抛出缺少 `@typescript/typescript-openharmony-arm64`，而 `bun x @ohos-npm-ports/typescript@7.0.2-3 --version` 返回 7.0.2。Bunx 对 unscoped `typescript` 的专用解析不能硬编码第三方包名，需用户侧 alias/上游接线策略，未改断言
 
 
 # --- bun-install.test.ts git+https TLS flake ---
@@ -314,17 +284,10 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # Total: ~4793 tests / 115 failures / all platform-limited
 # ─────────────────────────────────────────────────────────────
 
-# --- js/node: RLIMIT_NOFILE ---
-# child-process-rlimit-nofile checks specific RLIMIT values. OHOS kernel
-# defaults differ from Linux (e.g. RLIMIT_NOFILE may be 1024 vs 65536).
-
 # --- js/web: fetch networking limitations ---
 # HTTP3 (adversarial body) 5s timeouts; HTTP/1.1 connect to 127.0.0.1
 # takes 11s+ on OHOS; TLS at localhost requires cert setup; .unix socket
 # failing on hmdfs. All networking-related, not test logic failures.
-[ OPENHARMONY ] test/js/web/fetch/fetch.unix.test.ts [ Flaky ] # unix socket on hmdfs
-[ OPENHARMONY ] test/js/web/fetch/fetch-tcp-keepalive.test.ts [ Skip ] # /proc/self/net/tcp blocked by OHOS app sandbox (EACCES); the LD_PRELOAD shim half already verifies SO_KEEPALIVE is set, but the /proc/net/tcp timer-state half cannot run
-[ OPENHARMONY ] test/js/web/fetch/fetch-tls-abortsignal-timeout.test.ts [ Flaky ] # tight <=50ms(non-debug)/500ms(debug) abort-latency budget for timeout(0)/timeout(1); passes standalone, fails under concurrent CPU contention (confirmed via A/B: 5/5 solo pass, 2/6 fail at 4-way concurrency, observed diff 80-96ms vs 50-51ms budget) — 2026-08-25
 
 # --- "localhost" resolves to nothing when family-restricted to IPv6 ---
 # This sandbox's /etc/hosts maps `::1` to `ip6-localhost`/`ip6-loopback`, not
@@ -340,9 +303,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # --- js/third_party: HTTP2 / gRPC / pnpm / next-auth ---
 # All failures are networking-related: HTTP2 test server returns 403 on OHOS;
 # gRPC DNS resolution; pnpm directory traversal; next-auth server action timeout.
-[ OPENHARMONY ] test/js/third_party/next-auth/next-auth.test.ts [ Flaky ] # 2026-09-15 复核：next-swc 无 openharmony/arm64 原生绑定（"Trying to load next-swc for unsupported platforms"）+ Watchpack 向上扫描目录树找 git 根时撞 EL2 沙盒 EACCES（/、/data、/data/storage 逐级拒绝）；结构性缺口，非超时问题
-[ OPENHARMONY ] test/js/third_party/pnpm/pnpm.test.ts [ Flaky ] # 2026-09-15：fixture install_fixture 依赖 vite@5.4.10 → esbuild@0.21.5，postinstall 抛 "Unsupported platform: openharmony arm64 LE"；esbuild 从 0.25.6 起才有 @esbuild/openharmony-arm64（registry 实测），0.21.5 早于该版本，结构性版本缺口非 bun 侧 bug；fixture 是三方 vite 脚手架产物非本仓测试断言，不属于"改测试绕过bug"范畴但改动成本/收益不对等，暂不追
-[ OPENHARMONY ] test/js/third_party/vitest/vitest.test.ts [ Flaky ] # 2026-09-15：vitest@4.1.9 传递依赖解析到 vite→rollup@4.37.0（非本仓顶层 rollup 直接依赖，已单独确认 bump 到 4.50.2 可用），4.37.0 早于 rollup 4.50.0 才开始提供的 openharmony-arm64 原生绑定；test/node_modules 已存在满足条件的 rollup@4.62.2/4.63.1 但 vitest 自身依赖树未解析到它们，深挖需改 vitest/vite 版本锁定，成本大于收益，暂不追
 
 # ─────────────────────────────────────────────────────────────
 # Docker-dependent categories (2026-07-08)
@@ -358,9 +318,7 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # estrella@1.4.1 bundles esbuild@^0.11.0 which has no OHOS binary; test.skipIf added.
 # expo-app tarball extract fails for react-devtools-core. bun-types tsgo
 # expects @typescript/native-preview-openharmony-arm64 which doesn't exist.
-[ OPENHARMONY ] test/integration/bun-types/bun-types.test.ts [ Flaky ] # tsgo native binary unavailable for openharmony-arm64
-[ OPENHARMONY ] test/integration/datadog-pprof/datadog-pprof.test.ts [ Flaky ] # 2026-09-15: @datadog/pprof bundles node-gyp-build prebuilds inside the package itself (not via npm optionalDependencies, so the openharmony os-matching fix doesn't apply here) -- checked both the pinned 5.17.0 and latest 5.19.0, neither ships a prebuilds/openharmony-arm64 directory (only linux-{arm64,x64}, darwin-{arm64,x64}, win32-x64). node-gyp-build's own runtime platform check correctly reports "No native build was found for platform=openharmony arch=arm64". Structural npm-ecosystem gap, not a bun bug.
-[ OPENHARMONY ] test/integration/vite-build/vite-build.test.ts [ Flaky ] # 2026-09-15 (corrected): fixed the broader root cause (bun install's OperatingSystem npm os-matching had no openharmony bit at all -- see memory project_ohos_bun_npm_os_matching_fix), verified fixed for rolldown/esbuild/rollup's own openharmony-tagged optionalDependencies -- an earlier note here blamed a rollup-specific os-matching bug, which was a misdiagnosis later corrected in the same memory file. The real cause: `bun install` (this device, including the unmodified production bun) has a separate, non-deterministic bug where resolve succeeds but 0 packages get materialized to node_modules -- see memory environment_bun_install_flaky_materialize_noop. This fixture's 700+-package dependency tree hits that flakiness on most runs; unrelated to OHOS, to rollup, or to this session's os-matching fix.
+[ OPENHARMONY ] test/integration/bun-types/bun-types.test.ts [ Flaky ] # 接入 OHOS-only `typescript: npm:@ohos-npm-ports/typescript@7.0.2-3` 后复测 11 pass、10 fail；已消除基础/latest/大部分 tsc loader 失败，剩余为 bun-types 与当前 @types/node/TypeScript 7.1 fixture 的声明版本差异，未改断言
 
 # cli/init/init.test.ts: same tsgo/@typescript native binary gap as
 # bun-types.test.ts above -- all 4 failures are "installs TypeScript 7,
@@ -369,8 +327,7 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # @typescript/typescript-openharmony-arm64" from tsc.js's getExePath()
 # once it actually runs `tsc` on the scaffolded project. 13/17 other tests
 # pass. 2026-09-15.
-[ OPENHARMONY ] test/cli/init/init.test.ts [ Failure ] # same tsgo native binary gap as bun-types.test.ts; all 4 failures are "installs TypeScript 7, typechecks, and builds"
-[ OPENHARMONY ] test/cli/create/create-jsx.test.ts [ Failure ] # 2026-09-15: "react spa (tailwind)" build fails with "Cannot find native binding" for tailwindcss-oxide's rust crate -- upstream has no openharmony build. A community port exists (@ohos-npm-ports/tailwindcss-oxide@4.3.3-2, confirmed present on the registry, not yet verified working here) but this test's `bun create ./index.tsx` single-file scaffolding flow resolves+installs the whole project in one internal step, unlike the rsbuild/rspack case which has a separate explicit `bun install` step giving a clean point to patch in a resolutions override before. Not attempted this round -- would need either a bun-level scaffolding hook/env override or a different wiring approach.
+[ OPENHARMONY ] test/cli/create/create-jsx.test.ts [ Failure ] # 最新完整复测 3 pass、4 skip、6 fail；shadcn 构建当前因上游 bun-plugin-tailwind 缺少 native binding 失败；@ohos-npm-ports/bun-plugin-tailwind@0.1.2-1 尚未发布（registry 404），其余为 happy-dom/资源加载及快照差异，未改断言。
 
 # --- regression: real-machine 2026-07-27 reconciliation (pre-dates ohos-minimal) ---
 # Historical note carried over from the old ohos-aarch64 branch's expectations
@@ -395,14 +352,12 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # see memory project_ohos_bun_terminal_pty_fixes) -- repl.test.ts (127/127)
 # no longer needs quarantining at all, and issue-26286.test.ts (2/2) and
 # tty.test.ts (7/7) are removed further down / above respectively. The
-# three files below still show occasional single-test flakiness that varies
+# two files below still show occasional single-test flakiness that varies
 # which test fails run to run (not the same deterministic test each time),
 # consistent with residual epoll-watchdog timing variance rather than a
 # fixed gap; a per-test skipIf would risk masking a different test next run,
 # so kept as whole-file [ Flaky ] pending a cleaner root cause.
-[ OPENHARMONY ] test/js/bun/terminal/terminal.test.ts [ Flaky ] # 95-96/98 pass (2 of the known deterministic gaps handled via per-test skipIf instead, see the test file); occasional single *different* test fails run to run beyond those two, consistent with residual epoll-watchdog timing variance
-[ OPENHARMONY ] test/js/bun/terminal/terminal-platform-gaps.test.ts [ Flaky ] # 17-18/19 pass; which specific test fails varies between runs (seen: tty color/CRLF/ANSI-escape tests), consistent with residual epoll-watchdog timing variance rather than a fixed gap
-[ OPENHARMONY ] test/js/bun/terminal/terminal-spawn.test.ts [ Flaky ] # 15-18/18 pass (2 skip); occasional single-test flakiness, same residual timing variance as terminal-platform-gaps.test.ts
+[ OPENHARMONY ] test/js/bun/terminal/terminal-platform-gaps.test.ts [ Flaky ] # OHOS Terminal 初始化后注销空 writer EPOLLOUT，立即输出重复 30/30；terminal-spawn 16 pass、2 skip、0 fail。平台用例完整复跑 3 次为 18/1、18/1、19/0，仍有第二次 terminal.write 后低频 read edge 波动，继续保留，未改断言
 
 # --- js/bun/secrets: no OS keyring backend in this sandbox ---
 # Bun.secrets on Linux/FreeBSD dlopens libsecret + glib + gobject, then talks
@@ -416,25 +371,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 [ OPENHARMONY ] test/js/bun/secrets.test.ts [ Skip ] # libsecret/D-Bus keyring stack absent from the sandbox
 [ OPENHARMONY ] test/js/bun/secrets-error-codes.test.ts [ Skip ] # libsecret/D-Bus keyring stack absent from the sandbox
 
-# --- js/bun/websocket: file-internal concurrency overload ---
-# ~120 it.concurrent cases in one file, each spinning up a real Bun.serve +
-# client WebSocket pair. The plain (non-.concurrent) "ServerWebSocket >
-# readyState"/"close()" sub-block gets starved under that load and times out
-# at the default 10s (2-8 of 120 tests, varying which/how-many per run,
-# never a clean 0-fail run in 11 reruns on 2026-08-25). Running just that
-# sub-block in isolation (-t filter, no contention from the other ~113
-# tests) passes cleanly and fast every time -- confirms the WebSocket
-# logic itself is correct, this is resource contention from real
-# concurrent sockets on a constrained device, not a functional bug.
-[ OPENHARMONY ] test/js/bun/websocket/websocket-server.test.ts [ Flaky ] # ~120-way it.concurrent overload starves the non-concurrent readyState/close() sub-block (2-8 tests)
-
-# --- js/bun/spawn: getMaxFD leak detection false positive on OHOS ---
-# OHOS kernel close() leaves a stale /proc/self/fd entry (fd number is actually
-# reusable — verified: socketpair reuses the closed fd number immediately).
-# getMaxFD() reads /proc/self/fd and is fooled by the stale entry, so the
-# "didn't leak any fds" assertion fails 100% deterministically. Not a real bun fd leak.
-[ OPENHARMONY ] test/js/bun/spawn/spawn-streaming-stdin.test.ts [ Skip ] # getMaxFD leak check is a false positive (OHOS kernel stale /proc/self/fd entry after close)
-
 # --- process.platform/common.isLinux now correctly reports "openharmony" (28d88fa7d9) ---
 # These tests hardcode Node's own win32/darwin/linux/wasm-only allowlist (or
 # Node test-harness's `common.isLinux` gate) and don't know "openharmony" is
@@ -445,13 +381,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # fail because the *string* changed, not because the behavior did. Not
 # caused by this round's actual changes (StandaloneModuleGraph.rs); see
 # project_ohos_spawn_wait_hang_pattern memory, 2026-09-14 baseline addendum.
-[ OPENHARMONY ] test/js/node/os/os.test.js [ Failure ] # platform()/type() allowlist predates "openharmony"/"HarmonyOS"
-[ OPENHARMONY ] test/js/node/test/parallel/test-dgram-socket-buffer-size.js [ Failure ] # common.isLinux gates the doubled-buffer-size expectation
-[ OPENHARMONY ] test/js/node/test/parallel/test-dgram-bind-fd.js [ Failure ] # same common.isLinux buffer-size gate as test-dgram-socket-buffer-size.js
-[ OPENHARMONY ] test/js/node/test/parallel/test-process-constants-noatime.js [ Failure ] # common.isLinux gates whether O_NOATIME should be present
-[ OPENHARMONY ] test/js/node/test/parallel/test-fs-write-sigxfsz.js [ Failure ] # same toybox `/bin/sh` ulimit no-op as fs.test.ts's "writeFileSync when the write fails partway" group -- `ulimit -f` never installs RLIMIT_FSIZE via this device's toybox sh, so the child never sees EFBIG. See environment_toybox_sh_ulimit_broken memory. 2026-09-15.
-[ OPENHARMONY ] test/js/node/test/parallel/test-fs-stat-date.mjs [ Failure ] # same OHOS kernel/fs pre-epoch-timestamp-clamped-to-0 as fs.test.ts's "sets pre-epoch times"/"BigIntStats *Ns" group -- confirmed via bare Python os.utime()+os.stat() with bun out of the picture. See environment_ohos_negative_timestamp_clamped_to_epoch memory. 2026-09-15.
-[ OPENHARMONY ] test/js/bun/util/mmap.test.js [ Failure ] # `process.platform === "linux" ? 4096 : 1024` picks the macOS PATH_MAX=1024 branch; the resulting 1023-char single path *component* is still under Bun's own 4096-byte pre-check (correct for OHOS's real Linux-kernel PATH_MAX) so the raw open() syscall runs and the kernel rejects it with ENAMETOOLONG (NAME_MAX=255) instead of Bun's friendly pre-check firing — same root cause, different failure shape than the other common.isLinux/platform-allowlist entries above
 
 # --- js/node/cluster: process.send()/process.disconnect() IPC race, pre-existing ---
 # Every worker forked calls process.send("hello") immediately followed by
@@ -466,25 +395,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # directly, 2026-09-14. Pre-existing on both old and new builds, not
 # OHOS-specific and not caused by any change in this branch — out of scope
 # for this porting effort (same class as test-child-process-cwd.js above).
-[ OPENHARMONY ] test/js/node/cluster/test-docs-http-server.ts [ Failure ] # process.send()/disconnect() IPC race drops "hello" for some workers; reproduces on old production bun too, not OHOS-specific
-
-# ctrl-c.test.ts: 6/8 "kills on SIGINT in: 'bun <mode>'" tests spawn a real
-# installed vite dev server and expect it to be killed by the raw signal
-# (exitCode: null, signalCode: "SIGINT"); instead vite (or bun's --bun
-# node-compat layer running it) catches SIGINT and exits normally
-# (exitCode: 1, signalCode: null). Reproduces byte-for-byte on the installed
-# production bun (1.4.2+744846f84, the 106-patch series): same 2 pass/6 fail
-# shape, confirmed via `CI=1 <installed bun> test ctrl-c.test.ts`, 2026-09-15.
-# Pre-existing on both old and new builds, not OHOS-specific and not caused
-# by any change in this branch -- out of scope for this porting effort
-# (same class as test-docs-http-server.ts above).
-[ OPENHARMONY ] test/regression/issue/ctrl-c.test.ts [ Failure ] # 6/8 SIGINT-kills-vite tests expect signalCode:"SIGINT" but vite exits normally instead; reproduces on old production bun too, not OHOS-specific
-
-# --- process.execve: known unresolved GC-suspend-handshake-vs-execve kernel race ---
-# All 4 sub-tests time out at 5000ms when run standalone. Same root cause as
-# project_execve_pthread_create_sigsegv memory (mitigation attempts reverted,
-# PR #497/#499) — not new, not caused by this round's changes.
-[ OPENHARMONY ] test/js/node/process/process-execve.test.ts [ Flaky ] # 2026-09-14 复核：本 session 的 spawn 类修复（waiter-thread 默认值/posix_spawn_bun OHOS 分支）之后，11/12 子测试已稳定通过（此前记录是"全部 4 个子测试 5000ms 必超时"，已过时）；唯一仍不稳定的 "does not make pthread_create fail on other threads while the exec runs" 压力测试隔离重跑 6 次 2 pass/4 fail(~33%)，从"确定性超时"变成"间歇性 race"，仍是 GC-suspend-handshake 撞 execve 内核侧线程回收这同一个根因（见 project_execve_pthread_create_sigsegv），未解决但已显著改善，未继续深挖
 
 # --- js/third_party: packages with prebuilt native bindings, no OHOS target ---
 # 2026-08-29 re-check: upstream/community landscape moved since this block was
@@ -524,7 +434,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # Genuinely unresolved after real investigation, not a "just add a fix"
 # case -- left as Flaky, not unquarantined, until there's appetite to
 # instrument bun's own network stack directly.
-[ OPENHARMONY ] test/js/third_party/astro/astro-post.test.js [ Flaky ] # astro's own rollup is fixed (build() runs), but the two direct-fetch() tests intermittently ECONNREFUSED against the preview server; root cause investigated and NOT DNS/family-selection, NOT a listen-vs-accept race, NOT a fixed wait budget, NOT a leftover port holder -- see OHOS_TEST_STATUS.md 2026-08-30
 # @resvg/resvg-js is fixed at the require()/render() level (community port
 # @ohos-npm-ports/resvg-resvg-js@2.6.2-1 -- migrated 2026-08-29 from the
 # @ohos-ports/resvg-resvg-js@2.6.2-1 build this section originally referenced,
@@ -547,9 +456,7 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 
 # --- regression/issue: device/fixture-specific structural gaps ---
 # 2026-09-15: both single-test files, whole-file quarantine loses no other coverage.
-[ OPENHARMONY ] test/regression/issue/18239/18239.test.ts [ Flaky ] # data-generator.sh fixture's shebang is `#!/bin/bash`, but this device has no /bin/bash at all (only ~/.harmonybrew/bin/bash via keg) -- confirmed directly, `ls /bin/bash` -> No such file, `which bash` -> harmonybrew path. The outer `spawnSync({cmd:["bash","-c",...]})` finds bash fine via PATH, but the inner pipeline execs the script by path, which then fails its own shebang resolution ("bad interpreter"), so the generator never runs and the fixture correctly reports "Exited without receiving 3 chunks". Device path gap, not a stdin/TTY bug.
-[ OPENHARMONY ] test/regression/issue/24364.test.ts [ Flaky ] # `bun-plugin-tailwind`'s peerDependency on npm's own "bun" meta-package auto-installs during `bun add`; that package's install.js does a hardcoded platform switch and throws "Unsupported platform: openharmony arm64" for any value it doesn't recognize -- confirmed via isolated repro (`bun add -d typescript @types/bun @types/react bun-plugin-tailwind` fails identically outside the test). Gap is in the separately-published npm "bun" package's own install.js, not this fork/formula.
-[ OPENHARMONY ] test/regression/issue/32492.test.ts [ Flaky ] # 24-way concurrent `bun build` x 16 rounds, expects the slowest round < 9000ms; failed twice in this session (17735ms, then 12915ms in isolated rerun) but both times this device was under real memory pressure at the moment of the run (free -m: ~615MB free / 31914MB total, swap 6.88G/51.2G in use) -- consistent with the already-documented device-contention pattern (see bun-pm-why's repeated transient slowdowns), not confirmed as a code regression. Needs a rerun on a quiescent device (low swap, high free RAM) before ruling either way; not chased further this session.
+[ OPENHARMONY ] test/regression/issue/32492.test.ts [ Flaky ] # 24-way concurrent `bun build` x 16 rounds，当前复测 slowest=13375ms（阈值 9000ms）仍超时；该项只受设备并发内存/调度压力影响，保留待低压设备复测，未改断言
 #
 # sharp has real upstream+community native support in principle
 # (test/package.json resolutions -> npm:@ohos-ports/sharp@0.34.5-beta.5,
@@ -562,7 +469,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # every beta since -beta.6 is younger than this repo's own
 # `[install].minimumReleaseAge` (3 days) and gets blocked by that gate --
 # recheck once a fixed build clears it.
-[ OPENHARMONY ] test/integration/sharp/sharp.test.ts [ Skip ] # @ohos-ports/sharp@0.34.5-beta.5 crashes at require() time (format.jp2k undefined, missing codec in this beta build) -- not an "OHOS has no binary" case anymore, recheck a newer beta once past the 3-day minimumReleaseAge gate
 
 
 # --- FUSE mount tests: /dev/fuse exists but the OHOS app sandbox denies access
@@ -571,14 +477,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # is building a FUSE mount, so nothing in them can run.
 [ OPENHARMONY ] test/cli/run/glob-on-fuse.test.ts [ Skip ] # FUSE is blocked by the OHOS app sandbox (/dev/fuse: Permission denied) and fusermount isn't installed
 [ OPENHARMONY ] test/cli/run/run-file-on-fuse.test.ts [ Skip ] # same FUSE sandbox restriction as glob-on-fuse.test.ts
-[ OPENHARMONY ] test/js/bun/dns/resolve-dns.test.ts [ Failure ] # class D: getaddrinfo ESERVFAIL 查 example.com（沙盒外网 DNS 不可达）
-[ OPENHARMONY ] test/regression/issue/22712.test.ts [ Failure ] # class D: queryA ENOTFOUND dns.google（外网 DNS 受限）
-[ OPENHARMONY ] test/js/node/dns/node-dns.test.js [ Failure ] # class D: queryNaptr/queryPtr ENOTIMP/ENOTFOUND socketify.dev（外网 DNS 受限）
-[ OPENHARMONY ] test/js/node/test/parallel/test-net-autoselectfamily.js [ Failure ] # class D: 本机常驻 vpn-tun 透明代理在协议栈层伪造任意出公网 TCP connect 握手成功，happy-eyeballs 少候选地址断言测不出真实结果（见 environment_vpn_tun_fakes_wan_connect 记忆，已定案）
-[ OPENHARMONY ] test/js/bun/shell/shell-load.test.ts [ Failure ] # class B: shell 90s timeout（OHOS PTY/spawn 慢）
-[ OPENHARMONY ] test/js/node/test/parallel/test-child-process-exec-timeout-expire.js [ Failure ] # class B: exec 信号差异（OHOS 返 null signal + 143，Linux 不同）
-[ OPENHARMONY ] test/js/node/test/sequential/test-child-process-execsync.js [ Failure ] # class B: exec 时序/信号差异（OHOS）
-[ OPENHARMONY ] test/regression/issue/15753.test.ts [ Failure ] # 结构性：期望 bun 自身的 glibc-DT_NEEDED 探测先报"linked against glibc"，但 OHOS dlopen 的签名拦截先一步报 Permission denied，掩盖了本该看到的诊断信息（2026-09-14 复核：test-module-loading-error.js 曾被归为同一类已从本文件移除——那个测试碰巧因 process.platform==="openharmony" 不在其平台消息表里，自身逻辑退化成"任意错误消息都接受"而意外转绿，并不是同一个根因被修复；这里仍是真实的 Permission denied 掩盖诊断信息，未解决）
 # 20144/26249 (bun:ffi cc() "library 'c' not found"): FIXED 2026-09-15. TinyCC's
 # tcc_add_runtime() unconditionally does `-lc`; pure-musl OHOS has no FHS
 # libc.so, only ld-musl-aarch64.so.1. The test runner (scripts/runner.node.mjs)
@@ -605,11 +503,10 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # 不是 bun 产品代码的 bug，也不是 patchelf 的 bug。价值本就低（纯 Nix 场景，
 # OHOS 部署不涉及 Nix）+ 根因在测试自身的 fixture 断言而非产品代码，遵循
 # "不改测试绕 bug" 原则维持隔离，不改测试文件也不碰 bun 自己的 ELF 链接布局。
-[ OPENHARMONY ] test/regression/issue/24742.test.ts [ Failure ] # patchelf 把加长后的 PT_INTERP 重定位到文件尾部（OHOS 工具链在原字符串后紧跟一个 "OHOS" ABI note，无 padding 可扩展），测试自己的 readHead(4096) 窗口假设不成立，机制已查清见上方注释
-[ OPENHARMONY ] test/regression/issue/29290.test.ts [ Failure ] # 同 24742，同一个 readHead(4096) 窗口假设不成立，机制已查清见上方注释
+[ OPENHARMONY ] test/regression/issue/24742.test.ts [ Failure ] # 复测 0 pass、1 fail；OHOS Bun ELF 无可读 PT_INTERP，patchelf 退出 0 但 readInterp() 返回空串，/nix/store 解释器归一化断言前提不适用于 OHOS ELF
+[ OPENHARMONY ] test/regression/issue/29290.test.ts [ Failure ] # 复测 0 pass、2 fail；OHOS bun 模板/编译产物无可读 PT_INTERP，patchelf 步骤退出 0 但 readInterp() 返回空串，Nix/FHS 动态解释器断言不适用于 OHOS ELF，非该回归逻辑
 [ OPENHARMONY ] test/js/valkey/integration/complex-operations.test.ts [ Failure ] # class D: Redis 连不上（valkey/Docker 不可用）
-[ OPENHARMONY ] test/integration/expo-app/expo.test.ts [ Failure ] # class D: expo 构建 exit≠0（构建慢/失败）
-[ OPENHARMONY ] test/cli/install/bun-security-scanner-matrix-with-node-modules.test.ts [ Failure ] # 2026-09-15 复核：openpty dlopen fallback + epoll-rearm-watchdog + deferred_exit 三处 Terminal.rs/posix_event_loop.rs 真实修复后（见 project_ohos_bun_terminal_pty_fixes 记忆），这个 PTY 类结构性限制已大幅改善——之前是"全部失败样本"90s 超时，现在是 51 pass / 13 fail（out of 720，多数是矩阵组合 skip），失败样本仍集中在"(TTY:y)/(TTY:n)"标签：prompt 文本("Continue anyway? [y/N]")能可靠收到了，但 terminal.write() 送出的响应仍不总是可靠送达子进程 stdin。跟已修复的 issue-26286 同一根因类但这条路径还有残留 flaky 边界情况，未继续深挖
+[ OPENHARMONY ] test/cli/install/bun-security-scanner-matrix-with-node-modules.test.ts [ Failure ] # Terminal HUP+EIO 与首次 epoll watchdog 修复后，单例 0513 仍无法可靠完成安全提示确认；force_sync 实验虽能回显 "y\r\n" 但破坏 Terminal drain 语义（94 pass、2 fail），已撤回。TTY:y 子集此前为 48 pass、96 fail、14 errors，仍是 OHOS PTY 行输入/安装流程时序问题，未改断言
 [ OPENHARMONY ] test/js/bun/spawn/spawn-cgroup.test.ts [ Failure ] # 结构性：cgroup-join 整条路径（clone3 + 子进程写 cgroup.procs 兜底，bun-spawn.cpp）限定在 OS(LINUX) && !defined(__OHOS__)，OHOS 上 spawn({cgroup}) 是 no-op，4/13 用例断言 cgroup.procs 被写入必挂
 [ OPENHARMONY ] test/js/bun/http/serve-file-slice-read-error.test.ts [ Skip ] # 结构性不可测：用例靠 ptrace(PTRACE_TRACEME) 注入 EIO 故障，本机沙箱 seccomp 拦 ptrace（EPERM）；bun read() 是裸 syscall（rustix linux_raw backend），LD_PRELOAD/ohos-trace-shim 也拦不到，无替代注入手段（2026-08-25 r80 真机复测同一签名确认）
 
