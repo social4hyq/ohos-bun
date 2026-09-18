@@ -749,3 +749,10 @@ create-jsx 的 tailwind/shadcn 失败根因定位到**可修复的 port 打包�
 - 根因单一：fixture `serve-types.test.ts:621` 的 `process.platform === "openharmony"`（round 13 引入的 OHOS 分支）在 bun-types 类型检查测试里触发 TS2367（@types/node 的 Platform 联合类型没有 openharmony）——一个诊断污染所有包含该文件的检查组（basic/latest/7.1/Test Globals/lib-config 共 10 个用例）。
 - 修法：fixture 改 `(process.platform as string)`（运行时值真实为 openharmony，仅类型系统不识别），**19 pass / 2 fail**。
 - 剩余 2 个经生产 bun A/B 确认为跨平台既有（同签名 19/2）：TS 7.1 index.d.ts 断言 + lib.dom.d.ts 的 Blob/ReadableStream 诊断漂移（@types/node 版本演进的声明差异），非 OHOS 范围。expectations 条目已刷新为准确表述。
+
+## Round 36（2026-09-18 续五：bun-types 剩余 2 个 fail 收口，文件全绿）
+
+- **lib.dom 配置（2322→2741 诊断漂移）**：fixture `"@types/node": "latest"` 解析到 26.6.1，其 buffer Blob 新增 `textStream()` 声明（Node 26 运行时特性，bun 运行时与类型均无）——全局 Blob 赋给 node:buffer Blob 的诊断从预期的 2322（stream() 不兼容）变成 2741（缺 textStream）。**修复：fixture resolutions pin @types/node@26.2.0**（与期望诊断写作时的声明完全吻合：有 NonSharedUint8Array、无 textStream；也与 test/package.json 既有 pin 一致），确定性安装顺带防未来漂移。
+- **TS 7.1 配置**：`bun add typescript@>=7.1.0-0` 被 OHOS 的 typescript→port@7.0.2-3 resolution 接管，7.0.2 无法类型检查 ts7.1/-only 声明；且真 7.1 的 tsc 是原生 launcher、无 openharmony binding。`test.skipIf(isOHOS)` 带原因。
+- 结果：**20 pass / 1 skip / 0 fail ×2**，Flaky 隔离摘除。
+- 更正 round 35 的一个结论：当时 A/B 的"生产 bun"也是 OHOS 环境，19/2 只证明确定性而非跨平台；本轮用版本考古（26.2.0 vs 26.6.1 声明差异）才定位到真根因。

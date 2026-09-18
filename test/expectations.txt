@@ -321,7 +321,17 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # estrella@1.4.1 bundles esbuild@^0.11.0 which has no OHOS binary; test.skipIf added.
 # expo-app tarball extract fails for react-devtools-core. bun-types tsgo
 # expects @typescript/native-preview-openharmony-arm64 which doesn't exist.
-[ OPENHARMONY ] test/integration/bun-types/bun-types.test.ts [ Flaky ] # 2026-09-18 更新：19 pass / 2 fail。原 10 个 OHOS 相关失败根因是 fixture serve-types.test.ts:621 的 `process.platform === "openharmony"`（round 13 引入）触发 @types/node Platform 联合类型缺 openharmony 的 TS2367——fixture 改 `(process.platform as string)` 后全部转绿。剩余 2 个（TS 7.1 的 ts7.1/index.d.ts 断言 + lib.dom.d.ts 的 24154.ts 诊断 2322→2741 漂移）为**跨平台既有**：生产 bun 1.4.2_10 A/B 同签名 19/2，属上游测试期望与当前 @types/node/TS 7.1 包版本的声明漂移，非 OHOS 差异，未改断言
+# bun-types integration: fully green on OHOS since 2026-09-18 (20 pass /
+# 1 skip / 0 fail, twice). History: (a) 10 failures from one TS2367 --
+# the fixture's serve-types.test.ts compares process.platform against
+# "openharmony" and @types/node's Platform union predates it; fixed with a
+# `as string` cast. (b) The lib.dom config's 24154.ts diagnostic drifted
+# (2322 -> 2741 "textStream missing") because the fixture resolved
+# "@types/node": "latest" to 26.6.1, whose Blob declares the textStream
+# that bun's runtime/types do not have; pinned to 26.2.0, which matches
+# what the expected diagnostics were written against. (c) The TS 7.1 run
+# skips on OHOS: upstream tsc 7.1 is a native launcher with no
+# openharmony binding and the community port is 7.0.2 only. Entry removed.
 
 # cli/init/init.test.ts: same tsgo/@typescript native binary gap as
 # bun-types.test.ts above -- all 4 failures are "installs TypeScript 7,

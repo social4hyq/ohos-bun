@@ -1,6 +1,6 @@
 import { $ as Shell, fileURLToPath } from "bun";
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { bunEnv, bunExe, isDebug, makeTree } from "harness";
+import { bunEnv, bunExe, isDebug, isOHOS, makeTree } from "harness";
 import { existsSync, readFileSync } from "node:fs";
 import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -379,7 +379,10 @@ describe("@types/bun integration test", () => {
   // fixture/ts7.1 files that only that compiler can type.
   // `>=7.1.0-0` takes the nightly until a 7.1 release exists, then the release.
   describe("TypeScript 7.1", () => {
-    test.skipIf(isDebug)("checks the fixture and import attributes through ts7.1/index.d.ts", async () => {
+    // OHOS: upstream typescript@7.1's tsc is a native launcher with no
+    // openharmony binding, and the community port is 7.0.2 only -- which
+    // cannot type the ts7.1/-only declarations this run asserts on.
+    test.skipIf(isDebug || isOHOS)("checks the fixture and import attributes through ts7.1/index.d.ts", async () => {
       const fixtureDir = await createIsolatedFixture(["typescript@>=7.1.0-0"]);
 
       const tsconfig = structuredClone(sourceTsconfig);
