@@ -735,3 +735,11 @@ OHOS 专属的既有 bug，已加 `skipIf(openharmony)`（不是本会话职责�
 
 - **`spawn({cgroup})` OHOS 支持落地（隔离摘除，8 pass/5 skip/0 fail）**：bun-spawn.cpp 的 OHOS fork 路径启用与 pre-5.7 fallback 相同的 pre-exec `cgroup.procs` 写入（普通 fork 子进程私有内存，不触碰 OHOS 回避 clone3/vfork 的 SELinux 共享地址空间脆弱性）；cgroup join 失败经 self-pipe 写**负值 errno**，Rust 侧既有 `rc<0 → Tag::clone3` 约定自动归因到 cgroup 而非 argv[0]。四处失败（child-write/dirfd/node:child_process 透传/ENOENT 命名）全绿。回归面：child_process.test.ts 72 用例 0 fail、spawn.test.ts 的 spawnSync/pipe 子集 0 fail（"kill" 子集挂起为 round 22/23 已记录的 pre-existing unref→kill 竞态，与本次改动无关——该路径不传 cgroup）。
 - **valkey 集成测试本地服务通路（隔离摘除，10 pass/0 fail ×2）**：docker compose 在本机不可用（远端 daemon 宕、compose 端口无法映射到本地回环），改走 `BUN_TEST_SERVICE_redis_unified` service-mapping 旁路 + `brew install redis`（8.10.1，RESP 兼容 valkey 测试客户端）本地起服。配方已写入 expectations 注释（setsid 脱离 + 端口映射 env）；TLS/auth/unix 套件需真实 compose 栈，维持不跑。
+
+## Round 34（2026-09-18 续三：create-jsx tailwind 根因闭环 = port 打包缺陷）
+
+create-jsx 的 tailwind/shadcn 失败根因定位到**可修复的 port 打包缺陷**（本仓外）：
+- 接线通路已验证：`SourceFileProjectGenerator` 对 package.json 是 `new_no_overwrite`——fixture 预置含 overrides 的 package.json 即可让 `bun create` 命中 community port（测试侧改动已实现并验证后回退，待 port 修好后重新落地）。
+- port `@ohos-npm-ports/bun-plugin-tailwind@0.1.2-1` 自带的 `tailwindcss-oxide.openharmony-arm64.node` **签名有效、dlopen 成功**（.codesign 段为真签名）——但只导出 `Scanner`：它是用**原版 tailwindcss-oxide 4.1.14** 编的，而 bun-plugin-tailwind 的 index.mjs 调用的是自家 fork oxide 的 `twctxCreate`/`bunPluginRegister`/`twctxIsDirty` 导出 → 插件 setup 即炸。
+- **待办（ohos-npm-ports 社区仓）**：用 bun-plugin-tailwind 仓库自带的 oxide fork 重编 openharmony .node（构建后须 ohos-signpost 签名）。修好后本仓恢复预置 package.json 的接线改动即可全绿。
+- 附带发现：hmdfs 上跨进程 /proc 采样受限（task 遍历不完整），wchan 可读；本批 spawn-cgroup 修复中的 self-pipe 负 errno 约定与 Rust 侧 `rc<0→Tag::clone3` 归因闭环。

@@ -330,7 +330,7 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # @typescript/typescript-openharmony-arm64" from tsc.js's getExePath()
 # once it actually runs `tsc` on the scaffolded project. 13/17 other tests
 # pass. 2026-09-15.
-[ OPENHARMONY ] test/cli/create/create-jsx.test.ts [ Failure ] # 最新完整复测 3 pass、4 skip、6 fail；shadcn 构建因上游 bun-plugin-tailwind 缺少 OHOS native binding 失败。2026-09-18 复查：@ohos-npm-ports/bun-plugin-tailwind@0.1.2-1 已发布（原 404 已解除），但 `bun create` 单文件脚手架一步 resolve+install，无 mid-flow resolutions 注入点；生成器硬编码 port 包名属反模式。待接线策略：①社区仓补 @ohos-ports scope 的 napi binding 子包供上游主包 optionalDep 命中 ②上游生成器平台分支 ③测试侧本地注册表重映射。其余为 happy-dom/资源加载及快照差异，未改断言。
+[ OPENHARMONY ] test/cli/create/create-jsx.test.ts [ Failure ] # shadcn/tailwind 构建失败。2026-09-18 定位到可修的根因（非接线问题）：@ohos-npm-ports/bun-plugin-tailwind@0.1.2-1 已发布且自带 tailwindcss-oxide.openharmony-arm64.node（签名有效、dlopen 成功），**但该 .node 由原版 tailwindcss-oxide 4.1.14 编译，只导出 Scanner**——bun-plugin-tailwind 需要它自己 fork 的 oxide 的 twctxCreate/bunPluginRegister 导出，插件 setup 即炸 `twctxCreate is not a function`。接线通路已验证可行（生成器 package.json 为 new_no_overwrite，预置含 overrides 的 package.json 即可命中 port），**待社区仓重编 port：用 bun-plugin-tailwind 仓库自带的 oxide fork 出 openharmony .node**（含 signpost 签名）。其余 happy-dom/快照差异未改断言。
 
 # --- regression: real-machine 2026-07-27 reconciliation (pre-dates ohos-minimal) ---
 # Historical note carried over from the old ohos-aarch64 branch's expectations
