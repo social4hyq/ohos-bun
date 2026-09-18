@@ -479,9 +479,25 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # 4096 字节（注释自称"PT_INTERP always lives in the first ELF page"），但
 # 这个假设在本机构建的 bun-profile 上不成立——原始二进制里 PT_INTERP 字符串
 # （26 字节）后面紧挨着一段 OHOS 工具链插入的 "OHOS" ABI 标识 ELF note，
-[ OPENHARMONY ] test/js/valkey/integration/complex-operations.test.ts [ Failure ] # class D: Redis 连不上（valkey/Docker 不可用）
+# Valkey/Redis integration tests are docker-compose gated. On this device the
+# remote build daemon is unreachable and compose cannot publish to localhost,
+# but a local server works via the service-mapping bypass:
+#   brew install redis
+#   setsid ~/.harmonybrew/opt/redis/bin/redis-server --port 16379 --save '' \
+#       --appendonly no </dev/null >$TMPDIR/redis-test.log 2>&1 &
+#   BUN_TEST_SERVICE_redis_unified="127.0.0.1:6379=16379,6380=16380"
+# (redis 8.10.1 speaks the RESP subset these tests use; TLS/auth/unix suites
+# need the real compose stack and stay unexercised). complex-operations:
+# 10 pass / 0 fail, twice. Entry removed 2026-09-18.
 [ OPENHARMONY ] test/cli/install/bun-security-scanner-matrix-with-node-modules.test.ts [ Failure ] # Terminal HUP+EIO 与首次 epoll watchdog 修复后，单例 0513 仍无法可靠完成安全提示确认；force_sync 实验虽能回显 "y\r\n" 但破坏 Terminal drain 语义（94 pass、2 fail），已撤回。TTY:y 子集此前为 48 pass、96 fail、14 errors，仍是 OHOS PTY 行输入/安装流程时序问题，未改断言
-[ OPENHARMONY ] test/js/bun/spawn/spawn-cgroup.test.ts [ Failure ] # 结构性：cgroup-join 整条路径（clone3 + 子进程写 cgroup.procs 兜底，bun-spawn.cpp）限定在 OS(LINUX) && !defined(__OHOS__)，OHOS 上 spawn({cgroup}) 是 no-op，4/13 用例断言 cgroup.procs 被写入必挂
+# 2026-09-18: resolved. OHOS's fork path now joins the cgroup with the same
+# pre-exec cgroup.procs write the non-OHOS pre-5.7 fallback uses (plain fork
+# children have private memory, so the SELinux-vfork fragility that keeps OHOS
+# off clone3 does not apply), reporting failures with a negated errno through
+# the self-pipe so they blame the cgroup (Tag::clone3) instead of argv[0].
+# Real-cgroup describes are still skipped (non-root, no writable cgroupfs --
+# same as other platforms); the 4 formerly-failing fixture-based cases pass:
+# 8 pass / 5 skip / 0 fail.
 [ OPENHARMONY ] test/js/bun/http/serve-file-slice-read-error.test.ts [ Skip ] # 结构性不可测：用例靠 ptrace(PTRACE_TRACEME) 注入 EIO 故障，本机沙箱 seccomp 拦 ptrace（EPERM）；bun read() 是裸 syscall（rustix linux_raw backend），LD_PRELOAD/ohos-trace-shim 也拦不到，无替代注入手段（2026-08-25 r80 真机复测同一签名确认）
 
 # --- js/bun/io: Bun.file slice+write truncation ---

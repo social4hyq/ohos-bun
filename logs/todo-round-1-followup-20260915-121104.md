@@ -730,3 +730,8 @@ OHOS 专属的既有 bug，已加 `skipIf(openharmony)`（不是本会话职责�
 - **`bunx --no-install typescript` 修复（隔离摘除，34 pass/0 fail ×2）**：OHOS 下 it.each 的 typescript 条目改用社区 port `@ohos-npm-ports/typescript`（上游 typescript@7 的 getExePath.js 无 openharmony 平台 binding，unscoped 包在 OHOS 永远装不出可运行 bin；port 替身与 esbuild/rspack fixture 同一模式）。仍覆盖本用例真正要测的 install+bin 执行+缓存命中路径；`bunx tsc`→typescript 重写特化在其他平台保持覆盖。
 - **`32492` 定性修正（Flaky→Skip，证据齐全）**：本机 24-way 失败（slowest 13469ms vs 阈值 9000ms）**不是**上游 #32492 futex 停顿回归，是 **hmdfs fscrypt 写吞吐包络**——①#32494 修复已在树 ②慢窗口 wchan=fscrypt_buf_crypt 且 state=R（在内核加密 I/O 中运行，非 futex 停泊）③并发 8 最慢 3.5s / 24 最慢 13.4s 超线性饱和 ④两次测量方差 <1%。待 formula 构建或 FS 变更后复测。
 - 诊断过程留档：跨进程 /proc 采样在沙箱受限（task 目录遍历不完整、syscall 文件不可读），wchan 仍可读；trace-shim 无时间戳且进程死亡时尾部丢失。
+
+## Round 33（2026-09-18 续二：spawn-cgroup 产品修复 + valkey 本地服务通路）
+
+- **`spawn({cgroup})` OHOS 支持落地（隔离摘除，8 pass/5 skip/0 fail）**：bun-spawn.cpp 的 OHOS fork 路径启用与 pre-5.7 fallback 相同的 pre-exec `cgroup.procs` 写入（普通 fork 子进程私有内存，不触碰 OHOS 回避 clone3/vfork 的 SELinux 共享地址空间脆弱性）；cgroup join 失败经 self-pipe 写**负值 errno**，Rust 侧既有 `rc<0 → Tag::clone3` 约定自动归因到 cgroup 而非 argv[0]。四处失败（child-write/dirfd/node:child_process 透传/ENOENT 命名）全绿。回归面：child_process.test.ts 72 用例 0 fail、spawn.test.ts 的 spawnSync/pipe 子集 0 fail（"kill" 子集挂起为 round 22/23 已记录的 pre-existing unref→kill 竞态，与本次改动无关——该路径不传 cgroup）。
+- **valkey 集成测试本地服务通路（隔离摘除，10 pass/0 fail ×2）**：docker compose 在本机不可用（远端 daemon 宕、compose 端口无法映射到本地回环），改走 `BUN_TEST_SERVICE_redis_unified` service-mapping 旁路 + `brew install redis`（8.10.1，RESP 兼容 valkey 测试客户端）本地起服。配方已写入 expectations 注释（setsid 脱离 + 端口映射 env）；TLS/auth/unix 套件需真实 compose 栈，维持不跑。

@@ -270,6 +270,13 @@ extern "C" ssize_t posix_spawn_bun(
     volatile bool cgroup_failed = false;
     bool join_cgroup_in_child = false;
 #endif
+#if defined(__OHOS__)
+    // OHOS fork path: join the cgroup with a pre-exec cgroup.procs write.
+    // A plain fork child has private memory, so the SELinux shared-address-
+    // space fragility that keeps OHOS off the vfork/clone3 path above does
+    // not apply to openat+write between fork and exec.
+    bool join_cgroup_in_child = request->cgroup_fd >= 0;
+#endif
     pid_t child = -1;
 
 #if OS(DARWIN) || OS(FREEBSD) || defined(__OHOS__)
@@ -307,14 +314,27 @@ extern "C" ssize_t posix_spawn_bun(
             sigaction(i, &sa, 0);
         }
 
-#if OS(LINUX) && !defined(__OHOS__)
-        // cgroup v1 / pre-5.7 fallback. First, so every page the exec'd image
-        // touches is charged to the cgroup. Writing "0" moves the writer.
+#if OS(LINUX)
+        // cgroup v1 / pre-5.7 fallback (and the OHOS fork path). First, so
+        // every page the exec'd image touches is charged to the cgroup.
+        // Writing "0" moves the writer.
         if (join_cgroup_in_child) {
             int procs = openat(request->cgroup_fd, "cgroup.procs", O_WRONLY | O_CLOEXEC);
             if (procs < 0 || write(procs, "0", 1) != 1) {
+#if defined(__OHOS__)
+                // fork + self-pipe path: report the cgroup failure with a
+                // negated errno -- posix_spawn.rs maps a negative return to
+                // Tag::clone3, so the error blames the cgroup instead of
+                // argv[0]. The vfork volatile handshake used by the non-OHOS
+                // path does not exist here.
+                int cgroup_err = -errno;
+                (void)write(errpipe[1], &cgroup_err, sizeof(cgroup_err));
+                closeRangeOrLoop(0, INT_MAX, false);
+                rawExit(127);
+#else
                 cgroup_failed = true;
                 return childFailed();
+#endif
             }
             close(procs);
         }
