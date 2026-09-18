@@ -743,3 +743,9 @@ create-jsx 的 tailwind/shadcn 失败根因定位到**可修复的 port 打包�
 - port `@ohos-npm-ports/bun-plugin-tailwind@0.1.2-1` 自带的 `tailwindcss-oxide.openharmony-arm64.node` **签名有效、dlopen 成功**（.codesign 段为真签名）——但只导出 `Scanner`：它是用**原版 tailwindcss-oxide 4.1.14** 编的，而 bun-plugin-tailwind 的 index.mjs 调用的是自家 fork oxide 的 `twctxCreate`/`bunPluginRegister`/`twctxIsDirty` 导出 → 插件 setup 即炸。
 - **待办（ohos-npm-ports 社区仓）**：用 bun-plugin-tailwind 仓库自带的 oxide fork 重编 openharmony .node（构建后须 ohos-signpost 签名）。修好后本仓恢复预置 package.json 的接线改动即可全绿。
 - 附带发现：hmdfs 上跨进程 /proc 采样受限（task 遍历不完整），wchan 可读；本批 spawn-cgroup 修复中的 self-pipe 负 errno 约定与 Rust 侧 `rc<0→Tag::clone3` 归因闭环。
+
+## Round 35（2026-09-18 续四：bun-types 10 个失败一击修复）
+
+- 根因单一：fixture `serve-types.test.ts:621` 的 `process.platform === "openharmony"`（round 13 引入的 OHOS 分支）在 bun-types 类型检查测试里触发 TS2367（@types/node 的 Platform 联合类型没有 openharmony）——一个诊断污染所有包含该文件的检查组（basic/latest/7.1/Test Globals/lib-config 共 10 个用例）。
+- 修法：fixture 改 `(process.platform as string)`（运行时值真实为 openharmony，仅类型系统不识别），**19 pass / 2 fail**。
+- 剩余 2 个经生产 bun A/B 确认为跨平台既有（同签名 19/2）：TS 7.1 index.d.ts 断言 + lib.dom.d.ts 的 Blob/ReadableStream 诊断漂移（@types/node 版本演进的声明差异），非 OHOS 范围。expectations 条目已刷新为准确表述。
