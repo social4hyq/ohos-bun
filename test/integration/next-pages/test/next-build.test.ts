@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import { copyFileSync, cpSync, promises as fs, readFileSync, rmSync } from "fs";
 import { cp } from "fs/promises";
 import { join } from "path";
-import { bunEnv, bunExe, isDebug, tmpdirSync, toMatchNodeModulesAt } from "../../../harness";
+import { bunEnv, bunExe, isDebug, isOHOS, tmpdirSync, toMatchNodeModulesAt } from "../../../harness";
 const { parseLockfile } = install_test_helpers;
 
 expect.extend({ toMatchNodeModulesAt });
@@ -94,6 +94,9 @@ function normalizeOutput(stdout: string) {
     stdout
       // remove timestamps from output (e.g., "(30.7ms)" or "(30.7 ms)")
       .replace(/\(\d+(?:\.\d+)? m?s\)/gi, data => " ".repeat(data.length))
+      // The wasm-bindings fallback (no native @next/swc for this platform)
+      // prints the .next/lock path, which embeds each run's private tmpdir.
+      .replace(/Skipping creating a lockfile at .*\.next\/lock/g, "Skipping creating a lockfile at [TMP]/.next/lock")
       // normalize "Compiled successfully in Xms/Xs" timestamps
       .replace(/Compiled successfully in (\d|\.)+(ms|s)/gi, "Compiled successfully in 1000ms")
       // remove "in Xms" timing at end of lines (e.g., "in 36.8ms")
@@ -131,9 +134,15 @@ test(
     console.log("Node Dir: " + nodeDir);
 
     const nextPath = "node_modules/next/dist/bin/next";
+    // OHOS: Next 16's default Turbopack bundler requires the native
+    // @next/swc binding, which upstream does not ship for openharmony (the
+    // wasm fallback covers SWC transforms but not turbopack). The webpack
+    // path has no native dependency, so exercise the same install/build/
+    // compare machinery through it.
+    const buildArgs = isOHOS ? ["build", "--webpack"] : ["build"];
     const tmp1 = tmpdirSync();
     console.time("[bun] next build");
-    const bunBuild = Bun.spawn([bunExe(), "--bun", nextPath, "build"], {
+    const bunBuild = Bun.spawn([bunExe(), "--bun", nextPath, ...buildArgs], {
       cwd: bunDir,
       stdio: ["ignore", "pipe", "inherit"],
       env: {
@@ -148,7 +157,7 @@ test(
 
     const tmp2 = tmpdirSync();
     console.time("[node] next build");
-    const nodeBuild = Bun.spawn(["node", nextPath, "build"], {
+    const nodeBuild = Bun.spawn(["node", nextPath, ...buildArgs], {
       cwd: nodeDir,
       env: {
         ...bunEnv,

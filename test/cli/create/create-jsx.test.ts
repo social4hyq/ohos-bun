@@ -187,12 +187,35 @@ for (const development of [true, false]) {
       });
     });
 
-    // bun-plugin-tailwind has no OpenHarmony native binding yet.
-    describe.skipIf(isOHOS)("react spa (tailwind)", async () => {
+    // OHOS: upstream bun-plugin-tailwind ships a napi native binding with no
+    // openharmony build, so the generated project's install would fail. The
+    // community port (@ohos-npm-ports/bun-plugin-tailwind@0.1.2-2) ships a
+    // working openharmony oxide binding (twctxCreate/bunPluginRegister). The
+    // generator never overwrites a pre-existing package.json
+    // (TemplateFile::new_no_overwrite), so pre-seed one carrying the
+    // overrides entry plus the scripts (a skipped template write also skips
+    // its placeholder substitution, so the scripts use the final "index"
+    // base name).
+    const tailwindPackageJson = isOHOS
+      ? {
+          name: "react-tailwind-spa",
+          version: "0.0.1",
+          private: true,
+          scripts: {
+            dev: "bun './**/*.html'",
+            build: "bun 'index.build.ts'",
+          },
+          overrides: {
+            "bun-plugin-tailwind": "npm:@ohos-npm-ports/bun-plugin-tailwind@0.1.2-2",
+          },
+        }
+      : undefined;
+    describe("react spa (tailwind)", async () => {
       let dir: string;
       beforeEach(async () => {
         dir = tempDirWithFiles("react-spa-tailwind", {
           "index.tsx": await Bun.file(path.join(__dirname, "tailwind.tsx")).text(),
+          ...(tailwindPackageJson ? { "package.json": JSON.stringify(tailwindPackageJson, null, 2) } : {}),
         });
       });
 
@@ -259,6 +282,31 @@ for (const development of [true, false]) {
       beforeEach(async () => {
         dir = tempDirWithFiles("shadcn-ui", {
           "index.tsx": await Bun.file(path.join(__dirname, "shadcn.tsx")).text(),
+          // Same OHOS port wiring as the tailwind describe above: the shadcn
+          // template installs bun-plugin-tailwind too, and the generator
+          // respects a pre-existing package.json. The scripts mirror the
+          // react-shadcn-spa template with the placeholder resolved to the
+          // fixture's "index" base name.
+          ...(isOHOS
+            ? {
+                "package.json": JSON.stringify(
+                  {
+                    name: "shadcn-ui",
+                    version: "0.0.1",
+                    private: true,
+                    scripts: {
+                      dev: "bun './**/*.html'",
+                      build: "bun 'index.build.ts'",
+                    },
+                    overrides: {
+                      "bun-plugin-tailwind": "npm:@ohos-npm-ports/bun-plugin-tailwind@0.1.2-2",
+                    },
+                  },
+                  null,
+                  2,
+                ),
+              }
+            : {}),
         });
       });
 

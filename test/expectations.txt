@@ -245,7 +245,11 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # an OHOS/arm64 binding or a supported wasm implementation.
 [ OPENHARMONY ] test/integration/next-pages/test/dev-server.test.ts [ Skip ] # Puppeteer arm64 download is unavailable on OHOS; after skipping that setup, Next.js 16.1.6 reaches WASM fallback but turbo.createProject is unsupported
 [ OPENHARMONY ] test/integration/next-pages/test/dev-server-ssr-100.test.ts [ Skip ] # Next.js next-swc/Turbopack has no openharmony/arm64 support; Puppeteer arm64 download is unavailable on OHOS
-[ OPENHARMONY ] test/integration/next-pages/test/next-build.test.ts [ Skip ] # next-swc unsupported on openharmony/arm64; turbo.createProject unavailable in wasm binding
+# next-build: unquarantined 2026-09-18 -- runs with `next build --webpack`
+# on OHOS (turbopack needs the native @next/swc binding which upstream does
+# not ship for openharmony; wasm SWC covers the webpack path). bun vs node
+# outputs hash-identical after normalizing the wasm-fallback lockfile-skip
+# message (it embeds each run's private tmpdir). 1 pass / 0 fail.
 
 # --- cli/install migration: network-dependent tests ---
 # "bun pm migrate -f" and "bun install --lockfile-only" resolve from npm registry;
@@ -340,7 +344,7 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # @typescript/typescript-openharmony-arm64" from tsc.js's getExePath()
 # once it actually runs `tsc` on the scaffolded project. 13/17 other tests
 # pass. 2026-09-15.
-[ OPENHARMONY ] test/cli/create/create-jsx.test.ts [ Failure ] # shadcn/tailwind 构建失败。2026-09-18 定位到可修的根因（非接线问题）：@ohos-npm-ports/bun-plugin-tailwind@0.1.2-1 已发布且自带 tailwindcss-oxide.openharmony-arm64.node（签名有效、dlopen 成功），**但该 .node 由原版 tailwindcss-oxide 4.1.14 编译，只导出 Scanner**——bun-plugin-tailwind 需要它自己 fork 的 oxide 的 twctxCreate/bunPluginRegister 导出，插件 setup 即炸 `twctxCreate is not a function`。接线通路已验证可行（生成器 package.json 为 new_no_overwrite，预置含 overrides 的 package.json 即可命中 port），**待社区仓重编 port：用 bun-plugin-tailwind 仓库自带的 oxide fork 出 openharmony .node**（含 signpost 签名）。其余 happy-dom/快照差异未改断言。
+[ OPENHARMONY ] test/cli/create/create-jsx.test.ts [ Failure ] # 2026-09-18 更新：构建路径全绿（CI 模式 5 pass / 0 fail）——tailwind 与 shadcn 的 build 用例经预置 package.json overrides 接入 @ohos-npm-ports/bun-plugin-tailwind@0.1.2-2（重编版 openharmony .node 含正确的 twctxCreate/bunPluginRegister 导出；0.1.2-1 曾误用原版 oxide 只导出 Scanner）。生成器对已存在 package.json 是 new_no_overwrite，预置即命中。剩余 fail 仅为 dev server 用例（todoIf(isCI) 因此 CI 不跑）：tailwind 与 no-tailwind 变体同样失败（favicon bun.sh→bun.com 快照漂移 + pages-router SSR 根节点为空），属分支级快照/行为漂移而非 OHOS/tailwind 差异；dev server 的原生 turbopack 可改用 @ohos-npm-ports/next@16.3.5-1（自带 next-swc-openharmony-arm64 binding + loader triples 补丁）解决，待接线验证。
 
 # --- regression: real-machine 2026-07-27 reconciliation (pre-dates ohos-minimal) ---
 # Historical note carried over from the old ohos-aarch64 branch's expectations

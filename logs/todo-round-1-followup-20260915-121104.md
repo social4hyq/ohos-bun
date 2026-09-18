@@ -756,3 +756,12 @@ create-jsx 的 tailwind/shadcn 失败根因定位到**可修复的 port 打包�
 - **TS 7.1 配置**：`bun add typescript@>=7.1.0-0` 被 OHOS 的 typescript→port@7.0.2-3 resolution 接管，7.0.2 无法类型检查 ts7.1/-only 声明；且真 7.1 的 tsc 是原生 launcher、无 openharmony binding。`test.skipIf(isOHOS)` 带原因。
 - 结果：**20 pass / 1 skip / 0 fail ×2**，Flaky 隔离摘除。
 - 更正 round 35 的一个结论：当时 A/B 的"生产 bun"也是 OHOS 环境，19/2 只证明确定性而非跨平台；本轮用版本考古（26.2.0 vs 26.6.1 声明差异）才定位到真根因。
+
+## Round 37（2026-09-18 续六：用户通报社区 port 已出——next-build 全绿 + create-jsx 构建路径全绿）
+
+用户通报 `@ohos-npm-ports/next` 与 `@ohos-npm-ports/bun-plugin-tailwind` 已发布，逐包验证并接线：
+
+- **`@ohos-npm-ports/bun-plugin-tailwind@0.1.2-2` = 修好的重编版**：openharmony .node dlopen 成功且导出 `twctxCreate/twctxIsDirty/bunPluginRegister/twctxToJs/Scanner` 全齐（0.1.2-1 误用原版 oxide 只导出 Scanner）。create-jsx 的 tailwind + shadcn describe 预置含 overrides 的 package.json（生成器 new_no_overwrite 语义）接入，**build 用例全过**（CI 模式整文件 5 pass / 8 todo / 0 fail）。
+- **`next build --webpack` 在 OHOS 完整可用**（WASM SWC 兜底 + webpack 打包，无 turbopack 依赖）：next-build.test.ts 双侧（bun/node）加 OHOS 条件 `--webpack`，normalizeOutput 补一条 wasm-fallback lockfile 消息的 tmpdir 路径归一化后 **bun vs node 产物哈希完全一致，1 pass / 0 fail**，隔离摘除。
+- **`@ohos-npm-ports/next@16.3.5-1`**：optionalDependencies 直接带 `@ohos-npm-ports/next-swc-openharmony-arm64@16.3.5-1`，且 loader 的 getSupportedArchTriples 已打 openharmony triples 补丁——dev server 的原生 turbopack 通路就绪，待 fixture 接线验证（下一步）。
+- dev-server 用例的快照漂移（favicon bun.sh→bun.com、SSR 根节点为空）在 tailwind 与 no-tailwind 对照组同样出现，属分支级漂移而非 OHOS/tailwind 差异，单独跟进。
