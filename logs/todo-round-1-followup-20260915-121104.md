@@ -765,3 +765,11 @@ create-jsx 的 tailwind/shadcn 失败根因定位到**可修复的 port 打包�
 - **`next build --webpack` 在 OHOS 完整可用**（WASM SWC 兜底 + webpack 打包，无 turbopack 依赖）：next-build.test.ts 双侧（bun/node）加 OHOS 条件 `--webpack`，normalizeOutput 补一条 wasm-fallback lockfile 消息的 tmpdir 路径归一化后 **bun vs node 产物哈希完全一致，1 pass / 0 fail**，隔离摘除。
 - **`@ohos-npm-ports/next@16.3.5-1`**：optionalDependencies 直接带 `@ohos-npm-ports/next-swc-openharmony-arm64@16.3.5-1`，且 loader 的 getSupportedArchTriples 已打 openharmony triples 补丁——dev server 的原生 turbopack 通路就绪，待 fixture 接线验证（下一步）。
 - dev-server 用例的快照漂移（favicon bun.sh→bun.com、SSR 根节点为空）在 tailwind 与 no-tailwind 对照组同样出现，属分支级漂移而非 OHOS/tailwind 差异，单独跟进。
+
+## Round 38（2026-09-18 续七：原生 Turbopack 在 OHOS 跑通——@ohos-npm-ports/next 验证）
+
+用户通报后逐包验证社区新 port，端到端跑通：
+- **`@ohos-npm-ports/bun-plugin-tailwind@0.1.2-2`**：重编版 .node dlopen 后导出 twctxCreate/twctxIsDirty/bunPluginRegister/twctxToJs/Scanner 全齐（0.1.2-1 只导出 Scanner 的缺陷已修）。create-jsx tailwind/shadcn build 用例接线后全绿（CI 模式 5 pass/0 fail，commit 2af7418eba）。
+- **`next build --webpack`**：OHOS 上完整可用（WASM SWC + webpack，无 turbopack 依赖）；next-build.test.ts 双侧加 OHOS 条件 flag + normalizeOutput 补 tmpdir 路径归一化后 bun/node 哈希一致（1 pass/0 fail，同 commit）。
+- **`@ohos-npm-ports/next@16.3.5-1`**：optionalDependencies 带 `@ohos-npm-ports/next-swc-openharmony-arm64@16.3.5-1`（91MB 签名 .node），loader 已打 openharmony triples 补丁。**手动端到端验证：`next dev` 原生 Turbopack Ready 1.2s，app-router 页面渲染 200/32ms**。两个要点：①port 必须以 alias 形式安装（`"next": "npm:@ohos-npm-ports/next@..."`，包内部自引用 next/dist/*）②binding 版本带 `-1` 后缀会打一条良性 mismatch warning。
+- dev-server 测试文件在 OHOS arm64 本就因 puppeteer_unsupported（Chrome for Testing 无 arm64）自跳——期望条目已改写为「turbopack 阻塞已由 port 解决，剩余阻塞仅剩浏览器」。

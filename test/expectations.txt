@@ -243,8 +243,16 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # because next-swc warns openharmony/arm64 is unsupported and Turbopack's wasm binding lacks turbo.createProject. Dev-server/SSR are expected to hit
 # the same upstream native binding gap; retain as class D until Next publishes
 # an OHOS/arm64 binding or a supported wasm implementation.
-[ OPENHARMONY ] test/integration/next-pages/test/dev-server.test.ts [ Skip ] # Puppeteer arm64 download is unavailable on OHOS; after skipping that setup, Next.js 16.1.6 reaches WASM fallback but turbo.createProject is unsupported
-[ OPENHARMONY ] test/integration/next-pages/test/dev-server-ssr-100.test.ts [ Skip ] # Next.js next-swc/Turbopack has no openharmony/arm64 support; Puppeteer arm64 download is unavailable on OHOS
+# Both dev-server tests self-skip on arm64 (puppeteer_unsupported: Chrome
+# for Testing has no arm64 build). The other former blocker -- Turbopack --
+# is now solved by the community port: @ohos-npm-ports/next@16.3.5-1
+# (alias-installed AS "next" -- the package self-references next/dist/*)
+# pulls @ohos-npm-ports/next-swc-openharmony-arm64 and ships the loader
+# triples patch. Verified on device 2026-09-18: `next dev` boots with native
+# Turbopack (Ready in ~1.2s) and renders an app-router page (200, ~30ms warm).
+# A benign version-mismatch warning (binding 16.3.5-1 vs next 16.3.5) prints
+# at startup.
+
 # next-build: unquarantined 2026-09-18 -- runs with `next build --webpack`
 # on OHOS (turbopack needs the native @next/swc binding which upstream does
 # not ship for openharmony; wasm SWC covers the webpack path). bun vs node
