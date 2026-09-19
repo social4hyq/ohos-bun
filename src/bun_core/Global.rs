@@ -683,9 +683,12 @@ extern "C" fn bun_is_exiting() -> c_int {
     is_exiting() as c_int
 }
 
-fn is_exiting() -> bool {
+/// True once `Global::exit` has begun. Monotonically true, safe from any
+/// thread; the C symbol `bun_is_exiting` (Loop.h consumes it) wraps this.
+pub fn is_exiting() -> bool {
     IS_EXITING.load(Ordering::Relaxed)
 }
+
 
 // libc process-termination entry points used by `exit` /
 // `raise_ignoring_panic_handler_raw` below. All take by-value `c_int` or no

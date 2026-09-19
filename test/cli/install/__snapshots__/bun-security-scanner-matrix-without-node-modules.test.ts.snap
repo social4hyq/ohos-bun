@@ -7351,3 +7351,471 @@ exports[`bun uninstall left-pad,is-even --linker=isolated (scanner: npm.bunfigon
 `;
 
 exports[`bun uninstall left-pad,is-even --linker=isolated (scanner: npm.bunfigonly) (bun.lock exists: false) (advisories: fatal) (no-TTY) 0720 (without modules): requested-tarballs: uninstall with args 1`] = `[]`;
+
+exports[`bun install no args --linker=hoisted (scanner: npm) (bun.lock exists: true) (advisories: warn) (TTY:y) 0003 (without modules): requested-packages: install without args 1`] = `[]`;
+
+exports[`bun install no args --linker=hoisted (scanner: npm) (bun.lock exists: true) (advisories: warn) (TTY:y) 0003 (without modules): requested-tarballs: install without args 1`] = `
+[
+  "/left-pad-1.3.0.tgz",
+  "/test-security-scanner-1.0.0.tgz",
+]
+`;
+
+exports[`bun install no args --linker=hoisted (scanner: npm.bunfigonly) (bun.lock exists: true) (advisories: warn) (TTY:y) 0005 (without modules): requested-packages: install without args 1`] = `[]`;
+
+exports[`bun install no args --linker=hoisted (scanner: npm.bunfigonly) (bun.lock exists: true) (advisories: warn) (TTY:y) 0005 (without modules): requested-tarballs: install without args 1`] = `[]`;
+
+exports[`bun install no args --linker=hoisted (scanner: npm.bunfigonly) (bun.lock exists: false) (advisories: warn) (TTY:y) 0006 (without modules): requested-packages: install without args 1`] = `
+[
+  "left-pad",
+]
+`;
+
+exports[`bun install no args --linker=hoisted (scanner: npm.bunfigonly) (bun.lock exists: false) (advisories: warn) (TTY:y) 0006 (without modules): requested-tarballs: install without args 1`] = `[]`;
+
+exports[`bun install no args --linker=isolated (scanner: npm) (bun.lock exists: true) (advisories: warn) (TTY:y) 0009 (without modules): requested-packages: install without args 1`] = `[]`;
+
+exports[`bun install no args --linker=isolated (scanner: npm) (bun.lock exists: true) (advisories: warn) (TTY:y) 0009 (without modules): requested-tarballs: install without args 1`] = `
+[
+  "/left-pad-1.3.0.tgz",
+  "/test-security-scanner-1.0.0.tgz",
+]
+`;
+
+exports[`bun install no args --linker=isolated (scanner: npm.bunfigonly) (bun.lock exists: true) (advisories: warn) (TTY:y) 0011 (without modules): requested-packages: install without args 1`] = `[]`;
+
+exports[`bun install no args --linker=isolated (scanner: npm.bunfigonly) (bun.lock exists: true) (advisories: warn) (TTY:y) 0011 (without modules): requested-tarballs: install without args 1`] = `[]`;
+
+exports[`bun install no args --linker=isolated (scanner: npm.bunfigonly) (bun.lock exists: false) (advisories: warn) (TTY:y) 0012 (without modules): requested-packages: install without args 1`] = `
+[
+  "left-pad",
+]
+`;
+
+exports[`bun install no args --linker=isolated (scanner: npm.bunfigonly) (bun.lock exists: false) (advisories: warn) (TTY:y) 0012 (without modules): requested-tarballs: install without args 1`] = `[]`;
+
+exports[`bun install is-even --linker=hoisted (scanner: npm.bunfigonly) (bun.lock exists: true) (advisories: warn) (TTY:y) 0017 (without modules): requested-packages: install with args 1`] = `
+[
+  "is-even",
+  "is-odd",
+]
+`;
+
+exports[`bun install is-even --linker=hoisted (scanner: npm.bunfigonly) (bun.lock exists: true) (advisories: warn) (TTY:y) 0017 (without modules): requested-tarballs: install with args 1`] = `[]`;
+
+exports[`bun install is-even --linker=hoisted (scanner: npm.bunfigonly) (bun.lock exists: false) (advisories: warn) (TTY:y) 0018 (without modules): requested-packages: install with args 1`] = `
+[
+  "is-even",
+  "is-odd",
+  "left-pad",
+]
+`;
+
+exports[`bun install is-even --linker=hoisted (scanner: npm.bunfigonly) (bun.lock exists: false) (advisories: warn) (TTY:y) 0018 (without modules): requested-tarballs: install with args 1`] = `[]`;
+
+exports[`bun install is-even --linker=isolated (scanner: npm.bunfigonly) (bun.lock exists: true) (advisories: warn) (TTY:y) 0023 (without modules): requested-packages: install with args 1`] = `
+[
+  "is-even",
+  "is-odd",
+]
+`;
+
+exports[`bun install is-even --linker=isolated (scanner: npm.bunfigonly) (bun.lock exists: true) (advisories: warn) (TTY:y) 0023 (without modules): requested-tarballs: install with args 1`] = `[]`;
+
+exports[`bun install is-even --linker=isolated (scanner: npm.bunfigonly) (bun.lock exists: false) (advisories: warn) (TTY:y) 0024 (without modules): requested-packages: install with args 1`] = `
+[
+  "is-even",
+  "is-odd",
+  "left-pad",
+]
+`;
+
+exports[`bun install is-even --linker=isolated (scanner: npm.bunfigonly) (bun.lock exists: false) (advisories: warn) (TTY:y) 0024 (without modules): requested-tarballs: install with args 1`] = `[]`;
+
+exports[`bun install left-pad,is-even --linker=hoisted (scanner: npm) (bun.lock exists: false) (advisories: warn) (TTY:y) 0028 (without modules): requested-packages: install with args 1`] = `
+[
+  "is-even",
+  "is-odd",
+  "left-pad",
+  "test-security-scanner",
+]
+`;
+
+exports[`bun install left-pad,is-even --linker=hoisted (scanner: npm) (bun.lock exists: false) (advisories: warn) (TTY:y) 0028 (without modules): requested-tarballs: install with args 1`] = `
+[
+  "/is-even-1.0.0.tgz",
+  "/is-odd-1.0.0.tgz",
+  "/left-pad-1.3.0.tgz",
+  "/test-security-scanner-1.0.0.tgz",
+]
+`;
+
+exports[`bun install left-pad,is-even --linker=hoisted (scanner: npm.bunfigonly) (bun.lock exists: true) (advisories: warn) (TTY:y) 0029 (without modules): requested-packages: install with args 1`] = `
+[
+  "is-even",
+  "is-odd",
+  "left-pad",
+]
+`;
+
+exports[`bun install left-pad,is-even --linker=hoisted (scanner: npm.bunfigonly) (bun.lock exists: true) (advisories: warn) (TTY:y) 0029 (without modules): requested-tarballs: install with args 1`] = `[]`;
+
+exports[`bun install left-pad,is-even --linker=hoisted (scanner: npm.bunfigonly) (bun.lock exists: false) (advisories: warn) (TTY:y) 0030 (without modules): requested-packages: install with args 1`] = `
+[
+  "is-even",
+  "is-odd",
+  "left-pad",
+]
+`;
+
+exports[`bun install left-pad,is-even --linker=hoisted (scanner: npm.bunfigonly) (bun.lock exists: false) (advisories: warn) (TTY:y) 0030 (without modules): requested-tarballs: install with args 1`] = `[]`;
+
+exports[`bun install left-pad,is-even --linker=isolated (scanner: npm) (bun.lock exists: true) (advisories: warn) (TTY:y) 0033 (without modules): requested-packages: install with args 1`] = `
+[
+  "is-even",
+  "is-odd",
+  "left-pad",
+]
+`;
+
+exports[`bun install left-pad,is-even --linker=isolated (scanner: npm) (bun.lock exists: true) (advisories: warn) (TTY:y) 0033 (without modules): requested-tarballs: install with args 1`] = `
+[
+  "/is-even-1.0.0.tgz",
+  "/is-odd-1.0.0.tgz",
+  "/left-pad-1.3.0.tgz",
+  "/test-security-scanner-1.0.0.tgz",
+]
+`;
+
+exports[`bun install left-pad,is-even --linker=isolated (scanner: npm) (bun.lock exists: false) (advisories: warn) (TTY:y) 0034 (without modules): requested-packages: install with args 1`] = `
+[
+  "is-even",
+  "is-odd",
+  "left-pad",
+  "test-security-scanner",
+]
+`;
+
+exports[`bun install left-pad,is-even --linker=isolated (scanner: npm) (bun.lock exists: false) (advisories: warn) (TTY:y) 0034 (without modules): requested-tarballs: install with args 1`] = `
+[
+  "/is-even-1.0.0.tgz",
+  "/is-odd-1.0.0.tgz",
+  "/left-pad-1.3.0.tgz",
+  "/test-security-scanner-1.0.0.tgz",
+]
+`;
+
+exports[`bun install left-pad,is-even --linker=isolated (scanner: npm.bunfigonly) (bun.lock exists: true) (advisories: warn) (TTY:y) 0035 (without modules): requested-packages: install with args 1`] = `
+[
+  "is-even",
+  "is-odd",
+  "left-pad",
+]
+`;
+
+exports[`bun install left-pad,is-even --linker=isolated (scanner: npm.bunfigonly) (bun.lock exists: true) (advisories: warn) (TTY:y) 0035 (without modules): requested-tarballs: install with args 1`] = `[]`;
+
+exports[`bun install left-pad,is-even --linker=isolated (scanner: npm.bunfigonly) (bun.lock exists: false) (advisories: warn) (TTY:y) 0036 (without modules): requested-packages: install with args 1`] = `
+[
+  "is-even",
+  "is-odd",
+  "left-pad",
+]
+`;
+
+exports[`bun install left-pad,is-even --linker=isolated (scanner: npm.bunfigonly) (bun.lock exists: false) (advisories: warn) (TTY:y) 0036 (without modules): requested-tarballs: install with args 1`] = `[]`;
+
+exports[`bun install no args --linker=hoisted (scanner: npm) (bun.lock exists: false) (advisories: warn) (TTY:y) 0004 (without modules): requested-packages: install without args 1`] = `
+[
+  "left-pad",
+  "test-security-scanner",
+]
+`;
+
+exports[`bun install no args --linker=hoisted (scanner: npm) (bun.lock exists: false) (advisories: warn) (TTY:y) 0004 (without modules): requested-tarballs: install without args 1`] = `
+[
+  "/left-pad-1.3.0.tgz",
+  "/test-security-scanner-1.0.0.tgz",
+]
+`;
+
+exports[`bun install no args --linker=isolated (scanner: local) (bun.lock exists: false) (advisories: warn) (TTY:y) 0008 (without modules): requested-packages: install without args 1`] = `
+[
+  "left-pad",
+]
+`;
+
+exports[`bun install no args --linker=isolated (scanner: local) (bun.lock exists: false) (advisories: warn) (TTY:y) 0008 (without modules): requested-tarballs: install without args 1`] = `
+[
+  "/left-pad-1.3.0.tgz",
+]
+`;
+
+exports[`bun install no args --linker=isolated (scanner: npm) (bun.lock exists: false) (advisories: warn) (TTY:y) 0010 (without modules): requested-packages: install without args 1`] = `
+[
+  "left-pad",
+  "test-security-scanner",
+]
+`;
+
+exports[`bun install no args --linker=isolated (scanner: npm) (bun.lock exists: false) (advisories: warn) (TTY:y) 0010 (without modules): requested-tarballs: install without args 1`] = `
+[
+  "/left-pad-1.3.0.tgz",
+  "/test-security-scanner-1.0.0.tgz",
+]
+`;
+
+exports[`bun install is-even --linker=isolated (scanner: local) (bun.lock exists: true) (advisories: warn) (TTY:y) 0019 (without modules): requested-packages: install with args 1`] = `
+[
+  "is-even",
+  "is-odd",
+]
+`;
+
+exports[`bun install is-even --linker=isolated (scanner: local) (bun.lock exists: true) (advisories: warn) (TTY:y) 0019 (without modules): requested-tarballs: install with args 1`] = `
+[
+  "/is-even-1.0.0.tgz",
+  "/is-odd-1.0.0.tgz",
+  "/left-pad-1.3.0.tgz",
+]
+`;
+
+exports[`bun install is-even --linker=isolated (scanner: npm) (bun.lock exists: false) (advisories: warn) (TTY:y) 0022 (without modules): requested-packages: install with args 1`] = `
+[
+  "is-even",
+  "is-odd",
+  "left-pad",
+  "test-security-scanner",
+]
+`;
+
+exports[`bun install is-even --linker=isolated (scanner: npm) (bun.lock exists: false) (advisories: warn) (TTY:y) 0022 (without modules): requested-tarballs: install with args 1`] = `
+[
+  "/is-even-1.0.0.tgz",
+  "/is-odd-1.0.0.tgz",
+  "/left-pad-1.3.0.tgz",
+  "/test-security-scanner-1.0.0.tgz",
+]
+`;
+
+exports[`bun install left-pad,is-even --linker=hoisted (scanner: local) (bun.lock exists: false) (advisories: warn) (TTY:y) 0026 (without modules): requested-packages: install with args 1`] = `
+[
+  "is-even",
+  "is-odd",
+  "left-pad",
+]
+`;
+
+exports[`bun install left-pad,is-even --linker=hoisted (scanner: local) (bun.lock exists: false) (advisories: warn) (TTY:y) 0026 (without modules): requested-tarballs: install with args 1`] = `
+[
+  "/is-even-1.0.0.tgz",
+  "/is-odd-1.0.0.tgz",
+  "/left-pad-1.3.0.tgz",
+]
+`;
+
+exports[`bun install is-even --linker=hoisted (scanner: local) (bun.lock exists: true) (advisories: warn) (TTY:y) 0013 (without modules): requested-packages: install with args 1`] = `
+[
+  "is-even",
+  "is-odd",
+]
+`;
+
+exports[`bun install is-even --linker=hoisted (scanner: local) (bun.lock exists: true) (advisories: warn) (TTY:y) 0013 (without modules): requested-tarballs: install with args 1`] = `
+[
+  "/is-even-1.0.0.tgz",
+  "/is-odd-1.0.0.tgz",
+  "/left-pad-1.3.0.tgz",
+]
+`;
+
+exports[`bun install is-even --linker=hoisted (scanner: local) (bun.lock exists: false) (advisories: warn) (TTY:y) 0014 (without modules): requested-packages: install with args 1`] = `
+[
+  "is-even",
+  "is-odd",
+  "left-pad",
+]
+`;
+
+exports[`bun install is-even --linker=hoisted (scanner: local) (bun.lock exists: false) (advisories: warn) (TTY:y) 0014 (without modules): requested-tarballs: install with args 1`] = `
+[
+  "/is-even-1.0.0.tgz",
+  "/is-odd-1.0.0.tgz",
+  "/left-pad-1.3.0.tgz",
+]
+`;
+
+exports[`bun install is-even --linker=hoisted (scanner: npm) (bun.lock exists: false) (advisories: warn) (TTY:y) 0016 (without modules): requested-packages: install with args 1`] = `
+[
+  "is-even",
+  "is-odd",
+  "left-pad",
+  "test-security-scanner",
+]
+`;
+
+exports[`bun install is-even --linker=hoisted (scanner: npm) (bun.lock exists: false) (advisories: warn) (TTY:y) 0016 (without modules): requested-tarballs: install with args 1`] = `
+[
+  "/is-even-1.0.0.tgz",
+  "/is-odd-1.0.0.tgz",
+  "/left-pad-1.3.0.tgz",
+  "/test-security-scanner-1.0.0.tgz",
+]
+`;
+
+exports[`bun install is-even --linker=isolated (scanner: local) (bun.lock exists: false) (advisories: warn) (TTY:y) 0020 (without modules): requested-packages: install with args 1`] = `
+[
+  "is-even",
+  "is-odd",
+  "left-pad",
+]
+`;
+
+exports[`bun install is-even --linker=isolated (scanner: local) (bun.lock exists: false) (advisories: warn) (TTY:y) 0020 (without modules): requested-tarballs: install with args 1`] = `
+[
+  "/is-even-1.0.0.tgz",
+  "/is-odd-1.0.0.tgz",
+  "/left-pad-1.3.0.tgz",
+]
+`;
+
+exports[`bun install is-even --linker=isolated (scanner: npm) (bun.lock exists: true) (advisories: warn) (TTY:y) 0021 (without modules): requested-packages: install with args 1`] = `
+[
+  "is-even",
+  "is-odd",
+]
+`;
+
+exports[`bun install is-even --linker=isolated (scanner: npm) (bun.lock exists: true) (advisories: warn) (TTY:y) 0021 (without modules): requested-tarballs: install with args 1`] = `
+[
+  "/is-even-1.0.0.tgz",
+  "/is-odd-1.0.0.tgz",
+  "/left-pad-1.3.0.tgz",
+  "/test-security-scanner-1.0.0.tgz",
+]
+`;
+
+exports[`bun install left-pad,is-even --linker=hoisted (scanner: npm) (bun.lock exists: true) (advisories: warn) (TTY:y) 0027 (without modules): requested-packages: install with args 1`] = `
+[
+  "is-even",
+  "is-odd",
+  "left-pad",
+]
+`;
+
+exports[`bun install left-pad,is-even --linker=hoisted (scanner: npm) (bun.lock exists: true) (advisories: warn) (TTY:y) 0027 (without modules): requested-tarballs: install with args 1`] = `
+[
+  "/is-even-1.0.0.tgz",
+  "/is-odd-1.0.0.tgz",
+  "/left-pad-1.3.0.tgz",
+  "/test-security-scanner-1.0.0.tgz",
+]
+`;
+
+exports[`bun install no args --linker=hoisted (scanner: local) (bun.lock exists: false) (advisories: warn) (TTY:y) 0002 (without modules): requested-packages: install without args 1`] = `
+[
+  "left-pad",
+]
+`;
+
+exports[`bun install no args --linker=hoisted (scanner: local) (bun.lock exists: false) (advisories: warn) (TTY:y) 0002 (without modules): requested-tarballs: install without args 1`] = `
+[
+  "/left-pad-1.3.0.tgz",
+]
+`;
+
+exports[`bun install no args --linker=isolated (scanner: npm) (bun.lock exists: false) (advisories: warn) (TTY:y) 0010 (without modules): requested-packages: install without args 2`] = `
+[
+  "left-pad",
+  "test-security-scanner",
+]
+`;
+
+exports[`bun install no args --linker=isolated (scanner: npm) (bun.lock exists: false) (advisories: warn) (TTY:y) 0010 (without modules): requested-tarballs: install without args 2`] = `
+[
+  "/left-pad-1.3.0.tgz",
+  "/left-pad-1.3.0.tgz",
+  "/test-security-scanner-1.0.0.tgz",
+  "/test-security-scanner-1.0.0.tgz",
+]
+`;
+
+exports[`bun install left-pad,is-even --linker=hoisted (scanner: local) (bun.lock exists: true) (advisories: warn) (TTY:y) 0025 (without modules): requested-packages: install with args 1`] = `
+[
+  "is-even",
+  "is-odd",
+  "left-pad",
+]
+`;
+
+exports[`bun install left-pad,is-even --linker=hoisted (scanner: local) (bun.lock exists: true) (advisories: warn) (TTY:y) 0025 (without modules): requested-tarballs: install with args 1`] = `
+[
+  "/is-even-1.0.0.tgz",
+  "/is-odd-1.0.0.tgz",
+  "/left-pad-1.3.0.tgz",
+]
+`;
+
+exports[`bun install left-pad,is-even --linker=isolated (scanner: local) (bun.lock exists: true) (advisories: warn) (TTY:y) 0031 (without modules): requested-packages: install with args 1`] = `
+[
+  "is-even",
+  "is-odd",
+  "left-pad",
+]
+`;
+
+exports[`bun install left-pad,is-even --linker=isolated (scanner: local) (bun.lock exists: true) (advisories: warn) (TTY:y) 0031 (without modules): requested-tarballs: install with args 1`] = `
+[
+  "/is-even-1.0.0.tgz",
+  "/is-odd-1.0.0.tgz",
+  "/left-pad-1.3.0.tgz",
+]
+`;
+
+exports[`bun install no args --linker=hoisted (scanner: local) (bun.lock exists: true) (advisories: warn) (TTY:y) 0001 (without modules): requested-packages: install without args 1`] = `[]`;
+
+exports[`bun install no args --linker=hoisted (scanner: local) (bun.lock exists: true) (advisories: warn) (TTY:y) 0001 (without modules): requested-tarballs: install without args 1`] = `
+[
+  "/left-pad-1.3.0.tgz",
+]
+`;
+
+exports[`bun install no args --linker=isolated (scanner: local) (bun.lock exists: true) (advisories: warn) (TTY:y) 0007 (without modules): requested-packages: install without args 1`] = `[]`;
+
+exports[`bun install no args --linker=isolated (scanner: local) (bun.lock exists: true) (advisories: warn) (TTY:y) 0007 (without modules): requested-tarballs: install without args 1`] = `
+[
+  "/left-pad-1.3.0.tgz",
+]
+`;
+
+exports[`bun install is-even --linker=hoisted (scanner: npm) (bun.lock exists: true) (advisories: warn) (TTY:y) 0015 (without modules): requested-packages: install with args 1`] = `
+[
+  "is-even",
+  "is-odd",
+]
+`;
+
+exports[`bun install is-even --linker=hoisted (scanner: npm) (bun.lock exists: true) (advisories: warn) (TTY:y) 0015 (without modules): requested-tarballs: install with args 1`] = `
+[
+  "/is-even-1.0.0.tgz",
+  "/is-odd-1.0.0.tgz",
+  "/left-pad-1.3.0.tgz",
+  "/test-security-scanner-1.0.0.tgz",
+]
+`;
+
+exports[`bun install left-pad,is-even --linker=isolated (scanner: local) (bun.lock exists: false) (advisories: warn) (TTY:y) 0032 (without modules): requested-packages: install with args 1`] = `
+[
+  "is-even",
+  "is-odd",
+  "left-pad",
+]
+`;
+
+exports[`bun install left-pad,is-even --linker=isolated (scanner: local) (bun.lock exists: false) (advisories: warn) (TTY:y) 0032 (without modules): requested-tarballs: install with args 1`] = `
+[
+  "/is-even-1.0.0.tgz",
+  "/is-odd-1.0.0.tgz",
+  "/left-pad-1.3.0.tgz",
+]
+`;
