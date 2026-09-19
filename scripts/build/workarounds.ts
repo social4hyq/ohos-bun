@@ -236,9 +236,11 @@ export const workarounds: Workaround[] = [
       "backend issues the syscall via its own inline-asm trampoline, never touching a named libc " +
       "symbol a linked-in shim could interpose. src/sys/linux_syscall.rs short-circuits both " +
       "openat2_beneath and openat2_in_root to return ENOSYS on OHOS before ever attempting the " +
-      "real syscall. Zero fallout elsewhere: both call sites (src/install/bin.rs and sys/lib.rs's " +
-      "openat2_in_root) already treat ENOSYS/EPERM/EINVAL as \"openat2 unavailable on this kernel\" " +
-      "for pre-5.6-kernel compatibility, so the existing fallback path (plain openat) just runs.",
+      "real syscall. Fallout note: src/install/bin.rs's openat2_beneath caller treats the Err as " +
+      "a benign None sentinel (slow-path fallback), but sys/lib.rs's openat2_in_root previously " +
+      "fell back to plain openat — which follows symlinks and was a directory-route escape hole " +
+      "(serve-directory-routes.test.ts). The fallback is now a per-component clamped walk " +
+      "(openat2_in_root_clamped) with RESOLVE_IN_ROOT semantics; see that function.",
     applies: cfg => cfg.abi === "ohos",
     expectedToBeFixed: () => {
       // Sandbox policy, not a toolchain/library version — no reliable

@@ -1933,8 +1933,14 @@ mod posix_impl {
             .map_err(|e| Error::from_code_int(e, Tag::open).with_path(path.as_bytes()))
     }
     /// `openat2(RESOLVE_IN_ROOT | RESOLVE_NO_MAGICLINKS)`: resolves `path` as
-    /// if `dir` were `/`. Falls back to plain `openat` on kernels without
-    /// `openat2` (or when seccomp blocks it), caching the unavailability.
+    /// if `dir` were `/`. On kernels without `openat2` (or when seccomp
+    /// blocks it — OHOS), falls back to a per-component clamped walk with
+    /// equivalent IN_ROOT / NO_MAGICLINKS semantics, caching the
+    /// unavailability.
+    ///
+    /// The fallback MUST NOT degrade to plain `openat`: that follows
+    /// symlinks and lets paths escape `dir` entirely
+    /// (serve-directory-routes.test.ts "rejects symlink escapes").
     #[cfg(any(target_os = "linux", target_os = "android"))]
     pub fn openat2_in_root(dir: impl AsFd, path: &ZStr, flags: i32, mode: Mode) -> Maybe<Fd> {
         use core::sync::atomic::{AtomicBool, Ordering};
@@ -1970,7 +1976,8 @@ mod posix_impl {
                 }
             }
         }
-        openat(dir, path, flags, mode)
+        super::linux_syscall::openat2_in_root_clamped(dir, path, flags, mode)
+            .map_err(|e| Error::from_code_int(e, Tag::open).with_path(path.as_bytes()))
     }
     pub fn close(fd: Fd) -> Maybe<()> {
         // Call close ONCE; never retry on EINTR (Linux may have already
