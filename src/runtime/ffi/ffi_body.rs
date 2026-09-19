@@ -733,11 +733,13 @@ impl CompileC {
         // OHOS ships no FHS libc/headers for apps to link against (TinyCC's
         // own tcc_add_runtime() unconditionally does `-lc`, and even a bare
         // `#include <stdint.h>` needs bits/alltypes.h, which only exists
-        // under the triplet subdirectory). The ohos-sdk formula's sysroot has
-        // both; read its location from $OHOS_SYSROOT rather than a baked-in
-        // Harmonybrew path, since not every device that runs bun has the SDK
-        // installed at all -- this is a best-effort addition, not a
-        // guaranteed-present one.
+        // under the triplet subdirectory). Resolve the sysroot: `$OHOS_SYSROOT`
+        // wins; otherwise probe Harmonybrew's two SDK formula layouts — the
+        // full `ohos-sdk` (`opt/ohos-sdk/native/sysroot`) and the
+        // `ohos-sdk-native` that llvm/llvm@N depend on
+        // (`opt/ohos-sdk-native/sysroot`; the two formulae conflict, so an
+        // llvm-only install only has the latter). Neither may exist — this
+        // is a best-effort addition, not a guaranteed-present one.
         #[cfg(all(target_env = "ohos", target_arch = "aarch64"))]
         {
             fn join(sysroot: &[u8], suffix: &[u8]) -> ZBox {
@@ -751,7 +753,46 @@ impl CompileC {
                 bun_sys::directory_exists_at(bun_sys::Fd::cwd(), path).unwrap_or(false)
             }
 
-            if let Some(sysroot) = env_var::OHOS_SYSROOT.get() {
+            // Process-lifetime cache, mirroring CACHED_DEFAULT_SYSTEM_* above:
+            // the probe is a handful of stat()s, but cc() can be hot in test
+            // suites that compile many fixtures.
+            fn resolve_ohos_sysroot() -> Option<&'static ZBox> {
+                static CACHED_OHOS_SYSROOT: OnceLock<Option<ZBox>> = OnceLock::new();
+                CACHED_OHOS_SYSROOT
+                    .get_or_init(|| {
+                        if let Some(sysroot) = env_var::OHOS_SYSROOT.get() {
+                            return Some(ZBox::from_bytes(sysroot));
+                        }
+                        let mut roots: Vec<Vec<u8>> = Vec::new();
+                        if let Ok(prefix) = std::env::var("HOMEBREW_PREFIX") {
+                            roots.push(prefix.into_bytes());
+                        }
+                        if let Some(home) = env_var::HOME.get() {
+                            let mut root = home.to_vec();
+                            root.extend_from_slice(b"/.harmonybrew");
+                            roots.push(root);
+                        }
+                        const SYSROOT_SUFFIXES: [&str; 2] = [
+                            "/opt/ohos-sdk/native/sysroot",
+                            "/opt/ohos-sdk-native/sysroot",
+                        ];
+                        for root in &roots {
+                            for suffix in SYSROOT_SUFFIXES {
+                                let mut candidate = root.clone();
+                                candidate.extend_from_slice(suffix.as_bytes());
+                                let candidate = ZBox::from_bytes(candidate);
+                                if dir_exists_dyn(&candidate) {
+                                    return Some(candidate);
+                                }
+                            }
+                        }
+                        None
+                    })
+                    .as_ref()
+            }
+
+            if let Some(sysroot_box) = resolve_ohos_sysroot() {
+                let sysroot = sysroot_box.as_bytes();
                 let lib_dir = join(sysroot, b"usr/lib/aarch64-linux-ohos");
                 if dir_exists_dyn(&lib_dir) {
                     if state.add_library_path(&lib_dir).is_err() {

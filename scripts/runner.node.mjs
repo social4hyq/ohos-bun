@@ -1945,6 +1945,15 @@ async function spawnBun(execPath, { args, cwd, timeout, gracefulTimeout, idleTim
     if (!brew.error && brew.status === 0) {
       ohosSysroot = join(brew.stdout.trim(), "native", "sysroot");
     }
+    // llvm/llvm@N depend on `ohos-sdk-native` and conflict with `ohos-sdk`,
+    // so llvm-only installs only have the latter (different sysroot layout:
+    // no `native` segment).
+    if (!ohosSysroot) {
+      const brewNative = spawnSync("brew", ["--prefix", "ohos-sdk-native"], { encoding: "utf-8" });
+      if (!brewNative.error && brewNative.status === 0) {
+        ohosSysroot = join(brewNative.stdout.trim(), "sysroot");
+      }
+    }
   }
   const bunEnv = {
     ...process.env,
