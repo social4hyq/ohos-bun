@@ -1,7 +1,7 @@
 import { createCanvas } from "@napi-rs/canvas";
 import { it as bunIt, test as bunTest, describe, expect } from "bun:test";
 import { appendFile } from "fs/promises";
-import { getSecret, isCI, rss } from "harness";
+import { getSecret, isCI, isOHOS, rss } from "harness";
 import { generate, generateClient } from "./helper.ts";
 import type { PrismaClient } from "./prisma/types.d.ts";
 
@@ -141,7 +141,10 @@ for (const type of ["sqlite", "postgres" /*"mssql", "mongodb"*/]) {
           const deltaMB = (after - before) / 1024 / 1024;
           expect(deltaMB).toBeLessThan(10);
         },
-        120_000,
+        // OHOS: fixed iteration counts (5-9M queries) against the musl
+        // engine on this device run past the 2-minute desktop budget; scale
+        // the budget, keep the iterations and the leak assertion.
+        120_000 * (isOHOS ? 10 : 1),
       );
     }
 
@@ -186,7 +189,10 @@ for (const type of ["sqlite", "postgres" /*"mssql", "mongodb"*/]) {
           const deltaMB = (after - before) / 1024 / 1024;
           expect(deltaMB).toBeLessThan(10);
         },
-        120_000,
+        // OHOS: fixed iteration counts (5-9M queries) against the musl
+        // engine on this device run past the 2-minute desktop budget; scale
+        // the budget, keep the iterations and the leak assertion.
+        120_000 * (isOHOS ? 10 : 1),
       );
     }
 
