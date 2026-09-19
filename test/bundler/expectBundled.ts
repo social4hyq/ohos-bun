@@ -7,7 +7,7 @@ import type { Matchers } from "bun:test";
 import * as esbuild from "esbuild";
 import filenamify from "filenamify";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
-import { bunEnv, bunExe, isCI, isDebug, isWindows } from "harness";
+import { bunEnv, bunExe, isCI, isDebug, isOHOS, isWindows } from "harness";
 import { tmpdir } from "os";
 import path from "path";
 import { SourceMapConsumer } from "source-map";
@@ -1983,10 +1983,15 @@ export function itBundled(
     // of describe.concurrent / --concurrent.
     const testFn = resolveBackend(opts) === "api" ? it.serial : it;
     const baseTimeout = opts.snapshotSourceMap || opts.compile ? 30_000 : 5_000;
+    // OHOS: process exec throughput is ~2/s (kernel-serialized JSC startup
+    // page-touching), and CLI-backend cases under describe.concurrent spawn
+    // `bun build` all at once, so the explicit 5s timeout kills every case
+    // regardless of load. Scale it up; android/linux are unaffected.
+    const platformTimeoutScale = isOHOS ? 20 : 1;
     testFn(
       id,
       () => expectBundled(id, opts as any),
-      isCI ? undefined : isDebug ? Infinity : baseTimeout * (opts.timeoutScale ?? 1),
+      isCI ? undefined : isDebug ? Infinity : baseTimeout * (opts.timeoutScale ?? 1) * platformTimeoutScale,
     );
   }
   return ref;
@@ -1999,7 +2004,7 @@ itBundled.only = (id: string, opts: BundlerTestInput) => {
     id,
     () => expectBundled(id, opts as any),
     // sourcemap code is slow
-    isCI ? undefined : isDebug ? Infinity : (opts.snapshotSourceMap ? 30_000 : 5_000) * (opts.timeoutScale ?? 1),
+    isCI ? undefined : isDebug ? Infinity : (opts.snapshotSourceMap ? 30_000 : 5_000) * (opts.timeoutScale ?? 1) * (isOHOS ? 20 : 1),
   );
 };
 

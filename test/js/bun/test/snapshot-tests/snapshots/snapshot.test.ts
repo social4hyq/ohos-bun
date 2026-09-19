@@ -1,7 +1,7 @@
 import { $ } from "bun";
 import { describe, expect, it, test } from "bun:test";
 import { readFileSync, writeFileSync } from "fs";
-import { bunEnv, bunExe, DirectoryTree, isDebug, tempDir, tempDirWithFiles } from "harness";
+import { bunEnv, bunExe, DirectoryTree, isDebug, isOHOS, tempDir, tempDirWithFiles } from "harness";
 
 function test1000000(arg1: any, arg218718132: any) {}
 
@@ -185,7 +185,15 @@ class SnapshotTester {
     contents: string,
     opts: { shouldNotError?: boolean; shouldGrow?: boolean; skipSnapshot?: boolean } = {},
   ) {
-    test(label, async () => await this.update(contents, opts), isDebug ? 100_000 : 5_000);
+    test(
+      label,
+      async () => await this.update(contents, opts),
+      // OHOS: each case spawns a `bun test` child process; the
+      // kernel-serialized exec throughput (~2/s) blows the 5s desktop budget
+      // when several test workers share the device. Same scale-up as
+      // expectBundled.
+      isDebug ? 100_000 : 5_000 * (isOHOS ? 20 : 1),
+    );
   }
   async update(
     contents: string,

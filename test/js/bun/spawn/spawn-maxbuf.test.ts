@@ -217,11 +217,19 @@ describe("timeout kills the process", () => {
         try {
           process.kill(grandchild);
         } catch {}
-      expect({ stdout, exitCode: proc.exitCode, signalCode: proc.signalCode }).toEqual({
-        stdout: "from-child\n",
-        exitCode: null,
-        signalCode: "SIGTERM",
-      });
+      // OHOS /bin/sh is mksh: a non-interactive mksh handles an untrapped
+      // SIGTERM by unwinding and exiting voluntarily with 128+SIGTERM (mksh
+      // main.c quitenv(); its "ham up our death" re-raise only fires when
+      // kshpgrp == kshpid, and Bun.spawn does not put the child in its own
+      // process group). So the kernel reports WIFEXITED(143), not
+      // WIFSIGNALED. Accept either death style.
+      const shIsMksh =
+        process.platform === "openharmony" && require("node:fs").existsSync("/system/bin/sh");
+      expect({ stdout, exitCode: proc.exitCode, signalCode: proc.signalCode }).toEqual(
+        shIsMksh
+          ? { stdout: "from-child\n", exitCode: 143, signalCode: null }
+          : { stdout: "from-child\n", exitCode: null, signalCode: "SIGTERM" },
+      );
       expect(stderr).toMatch(/^\d+\n$/);
     });
   });

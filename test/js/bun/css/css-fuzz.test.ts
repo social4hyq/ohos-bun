@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { isCI, isDebug } from "harness";
+import { isCI, isDebug, platformTimeoutScale } from "harness";
 
 interface InvalidFuzzOptions {
   maxLength: number;
@@ -223,7 +223,9 @@ if (!isCI) {
       expect(crashCount).toBe(0);
       expect(errorCount).toBeGreaterThan(0);
     },
-    10 * 1000,
+    // Scale the wall-clock budget, not the iteration count: the iterations
+    // are the assertion strength, the 10s baseline just doesn't hold on OHOS.
+    10 * 1000 * platformTimeoutScale,
   );
 
   // Additional test for mixed valid/invalid input

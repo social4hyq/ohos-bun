@@ -1,5 +1,5 @@
 import { jscDescribe } from "bun:jsc";
-import { bunEnv, bunExe, isASAN, isCI, isDebug, nodeExe } from "harness";
+import { bunEnv, bunExe, isASAN, isCI, isDebug, nodeExe, platformTimeoutScale } from "harness";
 import { createTest } from "node-harness";
 import { AsyncLocalStorage } from "node:async_hooks";
 import dc from "node:diagnostics_channel";
@@ -2413,7 +2413,7 @@ it(
       });
     });
   },
-  15_000 * ASAN_MULTIPLIER,
+  15_000 * ASAN_MULTIPLIER * platformTimeoutScale,
 );
 
 it("http2.createServer validates input options", () => {

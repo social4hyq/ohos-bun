@@ -1,7 +1,7 @@
 import type { Subprocess } from "bun";
 import { spawn } from "bun";
 import { afterEach, expect, it } from "bun:test";
-import { bunEnv, bunExe, isBroken, isLinux, isWindows, tempDir, tmpdirSync } from "harness";
+import { bunEnv, bunExe, isBroken, isLinux, isWindows, platformTimeoutScale, tempDir, tmpdirSync } from "harness";
 import { readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
@@ -56,7 +56,7 @@ for (const dir of ["dir", "©️"]) {
       }
       rmSync(path);
     },
-    10000,
+    10000 * platformTimeoutScale,
   );
 }
 
@@ -126,7 +126,7 @@ setInterval(() => {}, 1000);
     expect(await Bun.file(join(cwd, "should-not-write.txt")).exists()).toBe(false);
     expect(await Bun.file(join(cwd, "second-listener-ran.txt")).exists()).toBe(false);
   },
-  10000,
+  10000 * platformTimeoutScale,
 );
 
 // While one thread is inside execve(2), Linux fails every clone(CLONE_FS) in

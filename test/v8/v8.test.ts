@@ -10,6 +10,7 @@ import {
   isMusl,
   isWindows,
   nodeExeMatchingAbi,
+  platformTimeoutScale,
   tempDir,
   tmpdirSync,
 } from "harness";
@@ -332,7 +333,7 @@ describe.skipIf(!canBuildNodeAddons()).todoIf(isBroken && isMusl)("node:v8", () 
       async () => {
         await checkSameOutput("test_handle_scope_gc");
       },
-      10000,
+      10000 * platformTimeoutScale,
     );
   });
 

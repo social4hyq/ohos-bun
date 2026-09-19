@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, readdirSync } from "fs";
 import { bunEnv, bunExe, tempDir } from "harness";
+import { tmpdir } from "os";
 import { join } from "path";
 
 test("runtime transpiler cache is disabled when BUN_INSPECT is set", async () => {
@@ -42,7 +43,13 @@ test("runtime transpiler cache is disabled when BUN_INSPECT is set", async () =>
       ...bunEnv,
       BUN_RUNTIME_TRANSPILER_CACHE_PATH: cacheDir,
       BUN_INSPECT:
-        process.platform === "win32" ? "127.0.0.1:0" : "ws+unix:///tmp/bun-inspect-fake-" + Date.now() + ".sock",
+        // The child process binds this path as its inspector socket. A
+        // hardcoded /tmp path EACCESes on OHOS (device /tmp is read-only for
+        // shell), killing the child; os.tmpdir() is the writable per-app
+        // location on every platform (win32 keeps its host:port fork).
+        process.platform === "win32"
+          ? "127.0.0.1:0"
+          : "ws+unix://" + join(tmpdir(), "bun-inspect-fake-" + Date.now() + ".sock"),
     },
     stdout: "pipe",
     stderr: "pipe",

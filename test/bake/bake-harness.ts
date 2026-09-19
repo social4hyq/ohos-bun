@@ -18,7 +18,7 @@ import os from "node:os";
 import path from "node:path";
 // @ts-ignore
 import { expect } from "bun:test";
-import { bunEnv, bunExe, isASAN, isCI, isWindows, mergeWindowEnvs, tempDirWithFiles } from "harness";
+import { bunEnv, bunExe, isASAN, isCI, isOHOS, isWindows, mergeWindowEnvs, tempDirWithFiles } from "harness";
 import { dedent } from "../bundler/expectBundled.ts";
 import { exitCodeMapStrings } from "./exit-code-map.mjs";
 
@@ -925,7 +925,12 @@ export class Client extends EventEmitter {
    * loaded. Register it before the load starts.
    */
   async waitForPageLoad(): Promise<void> {
-    const acked = this.#nextAck("loading the page", (isWindows ? 10_000 : 5_000) * WAIT_MULTIPLIER);
+    // The 5s startup budget also gets 4x on OHOS: dev-server fork/exec and the
+    // first build are that much slower there (cf. harness platformTimeoutScale).
+    const acked = this.#nextAck(
+      "loading the page",
+      (isWindows ? 10_000 : isOHOS ? 20_000 : 5_000) * WAIT_MULTIPLIER,
+    );
     await Promise.all([this.output.waitForLine(hmrClientInitRegex), acked]);
   }
 
@@ -1812,8 +1817,10 @@ class OutputLineStream extends EventEmitter {
   }
 
   waitForLine(
+    // Same OHOS 4x as waitForPageLoad above: dev-server startup (e.g. waiting
+    // for the `localhost:<port>` line) hangs off this default timeout.
     regex: RegExp,
-    timeout = interactive ? interactive_timeout : (isWindows ? 10_000 : 5_000) * WAIT_MULTIPLIER,
+    timeout = interactive ? interactive_timeout : (isWindows ? 10_000 : isOHOS ? 20_000 : 5_000) * WAIT_MULTIPLIER,
   ): Promise<RegExpMatchArray> {
     if (this.panicked) {
       return new Promise((_, reject) => {

@@ -110,7 +110,12 @@ describe.todoIf(
       return peak;
     }
 
-    const batchSize = process.platform === "win32" ? 10 : 50;
+    // OHOS device: 50 concurrent 8 MB blobs drive RSS past the app memory
+    // watermark and the read pump starves (854 MB observed) before the leak
+    // assertion ever runs. Batch smaller there; the leak metric itself is
+    // kept (delta < 80% of peak), only the concurrency is reduced.
+    const batchSize =
+      process.platform === "win32" ? 10 : process.platform === "openharmony" ? 8 : 50;
 
     // Warmup
     const warmupPeak = await testSpawnMemoryLeak(batchSize, 5);

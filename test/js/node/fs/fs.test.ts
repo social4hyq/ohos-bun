@@ -11,6 +11,7 @@ import {
   isLinux,
   isPosix,
   isWindows,
+  platformTimeoutScale,
   tempDir,
   tempDirWithFiles,
   tmpdirSync,
@@ -1848,7 +1849,7 @@ it.skipIf(isWindows)("promises.readdir({recursive: true}) settles when multiple 
     env: bunEnv,
     stdout: "pipe",
     stderr: "inherit",
-    timeout: 10_000,
+    timeout: 10_000 * platformTimeoutScale,
   });
 
   const [stdout, exitCode] = await Promise.all([proc.stdout.text(), proc.exited]);
@@ -1896,7 +1897,7 @@ it.skipIf(isWindows)(
       env: bunEnv,
       stdout: "pipe",
       stderr: "inherit",
-      timeout: 10_000,
+      timeout: 10_000 * platformTimeoutScale,
     });
 
     const [stdout, exitCode] = await Promise.all([proc.stdout.text(), proc.exited]);
@@ -4762,12 +4763,12 @@ describe("fs/promises", () => {
 
     if (withFileTypes) {
       describe("withFileTypes", () => {
-        it("readdir(path, {recursive: true} should work x 100", doIt, 10_000);
-        it("readdir(path, {recursive: true} should fail x 100", fail, 10_000);
+        it("readdir(path, {recursive: true} should work x 100", doIt, 10_000 * platformTimeoutScale);
+        it("readdir(path, {recursive: true} should fail x 100", fail, 10_000 * platformTimeoutScale);
       });
     } else {
-      it("readdir(path, {recursive: true} should work x 100", doIt, 10_000);
-      it("readdir(path, {recursive: true} should fail x 100", fail, 10_000);
+      it("readdir(path, {recursive: true} should work x 100", doIt, 10_000 * platformTimeoutScale);
+      it("readdir(path, {recursive: true} should fail x 100", fail, 10_000 * platformTimeoutScale);
     }
   }
 
@@ -4807,9 +4808,13 @@ describe("fs/promises", () => {
     };
 
     if (withFileTypes) {
-      it("readdirSync(path, {recursive: true, withFileTypes: true} should work x 100", doIt, 10_000);
+      it(
+        "readdirSync(path, {recursive: true, withFileTypes: true} should work x 100",
+        doIt,
+        10_000 * platformTimeoutScale,
+      );
     } else {
-      it("readdirSync(path, {recursive: true} should work x 100", doIt, 10_000);
+      it("readdirSync(path, {recursive: true} should work x 100", doIt, 10_000 * platformTimeoutScale);
     }
   }
 

@@ -106,3 +106,36 @@ NS.then(({ fn }) => {
 });
 "
 `;
+
+exports[`Bun.build BuildArtifact properties 1`] = `
+"var __defProp = Object.defineProperty;
+var __returnValue = (v) => v;
+function __exportSetter(name, newValue) {
+  this[name] = __returnValue.bind(null, newValue);
+}
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, {
+      get: all[name],
+      enumerable: true,
+      configurable: true,
+      set: __exportSetter.bind(all, name)
+    });
+};
+
+// test/bundler/fixtures/trivial/fn.js
+var exports_fn = {};
+__export(exports_fn, {
+  fn: () => fn
+});
+function fn(a) {
+  return a + 42;
+}
+
+// test/bundler/fixtures/trivial/index.js
+var NS = Promise.resolve().then(() => exports_fn);
+NS.then(({ fn }) => {
+  console.log(fn(42));
+});
+"
+`;

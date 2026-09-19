@@ -23,7 +23,13 @@ test("concurrent bun build does not stall on worker-pool shutdown", async () => 
   using dir = tempDir("bun-build-pool-shutdown", files);
   const root = String(dir);
 
-  const CONCURRENCY = 24;
+  // 24-way oversubscribes this 16-core device: healthy builds on OHOS/hmdfs
+  // take ~13.4s at 24-way (write-throughput envelope, <1% variance) which is
+  // above STALL_MS and above the 10s futex floor being tested, making healthy
+  // and stalled indistinguishable. At 8-way healthy builds take ~3.5s while a
+  // real stall still exceeds the 10s futex timeout, so the regression stays
+  // detectable (measured 2026-09-18).
+  const CONCURRENCY = process.platform === "openharmony" ? 8 : 24;
   const ROUNDS = 16;
   // The regression is a fixed 10s idle-futex timeout, so a stalled build always
   // exceeds 10s regardless of machine speed. A healthy build is well under a

@@ -21,6 +21,13 @@ export const isMacOS = process.platform === "darwin";
 /** OpenHarmony is Linux-like enough that `isLinux` covers it, but its
  *  `--compile` target string is `-ohos`, not `-musl`. */
 export const isOHOS = process.platform === "openharmony";
+/**
+ * Scale factor for wall-clock test budgets on OpenHarmony. The OHOS kernel's
+ * exec throughput is ~2 processes/sec, so spawn-heavy tests need proportionally
+ * larger budgets to avoid flaking on time alone (assertions are unchanged).
+ * Precedent: expectBundled.ts's `isOHOS ? 20 : 1` platformTimeoutScale.
+ */
+export const platformTimeoutScale = isOHOS ? 20 : 1;
 export const isLinux = process.platform === "linux" || process.platform === "openharmony";
 export const isFreeBSD = process.platform === "freebsd";
 /** Bun (like Node) reports `"android"` on Android; it is not folded into `isLinux`. */

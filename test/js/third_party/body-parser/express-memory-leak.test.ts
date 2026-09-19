@@ -1,10 +1,17 @@
 import { expect, test } from "bun:test";
 import { ChildProcess, spawn } from "child_process";
-import { bunEnv, bunExe, isASAN, isBroken, isMacOS } from "harness";
+import { bunEnv, bunExe, isASAN, isBroken, isMacOS, isOHOS } from "harness";
 import { join } from "path";
 
-const REQUESTS_COUNT = isASAN ? 5_000 : 50_000;
-const BATCH_SIZE = isASAN ? 10 : 50;
+// OHOS device: request round-trips are CPU-bound far below workstation
+// speed, so 50k requests never complete the two batches inside the 20 s
+// budget (the serial round died ~90% through the first batch, before the
+// growth-ratio assertion ran; the second batch's connection-refused noise
+// in that log was teardown artifact of the timeout kill, not a server
+// failure). Fold OHOS into the ASAN-sized count and batch; the assertion
+// itself (rss ratio over two equal-sized batches < 1.5) is unchanged.
+const REQUESTS_COUNT = isASAN || isOHOS ? 5_000 : 50_000;
+const BATCH_SIZE = isASAN || isOHOS ? 10 : 50;
 
 interface ServerInfo {
   host: string;

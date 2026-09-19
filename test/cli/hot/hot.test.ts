@@ -1,13 +1,16 @@
 import { spawn } from "bun";
 import { beforeEach, expect, it } from "bun:test";
 import { copyFileSync, cpSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "fs";
-import { bunEnv, bunExe, isDebug, isWindows, tmpdirSync, waitForFileToExist } from "harness";
+import { bunEnv, bunExe, isDebug, isWindows, platformTimeoutScale, tmpdirSync, waitForFileToExist } from "harness";
 import { join } from "path";
 
 // OHOS: slower fs.watch/fork/build I/O needs more headroom for the 50-cycle
 // hot-reload loop below than other platforms' 10s budget.
-const timeout = isDebug ? Infinity : process.platform === "openharmony" ? 60_000 : 10_000;
-const longTimeout = isDebug ? Infinity : process.platform === "openharmony" ? 90_000 : 30_000;
+// Previously hand-forked as 60s/90s for openharmony; unified onto the harness
+// platformTimeoutScale (which gives 200s/600s there — headroom only, other
+// platforms keep the upstream 10s/30s budgets).
+const timeout = isDebug ? Infinity : 10_000 * platformTimeoutScale;
+const longTimeout = isDebug ? Infinity : 30_000 * platformTimeoutScale;
 
 /**
  * Helper to parse stderr from a --hot process that throws errors.

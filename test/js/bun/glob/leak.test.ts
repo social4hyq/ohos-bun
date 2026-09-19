@@ -1,10 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { bunEnv, bunExe, isASAN, tempDir } from "harness";
+import { bunEnv, bunExe, isASAN, isOHOS, tempDir } from "harness";
 
 // ASAN's quarantine retains freed allocations (default 256 MB) so RSS deltas
 // run far higher under bun-asan; widen the threshold there.
 const thresholdMB = isASAN ? 400 : 100;
-const timeout = 60_000;
+// OHOS device: the 100k-iteration sweep child runs several times slower than
+// the workstation and the four variants run concurrently; in the serial round
+// one variant died at the 60 s budget with the leak assertion never reached
+// while its sibling passed at ~35 s. Widen the budget there instead of
+// cutting iterations — the assertion (absolute RSS growth over the same
+// 100k sweeps < threshold) is untouched and now actually executes.
+const timeout = isOHOS ? 180_000 : 60_000;
 
 async function run(dir: string, code: string) {
   await using proc = Bun.spawn({

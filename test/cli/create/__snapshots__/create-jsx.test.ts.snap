@@ -288,3 +288,48 @@ Happy bunning! 🐇
 Bun v*.*.* dev server ready in *.** ms
 url: http://[SERVER_URL]/"
 `;
+
+exports[`development: false shadcn/ui build 1`] = `
+"create  lib/utils.ts         shadcn
+create  index.css            shadcn
+create  index.build.ts       bun
+create  index.client.tsx     bun
+create  index.css            css
+create  index.html           html
+create  styles/globals.css   shadcn
+create  bunfig.toml          bun
+create  tsconfig.json        tsc
+create  components.json      shadcn
+📦 Auto-installing 12 detected dependencies
+$ bun --only-missing install -- lucide-react tailwindcss bun-plugin-tailwind tw-animate-css class-variance-authority clsx tailwind-merge react-dom@19 react@19
+bun add *.*.*
+installed lucide-react@*.*.*
+installed tailwindcss@*.*.*
+installed bun-plugin-tailwind@*.*.*-2
+installed tw-animate-css@*.*.*
+installed class-variance-authority@*.*.*
+installed clsx@*.*.*
+installed tailwind-merge@*.*.*
+installed react-dom@*.*.*
+installed react@*.*.*
+10 packages installed [*ms]
+$ bun --only-missing add -d @types/bun @types/react@19 @types/react-dom@19
+bun add *.*.*
+installed @types/bun@*.*.*
+installed @types/react@*.*.*
+installed @types/react-dom@*.*.*
+7 packages installed [*ms]
+😎 Setting up shadcn/ui components
+$ bun x shadcn@canary add -y -- button badge card
+--------------------------------
+✨ React + shadcn/ui + Tailwind project configured
+Development - frontend dev server with hot reload
+bun dev
+Production - build optimized assets
+bun run build
+Happy bunning! 🐇
+Bun v*.*.* ready in *.** ms
+url: http://[SERVER_URL]/"
+`;
+
+exports[`development: false shadcn/ui build 2`] = `"<html><head></head><body></body></html>"`;
