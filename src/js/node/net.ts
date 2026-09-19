@@ -2910,6 +2910,17 @@ function lookupAndConnect(self, options) {
   };
   if (!isWindows && dnsopts.family !== 4 && dnsopts.family !== 6 && dnsopts.hints === 0) {
     dnsopts.hints = dns.ADDRCONFIG;
+    // OHOS: musl's AI_ADDRCONFIG drops ::1 while the device holds no global
+    // IPv6 address (ULA doesn't count), but our listen side resolves
+    // "localhost" v6-first without ADDRCONFIG (bsd.c), so servers bind ::1
+    // and a v4-only lookup result guarantees ECONNREFUSED. fetch/usockets
+    // keep both families for localhost (hardcoded [::1, 127.0.0.1] in
+    // dns.rs); keep node:net on the same dual-family path —
+    // lookupAndConnectMultiple below retries ::1 after 127.0.0.1 — by
+    // skipping the hint for loopback names.
+    if (host === "localhost") {
+      dnsopts.hints = 0;
+    }
   }
 
   $debug("connect: find host", host, addressType);
