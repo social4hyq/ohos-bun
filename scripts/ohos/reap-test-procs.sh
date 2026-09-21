@@ -27,10 +27,11 @@ SELF=$$
 # bun subprocesses (a running build's bun is a plain `bun`, not `bun-profile`).
 matches() {
   case "$1" in
-    *verdaccio*) return 0 ;;
+    *verdaccio*|*sleep-4ever*|*Bun.sleepSync*|*harness_start*|*bun-dev-test-*) return 0 ;;
   esac
   case "$1" in
     *bun-profile*install*|*bun-profile*patch*|*bun-profile*add*) return 0 ;;
+    *bin/bun*install*|*bin/bun*patch*|*bin/bun*add*) return 0 ;;
   esac
   return 1
 }

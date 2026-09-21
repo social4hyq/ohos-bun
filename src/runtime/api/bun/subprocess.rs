@@ -1498,7 +1498,8 @@ impl SourceData for webcore::AnyBlob {
 }
 #[inline]
 pub(crate) fn source_from_blob(b: webcore::AnyBlob) -> Source {
-    Source::Any(Box::new(b))
+    let data: Box<[u8]> = b.slice().to_vec().into_boxed_slice();
+    Source::OwnedBytes(data)
 }
 
 /// Windows: the extra stdio pipes (`stdio_pipes`) are uv handles this
