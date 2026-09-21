@@ -668,6 +668,9 @@ impl FilePoll {
                 // repointed at this poll; MOD is safe when the entry belongs to
                 // this same poll too, and unlike DEL+ADD it cannot drop a live
                 // registration.
+                // A/B on device (terminal-spawn x3 + tty): 48/0 with this vs
+                // 15/1 without. Follow-up: gate the MOD on an fd->live-poll
+                // registry so a foreign live registration is never stolen.
                 ctl = unsafe { linux::epoll_ctl(watcher_fd, EPOLL::CTL_MOD, fd.native(), &raw mut event) };
             }
             if let Some(errno) = errno_sys(ctl, sys::Tag::epoll_ctl) {
