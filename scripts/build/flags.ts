@@ -1272,8 +1272,12 @@ export const linkerFlags: Flag[] = [
     // flight, and __wrap_pthread_create retries the EAGAIN the kernel returns
     // for clone(CLONE_FS) during that window (the --watch reload). Behavioral,
     // not a version pin, so it applies to every Linux libc.
+    // OHOS is excluded: lld's --wrap is unusable there (dynamically linked
+    // against ld-musl, __real_* stays unresolved) — c-bindings.cpp's __OHOS__
+    // branch interposes via plain-named execve/pthread_create definitions
+    // instead (export priority over the shared-lib deps).
     flag: ["-Wl,--wrap=execve", "-Wl,--wrap=pthread_create"],
-    when: c => c.linux,
+    when: c => c.linux && c.abi !== "ohos",
     desc: "Retry pthread_create EAGAIN caused by an in-flight execve",
   },
   {
