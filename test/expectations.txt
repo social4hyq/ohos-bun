@@ -384,17 +384,23 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # so kept as whole-file [ Flaky ] pending a cleaner root cause.
 [ OPENHARMONY ] test/js/bun/terminal/terminal-platform-gaps.test.ts [ Flaky ] # OHOS Terminal 初始化后注销空 writer EPOLLOUT，立即输出重复 30/30；terminal-spawn 16 pass、2 skip、0 fail。平台用例完整复跑 3 次为 18/1、18/1、19/0，仍有第二次 terminal.write 后低频 read edge 波动，继续保留，未改断言
 
-# --- js/bun/secrets: no OS keyring backend in this sandbox ---
+# --- js/bun/secrets: keyring backend availability (rationale corrected 2026-09-20) ---
 # Bun.secrets on Linux/FreeBSD dlopens libsecret + glib + gobject, then talks
-# to a keyring daemon (gnome-keyring et al.) over a D-Bus session bus. This
-# device has none of that stack: no libsecret formula in harmonybrew, no
-# D-Bus session running (dbus-daemon/dbus-launch are installed but idle, no
-# socket), no keyring daemon. bun also has no OHOS-native Secrets backend
-# (only Darwin/Windows/Linux exist) -- would need real OHOS secure-storage
-# API bindings to do this properly, not a fake desktop keyring stood up just
-# to pass the test. Structural, not fixable in userland. 2026-08-28.
-[ OPENHARMONY ] test/js/bun/secrets.test.ts [ Skip ] # libsecret/D-Bus keyring stack absent from the sandbox
-[ OPENHARMONY ] test/js/bun/secrets-error-codes.test.ts [ Skip ] # libsecret/D-Bus keyring stack absent from the sandbox
+# to a keyring daemon (gnome-keyring et al.) over a D-Bus session bus.
+#
+# Current state (supersedes the 2026-08-28 "structural, not fixable" note):
+# - In-tree, the libsecret backend IS restored and works against a minimal
+#   Secret Service daemon (org.freedesktop.secrets) verified 22/22 end-to-end
+#   on device (see runner.sh: the daemon env is sourced when present).
+# - These entries stay [ Skip ] because CI/plain sandboxes have no such
+#   daemon; run locally with the sssvc env sourced to exercise them.
+# - The proper OHOS-native backend is feasible: the authority port verified
+#   the Asset Store Kit (libasset_ndk.z.so / OH_Asset_Add|Query|Remove) works
+#   without permission declarations, persists across processes, and does not
+#   bind to the signing fingerprint. Adopting it is a tracked work item
+#   (port-adoption-analysis-20260920 report §5-M10).
+[ OPENHARMONY ] test/js/bun/secrets.test.ts [ Skip ] # keyring daemon only in dev (sssvc); CI lacks it — Asset Store backend is the tracked native path
+[ OPENHARMONY ] test/js/bun/secrets-error-codes.test.ts [ Skip ] # keyring daemon only in dev (sssvc); CI lacks it — Asset Store backend is the tracked native path
 
 # --- process.platform/common.isLinux now correctly reports "openharmony" (28d88fa7d9) ---
 # These tests hardcode Node's own win32/darwin/linux/wasm-only allowlist (or
