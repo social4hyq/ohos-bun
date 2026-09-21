@@ -17,9 +17,6 @@
 #include <cstdlib>
 #include <pthread.h>
 #include <sched.h>
-#if OS(LINUX)
-#include <dlfcn.h>
-#endif
 #include <termios.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -88,7 +85,7 @@ extern "C" bool is_executable_file(const char* path)
         return false;
     if (!S_ISREG(st.st_mode))
         return false;
-    return (st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) != 0;
+    return (st.st_mode & S_IXUSR) != 0;
 #endif
 }
 #endif
@@ -396,9 +393,7 @@ static std::atomic<int> execve_want { 0 };
 // to undo a count, so only the pid recorded in bun_initialize_process counts its execs.
 static pid_t execve_counting_pid = 0;
 
-#if !defined(__OHOS__)
 // Linked in with -Wl,--wrap=execve -Wl,--wrap=pthread_create (scripts/build/flags.ts).
-// --wrap aliases __real_* to the originals, which must be visible at static-link time — see the __OHOS__ branch for why that fails on OHOS.
 extern "C" int __real_execve(const char*, char* const[], char* const[]);
 extern "C" int __real_pthread_create(pthread_t*, const pthread_attr_t*, void* (*)(void*), void*);
 
@@ -454,71 +449,6 @@ extern "C" int __wrap_pthread_create(pthread_t* thread, const pthread_attr_t* at
     threads_creating.fetch_sub(1, std::memory_order_seq_cst);
     return rc;
 }
-#else // defined(__OHOS__)
-// OHOS links dynamically against ld-musl.so, so lld's --wrap is unusable (__real_* left unresolved; the musl loader hard-fails at start) — instead plain-named execve/pthread_create interpose via the executable's export-priority over its shared-lib deps, the same mechanism ohos_compat_shim.c uses; see scripts/build/flags.ts's excluded --wrap entry.
-// The real pointers are resolved eagerly in bun_initialize_process(): a lazy dlsym() inside posix_spawn_bun's CLONE_VM|CLONE_VFORK child could race the suspended parent for the dynamic linker's lock and deadlock the process. The lazy fallback only covers calls before init.
-typedef int (*execve_fn)(const char*, char* const[], char* const[]);
-typedef int (*pthread_create_fn)(pthread_t*, const pthread_attr_t*, void* (*)(void*), void*);
-static std::atomic<execve_fn> real_execve_ptr { nullptr };
-static std::atomic<pthread_create_fn> real_pthread_create_ptr { nullptr };
-
-static execve_fn real_execve()
-{
-    execve_fn fn = real_execve_ptr.load(std::memory_order_acquire);
-    if (!fn) {
-        fn = reinterpret_cast<execve_fn>(dlsym(RTLD_NEXT, "execve"));
-        real_execve_ptr.store(fn, std::memory_order_release);
-    }
-    return fn;
-}
-
-static pthread_create_fn real_pthread_create()
-{
-    pthread_create_fn fn = real_pthread_create_ptr.load(std::memory_order_acquire);
-    if (!fn) {
-        fn = reinterpret_cast<pthread_create_fn>(dlsym(RTLD_NEXT, "pthread_create"));
-        real_pthread_create_ptr.store(fn, std::memory_order_release);
-    }
-    return fn;
-}
-
-// Called once from bun_initialize_process() — see the block comment above for why this must be eager.
-static void resolveRealExecveAndPthreadCreateEagerly()
-{
-    real_execve_ptr.store(reinterpret_cast<execve_fn>(dlsym(RTLD_NEXT, "execve")), std::memory_order_release);
-    real_pthread_create_ptr.store(reinterpret_cast<pthread_create_fn>(dlsym(RTLD_NEXT, "pthread_create")), std::memory_order_release);
-}
-
-extern "C" int execve(const char* path, char* const argv[], char* const envp[])
-{
-    if (getpid() != execve_counting_pid)
-        return real_execve()(path, argv, envp);
-    threads_in_execve.fetch_add(1, std::memory_order_seq_cst);
-    execve_generation.fetch_add(1, std::memory_order_seq_cst);
-    int rc = real_execve()(path, argv, envp);
-    // Only reached when execve failed and the old image keeps running.
-    threads_in_execve.fetch_sub(1, std::memory_order_seq_cst);
-    return rc;
-}
-
-// The attempt bound keeps a real limit, hit while an exec never completes, from looping forever.
-extern "C" int pthread_create(pthread_t* thread, const pthread_attr_t* attr, void* (*start_routine)(void*), void* arg)
-{
-    for (int attempt = 0;; attempt++) {
-        unsigned generation = execve_generation.load(std::memory_order_seq_cst);
-        bool execInFlight = threads_in_execve.load(std::memory_order_seq_cst) > 0;
-        int rc = real_pthread_create()(thread, attr, start_routine, arg);
-        if (rc != EAGAIN || attempt >= 1000)
-            return rc;
-        if (!execInFlight && threads_in_execve.load(std::memory_order_seq_cst) == 0
-            && execve_generation.load(std::memory_order_seq_cst) == generation) {
-            // No exec overlapped this attempt: a real limit.
-            return rc;
-        }
-        usleep(1000);
-    }
-}
-#endif // defined(__OHOS__)
 #endif // OS(LINUX)
 
 #endif // !OS(WINDOWS)
@@ -821,9 +751,6 @@ extern "C" void bun_initialize_process()
     bun_close_range(4, ~0U, CLOSE_RANGE_CLOEXEC);
 
     execve_counting_pid = getpid();
-#if defined(__OHOS__)
-    resolveRealExecveAndPthreadCreateEagerly();
-#endif
 #endif
 
 #if OS(LINUX) || OS(DARWIN) || OS(FREEBSD)

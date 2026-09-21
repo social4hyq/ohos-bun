@@ -29,9 +29,11 @@ matches() {
   case "$1" in
     *verdaccio*|*sleep-4ever*|*Bun.sleepSync*|*harness_start*|*bun-dev-test-*) return 0 ;;
   esac
+  # A plain `bun install` is indistinguishable from a user's own install, so
+  # only match bun children whose cmdline carries the tests' sandbox tmpdir
+  # prefix — never a bare bin/bun + subcommand.
   case "$1" in
-    *bun-profile*install*|*bun-profile*patch*|*bun-profile*add*) return 0 ;;
-    *bin/bun*install*|*bin/bun*patch*|*bin/bun*add*) return 0 ;;
+    *bun-dev-test-*bun*install*|*bun-dev-test-*bun*patch*|*bun-dev-test-*bun*add*) return 0 ;;
   esac
   return 1
 }

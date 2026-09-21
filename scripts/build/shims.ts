@@ -196,12 +196,7 @@ export function registerShimRules(n: Ninja, cfg: Config): void {
     // built by a cross CI host; $flags also carries -fPIC since the
     // interposed symbols must land in the PIE's dynamic symbol table.
     n.rule("shim_cc", {
-      // -gz=none after $flags overrides the global -gz=zstd: these edges
-      // compile+link in one clang call, and the driver forwards -gz to lld
-      // as --compress-debug-sections, which brew's default lld rejects
-      // (no zstd/zlib support) -- unlike the main link, which uses the
-      // explicit --ld-path lld@21 that has zlib.
-      command: `${q(cfg.cc)} $flags -gz=none -fPIC -O2 -c $in -o $out`,
+      command: `${q(cfg.cc)} $flags -fPIC -O2 -c $in -o $out`,
       description: "shim $out",
     });
 
@@ -215,7 +210,11 @@ export function registerShimRules(n: Ninja, cfg: Config): void {
       // symbols must be default-visible in the dynamic symbol table for
       // the loader to prefer them over libc's, unlike every other TU in
       // this build where hidden visibility is the right default.
-      // -gz=none: same driver-forwards-to-lld problem as shim_cc.
+      // -gz=none AFTER $flags overrides the global -gz=zstd: this edge
+      // compiles AND links in one clang call, and the driver forwards -gz
+      // to lld as --compress-debug-sections, which the default lld rejects
+      // (no zstd, and no zlib fallback) -- the main link never hits this
+      // because it pins --ld-path to the zlib-capable lld@21.
       command: `${q(cfg.cc)} $flags -gz=none -fvisibility=default -shared -fPIC -O2 $in -o $out -ldl`,
       description: "shim-so $out",
     });

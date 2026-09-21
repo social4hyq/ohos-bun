@@ -255,10 +255,20 @@ async function runSecurityScannerTest(options: SecurityScannerTestOptions) {
   if (hasTTY) {
     let responseSent = false;
     let lastDataAt = Date.now();
+    // Deterministic end-of-output signal: the terminal's `exit` callback
+    // fires when the PTY stream reaches EOF, i.e. every buffered write has
+    // been delivered — no time-based guessing needed in the common case.
+    let markPtyClosed: (() => void) | undefined;
+    const ptyClosed = new Promise<void>(resolve => (markPtyClosed = resolve));
+    let ptyClosedSeen = false;
 
     await using terminal = new Bun.Terminal({
       cols: 80,
       rows: 24,
+      exit() {
+        ptyClosedSeen = true;
+        markPtyClosed?.();
+      },
       data(_term, data) {
         const text = new TextDecoder().decode(data);
         errAndOut += text;
@@ -291,22 +301,20 @@ async function runSecurityScannerTest(options: SecurityScannerTestOptions) {
     exitCode = await proc.exited;
 
     if (process.platform === "openharmony") {
-      // `proc.exited` (wait4()) and the PTY master fully draining its last
-      // buffered writes are two independent events; on this platform the gap
-      // between them can itself exceed a short quiet-window check (there can
-      // be a lull *before* the final burst arrives, not just after), so
-      // require both a minimum floor since exit AND a quiet period since the
-      // last chunk, bounded so a real hang still times out via the test's own
+      // `proc.exited` (wait4()) and the PTY master delivering its last
+      // buffered writes are two independent events. Wait for the PTY EOF
+      // (the `exit` callback), bounded at 3s in case it never arrives; only
+      // when EOF does not come fall back to a short quiet window on the
+      // last chunk, so a real hang still surfaces via the test's own
       // timeout instead of hanging here.
-      const minDrainMs = 400;
-      const quietWindowMs = 150;
-      const maxDrainMs = 3000;
-      const exitAt = Date.now();
-      while (
-        (Date.now() - exitAt < minDrainMs || Date.now() - lastDataAt < quietWindowMs) &&
-        Date.now() - exitAt < maxDrainMs
-      ) {
-        await Bun.sleep(20);
+      await Promise.race([ptyClosed, Bun.sleep(3000)]);
+      if (!ptyClosedSeen) {
+        const quietWindowMs = 150;
+        const maxDrainMs = 3000;
+        const exitAt = Date.now();
+        while (Date.now() - lastDataAt < quietWindowMs && Date.now() - exitAt < maxDrainMs) {
+          await Bun.sleep(20);
+        }
       }
     }
   } else {
