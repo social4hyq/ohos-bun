@@ -69,9 +69,6 @@ export const mimalloc: Dependency = {
     // bun_alloc's lazy arena opt out the same way on their side.
     if (cfg.linux) defines.MI_DEFAULT_ALLOW_THP = 0;
 
-    // MI_NO_SET_VMA_NAME: skip the per-mmap prctl(PR_SET_VMA) label — EINVAL overhead on kernels without CONFIG_ANON_VMA_NAME (<5.17); the VMA label is debug-only.
-    if (cfg.linux || cfg.ohos) defines.MI_NO_SET_VMA_NAME = 1;
-
     if (cfg.abi === "musl") defines.MI_LIBC_MUSL = 1;
     if (override) defines.MI_MALLOC_OVERRIDE = true;
 
