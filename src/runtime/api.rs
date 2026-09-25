@@ -35,6 +35,8 @@ pub mod ant_object;
 pub mod archive;
 #[path = "api/BunObject.rs"]
 pub mod bun_object;
+#[path = "api/CellSegmenter.rs"]
+pub mod cell_segmenter;
 #[path = "api/crash_handler_jsc.rs"]
 pub mod crash_handler_jsc;
 #[path = "api/cron.rs"]

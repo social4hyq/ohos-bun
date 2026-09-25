@@ -1,21 +1,17 @@
-//! `Bun.ant` — compatibility shims for the subset of Anthropic's internal
-//! Bun build (`@anthropic-ai/bun-internal`) that Claude Code's non-fullscreen
-//! code paths call unconditionally: `setDumpable`, `getPeerUid`/`getPeerPid`,
-//! `memoryPressureLevel`. All four are called through `try`/`typeof` guards
-//! in the real CLI bundle, so a missing or platform-stubbed implementation
-//! degrades gracefully instead of throwing.
-//!
-//! `Bun.ant.CellSegmenter` (the terminal-cell segmenter backing the fullscreen
-//! Ink renderer) is intentionally not implemented here: its wire format is an
-//! undocumented, version-pinned binary protocol with no public spec, and a
-//! mismatched implementation would corrupt terminal output silently instead
-//! of throwing. Claude Code already falls back to its classic renderer when
-//! `CellSegmenter` is absent.
+//! `Bun.ant` — compatibility shims for Anthropic's internal Bun build
+//! (`@anthropic-ai/bun-internal`) that Claude Code's bundle calls: the four
+//! functions below (`setDumpable`, `getPeerUid`/`getPeerPid`,
+//! `memoryPressureLevel`), called through `try`/`typeof` guards so a missing
+//! or platform-stubbed implementation degrades gracefully, plus
+//! `CellSegmenter` (see `CellSegmenter.rs`), the terminal-cell segmenter
+//! behind the fullscreen Ink renderer's hard, unguarded dependency.
 
 use bun_jsc::{self as jsc, CallFrame, JSGlobalObject, JSValue, JsResult};
 
+use crate::api::cell_segmenter::CellSegmenter;
+
 pub(crate) fn create(global: &JSGlobalObject) -> JSValue {
-    jsc::create_host_function_object(
+    let object = jsc::create_host_function_object(
         global,
         &[
             ("setDumpable", __jsc_host_set_dumpable, 1),
@@ -23,7 +19,9 @@ pub(crate) fn create(global: &JSGlobalObject) -> JSValue {
             ("getPeerPid", __jsc_host_get_peer_pid, 1),
             ("memoryPressureLevel", __jsc_host_memory_pressure_level, 0),
         ],
-    )
+    );
+    object.put(global, b"CellSegmenter", jsc::codegen::js::get_constructor::<CellSegmenter>(global));
+    object
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
