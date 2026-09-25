@@ -422,7 +422,11 @@ fn get_u32(global: &JSGlobalObject, obj: JSValue, key: &[u8], default: u32) -> J
 
 #[bun_jsc::JsClass]
 pub struct CellSegmenter {
-    ambiguous_is_narrow: bool,
+    // Stored pre-inverted (matches Bun__codepointWidth's polarity, see
+    // stringWidth.cpp's `ambiguousAsWide = !ambiguousIsNarrow`) so every call
+    // site below can pass it straight through instead of re-deriving it and
+    // risking the inversion again.
+    ambiguous_as_wide: bool,
     /// `[start, end]` inclusive codepoint ranges (bidi Trojan-Source control
     /// characters) that must never be allowed to silently merge into another
     /// cluster or affect display ordering — see the constructor's
@@ -480,7 +484,7 @@ impl CellSegmenter {
         }
 
         Ok(Box::new(CellSegmenter {
-            ambiguous_is_narrow,
+            ambiguous_as_wide: !ambiguous_is_narrow,
             substitute,
             screen,
             tables: RefCell::new(Tables::new()),
@@ -634,7 +638,7 @@ impl CellSegmenter {
                 flush_pending!();
                 let run_idx = run_index_for_current_state!();
                 let mut st = GraphemeWidthState::default();
-                st.reset('\u{FFFD}' as u32, self.ambiguous_is_narrow);
+                st.reset('\u{FFFD}' as u32, self.ambiguous_as_wide);
                 let mut placeholder = Vec::new();
                 placeholder.extend_from_slice("\u{FFFD}".as_bytes());
                 pending = Some((st, placeholder, run_idx));
@@ -646,7 +650,7 @@ impl CellSegmenter {
                 None => {
                     let run_idx = run_index_for_current_state!();
                     let mut st = GraphemeWidthState::default();
-                    st.reset(cp, self.ambiguous_is_narrow);
+                    st.reset(cp, self.ambiguous_as_wide);
                     let mut buf = Vec::with_capacity(4);
                     buf.extend_from_slice(ch.encode_utf8(&mut [0u8; 4]).as_bytes());
                     pending = Some((st, buf, run_idx));
@@ -657,12 +661,12 @@ impl CellSegmenter {
                         flush_pending!();
                         let run_idx = run_index_for_current_state!();
                         let mut st = GraphemeWidthState::default();
-                        st.reset(cp, self.ambiguous_is_narrow);
+                        st.reset(cp, self.ambiguous_as_wide);
                         let mut new_buf = Vec::with_capacity(4);
                         new_buf.extend_from_slice(ch.encode_utf8(&mut [0u8; 4]).as_bytes());
                         pending = Some((st, new_buf, run_idx));
                     } else {
-                        state.add(cp, self.ambiguous_is_narrow);
+                        state.add(cp, self.ambiguous_as_wide);
                         buf.extend_from_slice(ch.encode_utf8(&mut [0u8; 4]).as_bytes());
                     }
                 }
