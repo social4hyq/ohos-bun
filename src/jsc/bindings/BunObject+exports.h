@@ -28,6 +28,7 @@
     macro(Terminal) \
     macro(Transpiler) \
     macro(ValkeyClient) \
+    macro(ant) \
     macro(argv) \
     macro(cron) \
     macro(cwd) \

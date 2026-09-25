@@ -29,6 +29,8 @@ pub use bun_jsc::BuildMessage;
 pub use bun_jsc::ResolveMessage;
 
 // ─── compiling submodules (api/ dir) ─────────────────────────────────────────
+#[path = "api/AntObject.rs"]
+pub mod ant_object;
 #[path = "api/Archive.rs"]
 pub mod archive;
 #[path = "api/BunObject.rs"]
@@ -152,6 +154,7 @@ pub use crate::api::js_bundler::BuildArtifact;
 pub use crate::api::js_bundler::JSBundler;
 pub use crate::api::json5_object as JSON5Object;
 pub use crate::api::toml_object as TOMLObject;
+pub use crate::api::ant_object as AntObject;
 pub use crate::api::unsafe_object as UnsafeObject;
 pub use crate::api::xml_object as XMLObject;
 pub use crate::api::yaml_object as YAMLObject;
