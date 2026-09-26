@@ -418,6 +418,10 @@ impl RunCommand {
             "/private/tmp"
         } else if cfg!(target_os = "android") {
             "/data/local/tmp"
+        } else if cfg!(target_env = "ohos") {
+            // OHOS app-level cache directory; this constant is evaluated
+            // before any TMPDIR environment lookup.
+            "/data/storage/el2/base/cache"
         } else {
             "/tmp"
         };
@@ -590,7 +594,12 @@ impl RunCommand {
             // already exists, refuse to use it unless it's a directory we own
             // with no group/other write bits.
             match bun_sys::mkdir(DIR_Z, 0o700) {
-                Ok(()) => {}
+                Ok(()) => {
+                    #[cfg(target_env = "ohos")]
+                    {
+                        let _ = bun_sys::chmod(DIR_Z, 0o700);
+                    }
+                }
                 Err(e) if e.get_errno() == bun_sys::E::EEXIST => match bun_sys::lstat(DIR_Z) {
                     Ok(st)
                         if bun_sys::kind_from_mode(st.st_mode as bun_sys::Mode)
