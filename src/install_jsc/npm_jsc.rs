@@ -112,7 +112,8 @@ fn js_parse_manifest(global: &JSGlobalObject, frame: &CallFrame) -> JsResult<JSV
             Ok(m) => m,
             Err(err) => {
                 return Err(global.throw(format_args!(
-                    "failed to load manifest file: {}",
+                    "failed to load manifest file \"{}\": {}",
+                    BStr::new(manifest_filename.slice()),
                     BStr::new(err.name())
                 )));
             }
@@ -121,7 +122,10 @@ fn js_parse_manifest(global: &JSGlobalObject, frame: &CallFrame) -> JsResult<JSV
     let package_manifest: npm::PackageManifest = match maybe_package_manifest {
         Some(m) => m,
         None => {
-            return Err(global.throw(format_args!("manifest is invalid ")));
+            return Err(global.throw(format_args!(
+                "manifest \"{}\" is invalid",
+                BStr::new(manifest_filename.slice())
+            )));
         }
     };
 
