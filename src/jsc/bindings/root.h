@@ -75,6 +75,12 @@
 #include <limits>
 #endif
 #include <wtf/PlatformCallingConventions.h>
+// WTF's StringView/StringConcatenate (pulled in below via MakeString.h) use
+// ICU's classic UTF-16 macros (U16_IS_SINGLE etc.) without including the
+// header themselves — some other TU's include order happens to pull in
+// unicode/utf16.h first upstream. Make that explicit rather than relying on
+// transitive luck.
+#include <unicode/utf16.h>
 #include <JavaScriptCore/JSCJSValue.h>
 #include <wtf/text/MakeString.h>
 #include <JavaScriptCore/JSCInlines.h>
