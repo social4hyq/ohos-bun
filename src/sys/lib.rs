@@ -6049,21 +6049,20 @@ pub fn dlopen(filename: &ZStr, flags: i32) -> Option<*mut c_void> {
     }
     #[cfg(target_env = "ohos")]
     {
-        // OHOS: refuses to dlopen an ELF without a valid codesign section.
-        // Native addon .node/.so files (from bun install, or built by the
-        // user's own postinstall/node-gyp step) never get one, so sign
-        // in-process before every dlopen — has_codesign() short-circuits the
-        // (already-signed) common case, e.g. anything bun install already
-        // signed via ohos_sign.
-        fn ensure_signed(path: &ZStr) {
-            let path_str = path.as_cstr().to_str().unwrap_or("");
-            let p = std::path::Path::new(path_str);
-            if ohos_sign::has_codesign(&std::fs::read(p).unwrap_or_default()) {
-                return;
-            }
-            let _ = ohos_sign::sign_selfsign_inplace(p);
+        // OHOS refuses to dlopen an ELF without a valid codesign section.
+        // System libraries and anything `bun install` already signed load
+        // fine on the first try, so only pay for a read+sign on the
+        // unsigned case: retry once after signing if the first dlopen fails.
+        // SAFETY: filename is NUL-terminated.
+        let p = unsafe { libc::dlopen(filename.as_ptr(), flags) };
+        if !p.is_null() {
+            return Some(p);
         }
-        ensure_signed(filename);
+        let path_str = filename.as_cstr().to_str().unwrap_or("");
+        let path = std::path::Path::new(path_str);
+        if ohos_sign::sign_selfsign_inplace(path).is_err() {
+            return None;
+        }
         // SAFETY: filename is NUL-terminated.
         let p = unsafe { libc::dlopen(filename.as_ptr(), flags) };
         if p.is_null() { None } else { Some(p) }

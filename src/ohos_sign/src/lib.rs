@@ -1,7 +1,7 @@
-//! ELF self-signing for OHOS, backed by the canonical single-file
-//! implementation vendored from hqzing/ohos-selfsign (0BSD) — the same
-//! algorithm Harmonybrew's uv formula vendors. The vendored module keeps the
-//! algorithm; this file preserves the historical crate API.
+//! ELF self-signing for OHOS. `selfsign.rs` is vendored verbatim from
+//! hqzing/ohos-selfsign (0BSD, the same algorithm Harmonybrew's uv formula
+//! vendors) — see that file's header for the pinned commit. This file is
+//! the only adaptation: expose the pieces bun's install/build paths need.
 
 mod selfsign;
 
@@ -10,7 +10,6 @@ use std::fmt;
 #[derive(Debug)]
 pub enum SignError {
     NotElf64,
-    NoSectionHeaders,
     ShstrtabOutOfBounds,
     AlreadySigned,
     Io(std::io::Error),
@@ -20,7 +19,6 @@ impl fmt::Display for SignError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SignError::NotElf64 => write!(f, "not an ELF64 binary"),
-            SignError::NoSectionHeaders => write!(f, "ELF has no section header table"),
             SignError::ShstrtabOutOfBounds => write!(f, "shstrtab out of bounds"),
             SignError::AlreadySigned => {
                 write!(f, "already has .codesign section; strip first or use --force")
@@ -50,22 +48,6 @@ fn map_err(e: String) -> SignError {
             other.to_string(),
         )),
     }
-}
-
-// `__` names expose internals to integration tests without becoming public API.
-#[doc(hidden)]
-pub fn __sha256_hash(data: &[u8]) -> [u8; 32] {
-    selfsign::sha256(data)
-}
-
-#[doc(hidden)]
-pub fn __merkle_root_hash(data: &[u8], cs_off: u64, cs_len: u64) -> [u8; 32] {
-    selfsign::merkle_root_hash(data, cs_off as usize, cs_len as usize)
-}
-
-#[doc(hidden)]
-pub fn __descriptor_build(sign_size: u32, file_size: u64, root_hash: &[u8; 32]) -> [u8; 256] {
-    selfsign::build_descriptor(sign_size, file_size, root_hash, selfsign::FLAG_SELF_SIGN)
 }
 
 /// Returns true if the ELF bytes already contain a `.codesign` section.
@@ -106,4 +88,9 @@ pub fn sign_selfsign_inplace_with_strip(path: &std::path::Path) -> Result<(), Si
     let signed = sign_selfsign_with_strip(&bytes)?;
     std::fs::write(path, &signed)?;
     Ok(())
+}
+
+/// Verify an existing self-sign, matching the upstream `--check` semantics.
+pub fn check_selfsign(elf: &[u8]) -> Result<(), &'static str> {
+    selfsign::check_selfsign(elf)
 }
