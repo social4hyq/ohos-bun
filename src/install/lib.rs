@@ -594,12 +594,7 @@ impl RunCommand {
             // already exists, refuse to use it unless it's a directory we own
             // with no group/other write bits.
             match bun_sys::mkdir(DIR_Z, 0o700) {
-                Ok(()) => {
-                    #[cfg(target_env = "ohos")]
-                    {
-                        let _ = bun_sys::chmod(DIR_Z, 0o700);
-                    }
-                }
+                Ok(()) => {}
                 Err(e) if e.get_errno() == bun_sys::E::EEXIST => match bun_sys::lstat(DIR_Z) {
                     Ok(st)
                         if bun_sys::kind_from_mode(st.st_mode as bun_sys::Mode)
