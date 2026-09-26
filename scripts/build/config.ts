@@ -1116,13 +1116,6 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
   }
   assert(packageManager === "bun" || toolchain.npm !== undefined, "packageManager=npm needs toolchain.npm");
 
-  const webkit = partial.webkit ?? (abi === "ohos" ? "local" : "prebuilt");
-  if (abi === "ohos" && webkit === "prebuilt") {
-    throw new BuildError("OHOS requires a local WebKit source build", {
-      hint: "Set BUN_WEBKIT_PATH to an OHOS-compatible WebKit checkout and use --webkit=local.",
-    });
-  }
-
   // ─── macOS SDK ───
   // Must be passed to nested cmake builds or they'll pick the wrong SDK.
   // Native darwin: ask xcode-select/xcrun. Cross-compiling from a non-darwin
@@ -1229,7 +1222,7 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
     timeTrace: partial.timeTrace ?? false,
     ci,
     buildkite,
-    webkit,
+    webkit: partial.webkit ?? "prebuilt",
     localDeps: parseLocalDeps(partial.localDeps, cwd),
     packageManager,
     cwd,

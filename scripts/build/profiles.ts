@@ -11,9 +11,9 @@
  *
  * `<buildtype>[-<webkit-mode>][-<feature>]`
  *
- *   debug              → Debug build, prebuilt WebKit except OHOS (local source)
+ *   debug              → Debug build, prebuilt WebKit (the default)
  *   debug-local        → Debug build, local WebKit (you cloned vendor/WebKit/)
- *   release            → Release build, prebuilt WebKit except OHOS, no LTO
+ *   release            → Release build, prebuilt WebKit, no LTO
  *   release-local      → Release build, local WebKit
  *   release-assertions → Release + runtime assertions enabled
  *   release-asan       → Release + address sanitizer
@@ -28,9 +28,10 @@ import { BuildError } from "./error.ts";
 export type ProfileName = keyof typeof profiles;
 
 export const profiles = {
-  /** Default local dev: OHOS uses local WebKit; other platforms use prebuilt WebKit. */
+  /** Default local dev: debug + prebuilt WebKit. ASAN defaults on for supported platforms. */
   debug: {
     buildType: "Debug",
+    webkit: "prebuilt",
   },
 
   /** Debug with local WebKit (user clones vendor/WebKit/). */
@@ -42,6 +43,7 @@ export const profiles = {
   /** Debug without ASAN — faster builds, less safety. */
   "debug-no-asan": {
     buildType: "Debug",
+    webkit: "prebuilt",
     asan: false,
   },
 
@@ -124,9 +126,10 @@ export const profiles = {
     webkit: "prebuilt",
   },
 
-  /** Release build for local testing. OHOS uses local WebKit; no LTO. */
+  /** Release build for local testing. No LTO (that's CI-only). */
   release: {
     buildType: "Release",
+    webkit: "prebuilt",
     lto: false,
   },
 
@@ -143,6 +146,7 @@ export const profiles = {
    */
   btg: {
     buildType: "Release",
+    webkit: "prebuilt",
     lto: true,
     // Pin the build dir so `--profile=btg` alone lands here and can never
     // be confused with `--profile=release --build-dir=build/btg` (which
@@ -164,6 +168,7 @@ export const profiles = {
    */
   "release-assertions": {
     buildType: "RelWithDebInfo",
+    webkit: "prebuilt",
     assertions: true,
     logs: true,
     lto: false,
@@ -177,6 +182,7 @@ export const profiles = {
    */
   "release-asan": {
     buildType: "Release",
+    webkit: "prebuilt",
     asan: true,
     assertions: true,
   },

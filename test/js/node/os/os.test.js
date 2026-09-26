@@ -73,15 +73,7 @@ it("tmpdir", () => {
     ).toBeTrue();
   } else {
     const originalEnv = process.env.TMPDIR;
-    let dir =
-      process.env.TMPDIR ||
-      process.env.TMP ||
-      process.env.TEMP ||
-      (process.platform === "android"
-        ? "/data/local/tmp"
-        : process.platform === "openharmony"
-          ? "/data/storage/el2/base/cache"
-          : "/tmp");
+    let dir = process.env.TMPDIR || process.env.TMP || process.env.TEMP || "/tmp";
     if (dir.length > 1 && dir.endsWith("/")) {
       dir = dir.substring(0, dir.length - 1);
     }

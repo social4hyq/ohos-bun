@@ -74,20 +74,25 @@ pub fn strip_codesign(elf: &mut Vec<u8>) -> Result<bool, SignError> {
     Ok(removed)
 }
 
-/// Sign a file in-place.
+/// Sign a file in-place: write-to-temp-then-rename (atomic w.r.t. a reader
+/// racing the write) and preserves the original file's permission bits.
 pub fn sign_selfsign_inplace(path: &std::path::Path) -> Result<(), SignError> {
-    let bytes = std::fs::read(path)?;
-    let signed = sign_selfsign(&bytes)?;
-    std::fs::write(path, &signed)?;
-    Ok(())
+    inplace(path, false)
 }
 
 /// Sign a file in-place, stripping any existing `.codesign` section first.
 pub fn sign_selfsign_inplace_with_strip(path: &std::path::Path) -> Result<(), SignError> {
-    let bytes = std::fs::read(path)?;
-    let signed = sign_selfsign_with_strip(&bytes)?;
-    std::fs::write(path, &signed)?;
-    Ok(())
+    inplace(path, true)
+}
+
+fn inplace(path: &std::path::Path, force: bool) -> Result<(), SignError> {
+    let path_str = path.to_str().ok_or_else(|| {
+        SignError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "path is not valid UTF-8",
+        ))
+    })?;
+    selfsign::sign_file_atomic(path_str, force).map_err(map_err)
 }
 
 /// Verify an existing self-sign, matching the upstream `--check` semantics.

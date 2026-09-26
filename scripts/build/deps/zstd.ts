@@ -41,9 +41,10 @@ export const zstd: Dependency = {
     commit: ZSTD_COMMIT,
   }),
 
-  // OHOS musl's qsort_r is only declared with _GNU_SOURCE; the vendored
-  // dictBuilder uses it unconditionally. The patch body is preprocessor-
-  // gated on __OHOS__, so it is inert on every other platform.
+  // OHOS musl has no qsort_r at all (verified: absent from its stdlib.h
+  // even under _GNU_SOURCE), but the vendored dictBuilder uses it
+  // unconditionally. The patch body is preprocessor-gated on __OHOS__, so
+  // it is inert on every other platform.
   patches: ["patches/zstd/ohos-qsort-r.patch"],
 
   build: cfg => {
