@@ -26,6 +26,7 @@ const WELL_KNOWN_BUNDLES: &[&[u8]] = &[
     b"/etc/ssl/cert.pem",                  // Alpine, FreeBSD
     b"/usr/local/etc/openssl/cert.pem",
     b"/usr/local/share/ca-certificates/ca-certificates.crt",
+    b"/etc/ssl/certs/cacert.pem",
 ];
 
 #[cfg(not(target_os = "android"))]
@@ -48,6 +49,7 @@ const WELL_KNOWN_DIRS: &[&[u8]] = &[
     b"/apex/com.android.conscrypt/cacerts",
     b"/system/etc/security/cacerts",
     b"/data/misc/user/0/cacerts-added",
+    b"/system/etc/security/certificates",
 ];
 
 struct Loader {
