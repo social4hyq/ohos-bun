@@ -117,5 +117,3 @@ bun_css_jsc.workspace = true
 
 [features]
 default = []
-[target.'cfg(target_env = "ohos")'.dependencies]
-ohos_sign = { path = "../ohos_sign" }

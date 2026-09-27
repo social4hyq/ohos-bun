@@ -6041,28 +6041,8 @@ pub mod RTLD {
 
 /// `dlopen(filename, flags)`. Windows → `LoadLibraryExW` (UTF-8 → UTF-16).
 pub fn dlopen(filename: &ZStr, flags: i32) -> Option<*mut c_void> {
-    #[cfg(all(unix, not(target_env = "ohos")))]
+    #[cfg(unix)]
     {
-        // SAFETY: filename is NUL-terminated.
-        let p = unsafe { libc::dlopen(filename.as_ptr(), flags) };
-        if p.is_null() { None } else { Some(p) }
-    }
-    #[cfg(target_env = "ohos")]
-    {
-        // OHOS refuses to dlopen an ELF without a valid codesign section.
-        // System libraries and anything `bun install` already signed load
-        // fine on the first try, so only pay for a read+sign on the
-        // unsigned case: retry once after signing if the first dlopen fails.
-        // SAFETY: filename is NUL-terminated.
-        let p = unsafe { libc::dlopen(filename.as_ptr(), flags) };
-        if !p.is_null() {
-            return Some(p);
-        }
-        let path_str = filename.as_cstr().to_str().unwrap_or("");
-        let path = std::path::Path::new(path_str);
-        if ohos_sign::sign_selfsign_inplace(path).is_err() {
-            return None;
-        }
         // SAFETY: filename is NUL-terminated.
         let p = unsafe { libc::dlopen(filename.as_ptr(), flags) };
         if p.is_null() { None } else { Some(p) }

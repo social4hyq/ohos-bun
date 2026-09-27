@@ -14,10 +14,11 @@ var tmpdir = function () {
     }
     var path =
       env["TMPDIR"] || env["TMP"] || env["TEMP"] ||
+      // OHOS: static per-app tmp dir (local hmfs: executables and 0700 both honored; /tmp is read-only) — same static-fallback shape as the android branch.
       (process.platform === "android"
         ? "/data/local/tmp"
         : process.platform === "openharmony"
-          ? "/data/storage/el2/base/cache"
+          ? "/data/storage/el2/base/tmp"
           : "/tmp");
     const length = path.length;
     if (length > 1 && path[length - 1] === "/") path = path.slice(0, -1);

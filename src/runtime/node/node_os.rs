@@ -724,13 +724,10 @@ mod _impl {
             let _ = using_heap;
 
             if ret != 0 {
+                // OHOS: no passwd entry for app uids; HOME was already checked at the top of this function, so return the static app-sandbox home (libuv's android branch does the same).
                 #[cfg(target_env = "ohos")]
                 if ret == bun_sys::E::ENOENT as c_int {
-                    return Ok(BunString::from_bytes(
-                        env_var::HOME
-                            .get_not_empty()
-                            .unwrap_or(b"/data/storage/el2/base/files"),
-                    ));
+                    return Ok(BunString::static_("/data/storage/el2/base/files"));
                 }
                 return Err(global.throw_value(
                     bun_sys::Error::from_code(
@@ -745,13 +742,10 @@ mod _impl {
             if result.is_null() {
                 // bionic has no passwd entries for app uids; with HOME also unset
                 // (zygote/run-as), return a usable default rather than throwing.
+                // OHOS: same situation — HOME was already checked above, so return the static app-sandbox home instead of throwing (android-branch convention).
                 #[cfg(target_env = "ohos")]
                 {
-                    return Ok(BunString::from_bytes(
-                        env_var::HOME
-                            .get_not_empty()
-                            .unwrap_or(b"/data/storage/el2/base/files"),
-                    ));
+                    return Ok(BunString::static_("/data/storage/el2/base/files"));
                 }
                 #[cfg(target_os = "android")]
                 {

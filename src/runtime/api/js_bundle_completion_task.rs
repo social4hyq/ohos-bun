@@ -439,14 +439,6 @@ impl JSBundleCompletionTask {
             let entry = &mut output_files[entry_point_index];
             entry.dest_path.clone_from(&full_outfile_path);
             entry.is_executable = true;
-
-            // Sign the completed executable for OHOS.
-            #[cfg(target_env = "ohos")]
-            {
-                use std::os::unix::ffi::OsStrExt;
-                let outfile_os = std::ffi::OsStr::from_bytes(&full_outfile_path[..]);
-                let _ = ohos_sign::sign_selfsign_inplace_with_strip(std::path::Path::new(outfile_os));
-            }
         }
 
         // Write external sourcemap files next to the compiled executable and
