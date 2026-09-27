@@ -68,7 +68,7 @@ function extractTopLevelFunctionNames(src: string): string[] {
 
 /** Extract the symbol names listed in linker.lds's `global:` block, up to the first blank-line-delimited section boundary after the shim comment (the `uv_*` block that follows is libuv's own export list, unrelated). */
 function extractLdsShimExports(src: string): Set<string> {
-  const startMarker = "ohos-compat-shim interposers";
+  const startMarker = "shim interposer symbols";
   const start = src.indexOf(startMarker);
   if (start === -1) {
     throw new Error(`linker.lds: could not find the "${startMarker}" comment marker`);
