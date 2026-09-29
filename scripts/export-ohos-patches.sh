@@ -1,6 +1,14 @@
 #!/bin/sh
 # Export the OHOS delta (fork tip vs upstream tag) as one patch per file
-# for the homebrew-core tap (Patches/bun@1.4/, mirroring the source tree).
+# for the homebrew-core tap (Patches/bun-legacy/, mirroring the source
+# tree). Since the tap's 2026-09-29 "second takeover" (PR #706+#707), the
+# `bun` name is served by a separately hand-curated/audited formula
+# (docs/bun14-patch-audit.md); this mechanical export now only feeds the
+# archived bun-legacy.rb formula, which is this repo's own lineage. The
+# out-dir was Patches/bun@1.4/ before the tap's 2026-09-12 first takeover
+# renamed it to Patches/bun/, and is now Patches/bun-legacy/ after the
+# second — this comment historically lagged both renames; OUT_DIR is
+# always an explicit argument below, so behavior never depended on it.
 #
 # Method proven in docs/bun-upstream-feasibility.md §6 (v1.4.0 replay):
 # per-file `git diff --no-renames --binary <tag> <tip> -- <path>` applied
@@ -14,8 +22,8 @@
 # Usage: scripts/export-ohos-patches.sh <out-dir> [fork-tip] [upstream-tag]
 #
 # After a bun version bump: merge the new upstream tag into ohos-aarch64
-# (Release SOP), re-run this script, refresh Patches/bun@1.4/ + the
-# formula revision in one commit.
+# (Release SOP), re-run this script, refresh Patches/bun-legacy/ + the
+# bun-legacy.rb formula revision in one commit.
 set -eu
 
 OUT_DIR="${1:?usage: export-ohos-patches.sh <out-dir> [fork-tip] [upstream-tag]}"
